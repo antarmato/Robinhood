@@ -1,6 +1,6 @@
 """
 Orchestrator — analysis-only deliberation loop.
-Runs agents, stores trade proposals in state for the Cowork artifact to execute.
+Runs agents, stores trade proposals in state for Cowork to execute.
 No Robinhood credentials required here.
 """
 
@@ -32,13 +32,13 @@ class Orchestrator:
         self._task: asyncio.Task | None = None
         self._claude: anthropic.AsyncAnthropic | None = None
 
-        watchlist_raw = os.getenv("WATCHLIST", "SPY,QQQ,NVDA,AAPL,MSFT,TSLA,AMZN")
-        self.watchlist = [s.strip() for s in watchlist_raw.split(",")]
-        self.max_loss    = float(os.getenv("MAX_LOSS_PER_TRADE", "200"))
+        watchlist_raw = os.getenv("WATCHLIST", "SPY,QQQ,NVDA,AAPL,MSFT,TSLA,AMZN,META,GOOGL")
+        self.watchlist        = [s.strip() for s in watchlist_raw.split(",")]
+        self.max_loss         = float(os.getenv("MAX_LOSS_PER_TRADE", "200"))
         self.scan_interval    = int(os.getenv("SCAN_INTERVAL_MINUTES", "30")) * 60
         self.monitor_interval = int(os.getenv("MONITOR_INTERVAL_MINUTES", "15")) * 60
-        self.max_dte = int(os.getenv("MAX_DTE", "21"))
-        self.min_dte = int(os.getenv("MIN_DTE", "5"))
+        self.max_dte          = int(os.getenv("MAX_DTE", "45"))
+        self.min_dte          = int(os.getenv("MIN_DTE", "7"))
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -53,7 +53,7 @@ class Orchestrator:
 
     async def start(self):
         if self._task and not self._task.done():
-            return
+            raise ValueError("Orchestrator already running")
         if "ANTHROPIC_API_KEY" not in os.environ:
             raise ValueError("ANTHROPIC_API_KEY not set")
         self.state.system_status = "running"
@@ -74,7 +74,7 @@ class Orchestrator:
 
     async def _main_loop(self):
         logger.info("Orchestrator starting.")
-        last_scan = 0.0
+        last_scan    = 0.0
         last_monitor = 0.0
 
         while True:
@@ -87,14 +87,14 @@ class Orchestrator:
 
                 if now - last_scan >= self.scan_interval:
                     if self._is_market_hours():
-                        # Don't scan if there's already a pending proposal
                         if not self.state.has_pending_proposal():
                             await self._run_scan_cycle()
                         else:
                             await self._emit("system", "info",
                                 {"message": "Pending proposal awaiting execution — skipping scan."})
                     else:
-                        await self._emit("system", "info", {"message": "Market closed — standing by."})
+                        await self._emit("system", "info",
+                            {"message": "Market closed — standing by."})
                     last_scan = now
 
                 await asyncio.sleep(30)
@@ -112,50 +112,86 @@ class Orchestrator:
         self.state.increment_cycle()
         cycle = self.state.cycle_count
         await self._emit("system", "cycle_start", {"cycle": cycle})
+        logger.info(f"Starting cycle {cycle}")
 
-        scanner = ScannerAgent(self.claude, self.watchlist, self._make_broadcast())
+        scanner    = ScannerAgent(self.claude, self.watchlist, self._make_broadcast())
         candidates = await scanner.scan()
 
         if not candidates:
-            await self._emit("system", "info", {"message": "No candidates found this cycle."})
+            await self._emit("system", "info",
+                {"message": f"Cycle {cycle}: Scanner returned no candidates."})
             return
+
+        await self._emit("system", "info",
+            {"message": f"Cycle {cycle}: {len(candidates)} candidate(s) — beginning analysis..."})
 
         best_result = None
         best_score  = -1
+        rejection_log = []
 
-        for candidate in candidates[:3]:
-            symbol      = candidate.get("symbol")
-            direction   = candidate.get("direction", "bullish")
-            price       = candidate.get("current_price", 0)
+        for i, candidate in enumerate(candidates[:3]):
+            symbol    = candidate.get("symbol", "")
+            direction = candidate.get("direction", "bullish")
+            price     = candidate.get("current_price", 0)
 
-            await self._emit("system", "analyzing", {"symbol": symbol, "direction": direction})
+            await self._emit("system", "analyzing",
+                {"symbol": symbol, "direction": direction, "priority": i + 1,
+                 "signal_strength": candidate.get("signal_strength", 0),
+                 "reason": candidate.get("key_reason", "")})
 
             result = await self._analyze_candidate(symbol, direction, price)
-            if result and result.get("judge", {}).get("decision") == "trade":
-                score = result["judge"].get("confidence", 0)
+
+            if result is None:
+                rejection_log.append(f"{symbol}: analysis error")
+                continue
+
+            judge = result.get("judge", {})
+            decision = judge.get("decision", "pass")
+            reason   = judge.get("pass_reason") or judge.get("reasoning", "")
+            score    = judge.get("weighted_score", 0)
+            conf     = judge.get("confidence", 0)
+
+            if decision == "trade":
+                logger.info(f"Cycle {cycle}: {symbol} APPROVED — score={score}, conf={conf}")
                 if score > best_score:
                     best_score  = score
                     best_result = result
+            else:
+                rejection_log.append(f"{symbol}: PASS — {reason[:120]}")
+                logger.info(f"Cycle {cycle}: {symbol} passed — {reason[:120]}")
+                await self._emit("system", "info",
+                    {"message": f"{symbol} {direction}: PASS — {reason[:120]}"})
 
         if best_result:
             await self._store_proposal(best_result)
         else:
+            summary = " | ".join(rejection_log) if rejection_log else "All candidates failed deliberation"
             await self._emit("system", "info",
-                {"message": f"Cycle {cycle} complete — no trades passed deliberation."})
+                {"message": f"Cycle {cycle} complete — no trades. Rejections: {summary}"})
+            logger.info(f"Cycle {cycle} no trade. {summary}")
+
+    # ── Candidate analysis ─────────────────────────────────────────────────────
 
     async def _analyze_candidate(self, symbol: str, direction: str, price: float) -> dict | None:
         try:
+            # Step 1: Options chain — fail fast if no viable strike/expiry
             options_agent = OptionsAnalystAgent(
                 self.claude, self.max_dte, self.min_dte, self._make_broadcast()
             )
             options = await options_agent.analyze(symbol, direction, price)
 
-            if not options.get("expiration_date") or not options.get("strike"):
-                await self._emit("system", "info", {"message": f"{symbol}: No viable strike found."})
+            if not options.get("expiration_date"):
+                await self._emit("system", "info",
+                    {"message": f"{symbol}: No valid expiration found — skipping."})
+                return None
+            if not options.get("strike"):
+                await self._emit("system", "info",
+                    {"message": f"{symbol}: No viable strike — skipping."})
                 return None
 
             expiry = options["expiration_date"]
 
+            # Step 2: Technical, Fundamental, Sentiment — run in parallel
             tech_agent  = TechnicalAgent(self.claude, self._make_broadcast())
             fund_agent  = FundamentalAgent(self.claude, self._make_broadcast())
             sent_agent  = SentimentAgent(self.claude, self._make_broadcast())
@@ -166,14 +202,17 @@ class Orchestrator:
                 sent_agent.analyze(symbol, direction, expiry),
             )
 
+            # Step 3: Risk sizing
             risk_agent = RiskAgent(self.claude, self.max_loss, self._make_broadcast())
             risk = await risk_agent.evaluate(symbol, options, self.state.active_trades)
 
+            # Step 4: Devil's Advocate
             advocate_agent = DevilsAdvocateAgent(self.claude, self._make_broadcast())
             advocate = await advocate_agent.challenge(
                 symbol, direction, technical, options, fundamental, sentiment, risk
             )
 
+            # Step 5: Judge
             judge_agent = JudgeAgent(self.claude, self._make_broadcast())
             judge = await judge_agent.decide(
                 symbol, direction, technical, options, fundamental, sentiment,
@@ -189,7 +228,8 @@ class Orchestrator:
 
         except Exception as e:
             logger.exception(f"Error analyzing {symbol}: {e}")
-            await self._emit("system", "error", {"message": f"{symbol} analysis failed: {e}"})
+            await self._emit("system", "error",
+                {"message": f"{symbol} analysis error: {e}"})
             return None
 
     # ── Proposal storage ───────────────────────────────────────────────────────
@@ -198,12 +238,14 @@ class Orchestrator:
         judge    = analysis["judge"]
         proposal = judge.get("trade_proposal")
         if not proposal:
+            logger.warning("Judge returned trade decision but no proposal")
             return
 
-        proposal["proposal_id"]    = str(uuid.uuid4())
-        proposal["proposed_at"]    = datetime.utcnow().isoformat()
-        proposal["status"]         = "pending"
+        proposal["proposal_id"]  = str(uuid.uuid4())
+        proposal["proposed_at"]  = datetime.utcnow().isoformat()
+        proposal["status"]       = "pending"
         proposal["analysis_summary"] = {
+            "direction":      analysis.get("direction"),
             "bull_case":      judge.get("bull_case", ""),
             "bear_case":      judge.get("bear_case", ""),
             "reasoning":      judge.get("reasoning", ""),
@@ -216,14 +258,19 @@ class Orchestrator:
                 "sentiment":          analysis["sentiment"].get("score"),
                 "risk":               analysis["risk"].get("score"),
                 "objection_strength": analysis["advocate"].get("objection_strength"),
-            }
+            },
         }
 
         self.state.add_proposal(proposal)
         await self._emit("system", "trade_proposal", proposal)
-        await self._emit("system", "info",
-            {"message": f"📋 Trade proposal stored: {proposal['symbol']} {proposal['option_type']} "
-                        f"${proposal['strike']} — open Cowork dashboard to review."})
+        await self._emit("system", "info", {
+            "message": (
+                f"📋 PROPOSAL: {proposal['symbol']} {proposal.get('option_type','').upper()} "
+                f"${proposal['strike']} exp {proposal['expiration_date']} "
+                f"| Conf={judge.get('confidence')}/10 | Score={judge.get('weighted_score'):.0f} "
+                f"| Open Cowork to approve/reject."
+            )
+        })
 
     # ── Monitor ────────────────────────────────────────────────────────────────
 
@@ -238,7 +285,6 @@ class Orchestrator:
         for sig in signals:
             if sig.get("action") == "exit":
                 await self._emit("system", "exit_signal", sig)
-                # Create an exit proposal for the Cowork artifact to action
                 self.state.add_exit_signal(sig)
 
         self.state.update_last_monitor()

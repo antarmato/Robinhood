@@ -1,6 +1,6 @@
 """
 Market data layer using yfinance — free, no credentials required.
-Provides quotes, historical OHLCV, options chains, and IV rank.
+Provides quotes, historical OHLCV, intraday data, options chains, and IV rank.
 """
 
 import logging
@@ -14,61 +14,69 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
-def get_quotes(symbols: list[str]) -> dict:
-    """Get current quotes for multiple symbols."""
-    try:
-        tickers = yf.download(symbols, period="2d", interval="1d", progress=False, auto_adjust=True)
-        result = {}
-        for sym in symbols:
-            try:
-                t = yf.Ticker(sym)
-                info = t.fast_info
-                close = float(info.last_price) if hasattr(info, 'last_price') else 0
-                prev_close = float(info.previous_close) if hasattr(info, 'previous_close') else close
-                result[sym] = {
-                    "symbol": sym,
-                    "price": close,
-                    "prev_close": prev_close,
-                    "volume": int(info.three_month_average_volume) if hasattr(info, 'three_month_average_volume') else 0,
-                }
-            except Exception as e:
-                logger.debug(f"Quote error for {sym}: {e}")
-        return result
-    except Exception as e:
-        logger.error(f"get_quotes error: {e}")
-        return {}
-
+# ── Quotes ────────────────────────────────────────────────────────────────────
 
 def get_quote(symbol: str) -> dict:
     """Get a single symbol's current price info."""
     try:
         t = yf.Ticker(symbol)
         info = t.fast_info
-        price = float(info.last_price) if hasattr(info, 'last_price') else 0
-        prev = float(info.previous_close) if hasattr(info, 'previous_close') else price
+        price = float(info.last_price) if hasattr(info, "last_price") else 0
+        prev  = float(info.previous_close) if hasattr(info, "previous_close") else price
         return {
-            "symbol": symbol,
-            "price": price,
+            "symbol":     symbol,
+            "price":      price,
             "prev_close": prev,
             "pct_change": round((price - prev) / prev * 100, 2) if prev else 0,
-            "volume": int(info.three_month_average_volume) if hasattr(info, 'three_month_average_volume') else 0,
+            "volume":     int(info.three_month_average_volume) if hasattr(info, "three_month_average_volume") else 0,
         }
     except Exception as e:
         logger.error(f"get_quote({symbol}) error: {e}")
         return {"symbol": symbol, "price": 0, "prev_close": 0, "pct_change": 0, "volume": 0}
 
 
+def get_vix() -> float:
+    """Current VIX level. Returns 20.0 on failure."""
+    try:
+        t = yf.Ticker("^VIX")
+        info = t.fast_info
+        return float(info.last_price) if hasattr(info, "last_price") else 20.0
+    except Exception:
+        return 20.0
+
+
+def get_sector_etf_performance() -> dict:
+    """Today's % change for major sector ETFs."""
+    etfs = {
+        "XLK": "Tech", "XLF": "Financials", "XLE": "Energy",
+        "XLV": "Healthcare", "XLY": "Consumer Disc", "XLC": "Comm Services",
+        "XLI": "Industrials", "XLB": "Materials",
+    }
+    result = {}
+    try:
+        for etf, sector in etfs.items():
+            try:
+                t = yf.Ticker(etf)
+                hist = t.history(period="2d", interval="1d", auto_adjust=True)
+                if len(hist) >= 2:
+                    pct = (hist["Close"].iloc[-1] - hist["Close"].iloc[-2]) / hist["Close"].iloc[-2] * 100
+                    result[sector] = round(float(pct), 2)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return result
+
+
+# ── Historical OHLCV ─────────────────────────────────────────────────────────
+
 def get_historicals(symbol: str, period: str = "1y") -> pd.DataFrame:
-    """
-    Get OHLCV daily history.
-    period: 1mo, 3mo, 6mo, 1y, 2y
-    """
+    """Daily OHLCV. period: 1mo, 3mo, 6mo, 1y, 2y."""
     try:
         t = yf.Ticker(symbol)
         df = t.history(period=period, auto_adjust=True)
         if df.empty:
             return pd.DataFrame()
-        df.index = pd.to_datetime(df.index)
         df.columns = [c.lower() for c in df.columns]
         return df[["open", "close", "high", "low", "volume"]].dropna()
     except Exception as e:
@@ -76,27 +84,51 @@ def get_historicals(symbol: str, period: str = "1y") -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def get_intraday(symbol: str, period: str = "5d", interval: str = "1h") -> pd.DataFrame:
+    """
+    Intraday OHLCV. interval: 1m, 5m, 15m, 30m, 1h.
+    period must be ≤ 60d for sub-hour intervals, ≤ 730d for 1h.
+    """
+    try:
+        t = yf.Ticker(symbol)
+        df = t.history(period=period, interval=interval, auto_adjust=True)
+        if df.empty:
+            return pd.DataFrame()
+        df.columns = [c.lower() for c in df.columns]
+        return df[["open", "close", "high", "low", "volume"]].dropna()
+    except Exception as e:
+        logger.error(f"get_intraday({symbol}, {interval}) error: {e}")
+        return pd.DataFrame()
+
+
+# ── Fundamentals ──────────────────────────────────────────────────────────────
+
 def get_fundamentals(symbol: str) -> dict:
-    """Get fundamental info from yfinance."""
+    """Fundamental info from yfinance."""
     try:
         t = yf.Ticker(symbol)
         info = t.info
         return {
-            "symbol": symbol,
-            "sector": info.get("sector", ""),
-            "industry": info.get("industry", ""),
-            "market_cap": info.get("marketCap"),
-            "pe_ratio": info.get("trailingPE"),
-            "forward_pe": info.get("forwardPE"),
-            "revenue_growth": info.get("revenueGrowth"),
-            "earnings_growth": info.get("earningsGrowth"),
-            "short_ratio": info.get("shortRatio"),
-            "beta": info.get("beta"),
-            "52w_high": info.get("fiftyTwoWeekHigh"),
-            "52w_low": info.get("fiftyTwoWeekLow"),
-            "avg_volume_10d": info.get("averageVolume10days"),
-            "earnings_date": _get_next_earnings(info),
-            "description": (info.get("longBusinessSummary") or "")[:400],
+            "symbol":             symbol,
+            "sector":             info.get("sector", ""),
+            "industry":           info.get("industry", ""),
+            "market_cap":         info.get("marketCap"),
+            "pe_ratio":           info.get("trailingPE"),
+            "forward_pe":         info.get("forwardPE"),
+            "revenue_growth":     info.get("revenueGrowth"),
+            "earnings_growth":    info.get("earningsGrowth"),
+            "short_ratio":        info.get("shortRatio"),
+            "beta":               info.get("beta"),
+            "52w_high":           info.get("fiftyTwoWeekHigh"),
+            "52w_low":            info.get("fiftyTwoWeekLow"),
+            "avg_volume_10d":     info.get("averageVolume10days"),
+            "analyst_target":     info.get("targetMeanPrice"),
+            "analyst_rating":     info.get("recommendationKey", ""),
+            "analyst_count":      info.get("numberOfAnalystOpinions"),
+            "earnings_date":      _get_next_earnings(info),
+            "earnings_ts_start":  info.get("earningsTimestampStart"),
+            "earnings_ts_end":    info.get("earningsTimestampEnd"),
+            "description":        (info.get("longBusinessSummary") or "")[:400],
         }
     except Exception as e:
         logger.error(f"get_fundamentals({symbol}) error: {e}")
@@ -106,16 +138,23 @@ def get_fundamentals(symbol: str) -> dict:
 def _get_next_earnings(info: dict) -> Optional[str]:
     """Extract next earnings date from yfinance info."""
     try:
-        ts = info.get("earningsTimestamp") or info.get("earningsTimestampStart")
-        if ts:
-            return datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
+        # Try multiple fields — yfinance is inconsistent
+        for key in ("earningsTimestamp", "earningsTimestampStart"):
+            ts = info.get(key)
+            if ts and ts > 0:
+                dt = datetime.utcfromtimestamp(ts)
+                # Only return if it's a future date
+                if dt.date() >= date.today():
+                    return dt.strftime("%Y-%m-%d")
     except Exception:
         pass
     return None
 
 
+# ── Options ───────────────────────────────────────────────────────────────────
+
 def get_options_expiration_dates(symbol: str) -> list[str]:
-    """Get available expiration dates."""
+    """Get available option expiration dates."""
     try:
         t = yf.Ticker(symbol)
         return list(t.options)
@@ -126,9 +165,9 @@ def get_options_expiration_dates(symbol: str) -> list[str]:
 
 def get_options_chain(symbol: str, expiration_date: str, option_type: str = "call") -> list[dict]:
     """
-    Get options chain for a specific expiry.
+    Options chain for a specific expiry.
     option_type: 'call' or 'put'
-    Returns list of option dicts with strike, bid, ask, iv, volume, oi.
+    Returns list of dicts with strike, bid, ask, iv, volume, oi.
     """
     try:
         t = yf.Ticker(symbol)
@@ -138,18 +177,23 @@ def get_options_chain(symbol: str, expiration_date: str, option_type: str = "cal
             return []
         result = []
         for _, row in df.iterrows():
+            bid = float(row.get("bid", 0) or 0)
+            ask = float(row.get("ask", 0) or 0)
+            last = float(row.get("lastPrice", 0) or 0)
+            iv   = float(row.get("impliedVolatility", 0) or 0)
             result.append({
-                "symbol": symbol,
-                "expiration_date": expiration_date,
-                "option_type": option_type,
-                "strike_price": float(row.get("strike", 0)),
-                "bid": float(row.get("bid", 0) or 0),
-                "ask": float(row.get("ask", 0) or 0),
-                "last": float(row.get("lastPrice", 0) or 0),
-                "volume": int(row.get("volume", 0) or 0),
-                "open_interest": int(row.get("openInterest", 0) or 0),
-                "implied_volatility": float(row.get("impliedVolatility", 0) or 0),
-                "in_the_money": bool(row.get("inTheMoney", False)),
+                "symbol":           symbol,
+                "expiration_date":  expiration_date,
+                "option_type":      option_type,
+                "strike_price":     float(row.get("strike", 0)),
+                "bid":              bid,
+                "ask":              ask,
+                "last":             last,
+                "mid":              round((bid + ask) / 2, 2) if bid and ask else last,
+                "volume":           int(row.get("volume", 0) or 0),
+                "open_interest":    int(row.get("openInterest", 0) or 0),
+                "implied_volatility": iv,
+                "in_the_money":     bool(row.get("inTheMoney", False)),
             })
         return result
     except Exception as e:
@@ -159,7 +203,8 @@ def get_options_chain(symbol: str, expiration_date: str, option_type: str = "cal
 
 def get_iv_rank(symbol: str) -> Optional[float]:
     """
-    Estimate IV rank (0-100) using ATM implied volatility vs 1-year HV range.
+    IV rank 0-100: where current ATM IV sits relative to its 1-year HV range.
+    NOTE: This is slow (4 yfinance calls). Use sparingly — only on finalists.
     """
     try:
         expirations = get_options_expiration_dates(symbol)
@@ -190,7 +235,6 @@ def get_iv_rank(symbol: str) -> Optional[float]:
         if not current_iv:
             return None
 
-        # Historical vol range
         hist = get_historicals(symbol, period="1y")
         if hist.empty:
             return None
