@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Alpha System — Agent Monitor</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#0a0a0f;--bg2:#111118;--bg3:#1a1a24;--border:#2a2a3a;
+    --text:#e0e0f0;--muted:#666680;--accent:#6060ff;
+    --green:#22c55e;--red:#ef4444;--yellow:#f59e0b;--blue:#38bdf8;
+  }
+  body{background:var(--bg);color:var(--text);font-family:'SF Mono','Fira Code',monospace;font-size:12px;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+
+  #header{display:flex;align-items:center;gap:12px;padding:8px 16px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0}
+  #header h1{font-size:13px;font-weight:700;color:var(--accent);letter-spacing:2px}
+  .badge{padding:3px 8px;border-radius:4px;font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase}
+  .b-run{background:rgba(34,197,94,.15);color:var(--green);border:1px solid rgba(34,197,94,.3)}
+  .b-stop{background:rgba(239,68,68,.15);color:var(--red);border:1px solid rgba(239,68,68,.3)}
+  #mkt{margin-left:auto;color:var(--muted);font-size:11px}
+  #cycle{color:var(--muted);font-size:11px}
+
+  #main{display:grid;grid-template-columns:1fr 300px;flex:1;overflow:hidden}
+
+  #feed{display:flex;flex-direction:column;overflow:hidden;border-right:1px solid var(--border)}
+  #feed-label{padding:8px 12px;font-size:10px;font-weight:700;letter-spacing:1.5px;color:var(--muted);background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0}
+  #feed-body{flex:1;overflow-y:auto;padding:8px}
+  #thinking{padding:6px 12px;background:var(--bg2);border-top:1px solid var(--border);font-size:11px;color:var(--muted);flex-shrink:0;min-height:32px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+
+  .msg{margin:2px 0;padding:5px 10px;border-radius:4px;border-left:3px solid transparent;line-height:1.5}
+  .msg .meta{font-size:10px;color:var(--muted);margin-bottom:2px;display:flex;gap:8px}
+  .msg .body{color:var(--text);white-space:pre-wrap;word-break:break-word}
+  .t-status{border-left-color:var(--blue);background:rgba(56,189,248,.04)}
+  .t-system{border-left-color:var(--accent);background:rgba(96,96,255,.04)}
+  .t-proposal{border-left-color:var(--yellow);background:rgba(245,158,11,.08)}
+  .t-pass{border-left-color:var(--muted)}
+  .t-error{border-left-color:var(--red);background:rgba(239,68,68,.06)}
+  .t-thinking{border-left-color:var(--muted);background:rgba(255,255,255,.02)}
+
+  #sidebar{background:var(--bg2);display:flex;flex-direction:column;overflow:hidden}
+  .sec{border-bottom:1px solid var(--border);flex-shrink:0}
+  .sec h3{padding:8px 12px;font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted)}
+  .sec-body{padding:4px 12px 12px}
+
+  .kv{display:flex;justify-content:space-between;padding:4px 0;font-size:11px}
+  .kv .k{color:var(--muted)}.kv .v{font-weight:600}
+  .v-green{color:var(--green)}.v-yellow{color:var(--yellow)}
+
+  .btn{padding:6px 14px;border-radius:4px;font-size:11px;font-weight:700;cursor:pointer;border:none;font-family:inherit;transition:opacity .15s}
+  .btn:hover{opacity:.85}.btn:disabled{opacity:.4;cursor:not-allowed}
+  .btn-green{background:var(--green);color:#000}.btn-red{background:var(--red);color:#fff}
+  .btn-ghost{background:var(--bg3);color:var(--text);border:1px solid var(--border)}
+  .btn-row{display:flex;gap:8px;margin-top:8px}
+
+  .ctrl-row{display:flex;gap:8px;padding:0 12px 12px;flex-wrap:wrap}
+  .inp{background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:inherit;font-size:11px;padding:5px 8px;width:100%}
+  .inp:focus{outline:none;border-color:var(--accent)}
+
+  .proposal-card{background:var(--bg3);border:1px solid var(--yellow);border-radius:6px;padding:10px;margin:6px 0}
+  .proposal-card .sym{font-weight:700;font-size:13px;color:var(--yellow)}
+  .proposal-card .detail{color:var(--muted);font-size:11px;margin-top:3px}
+  .proposal-card .conf{color:var(--text);font-size:11px;margin-top:4px}
+
+  #proposals-list{max-height:200px;overflow-y:auto}
+  .no-items{color:var(--muted);font-size:11px;padding:4px 0}
+
+  ::-webkit-scrollbar{width:4px;height:4px}
+  ::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+</style>
+</head>
+<body>
+<div id="header">
+  <h1>⬡ ALPHA SYSTEM</h1>
+  <span id="sys-badge" class="badge b-stop">STOPPED</span>
+  <span id="cycle">Cycle: 0</span>
+  <span id="mkt">Checking market...</span>
+</div>
+
+<div id="main">
+  <div id="feed">
+    <div id="feed-label">AGENT ACTIVITY</div>
+    <div id="feed-body"></div>
+    <div id="thinking"><span id="t-agent" style="color:var(--accent);font-weight:700">—</span>&nbsp;<span id="t-text">Waiting for agents...</span></div>
+  </div>
+
+  <div id="sidebar">
+    <div class="sec">
+      <h3>Control</h3>
+      <div class="sec-body">
+        <div class="kv"><span class="k">API Key (optional)</span></div>
+        <input class="inp" id="api-key" type="password" placeholder="Set in Railway env as API_KEY" style="margin-bottom:8px">
+        <div class="btn-row">
+          <button class="btn btn-green" id="btn-start" onclick="startSystem()">▶ Start</button>
+          <button class="btn btn-red"   id="btn-stop"  onclick="stopSystem()" disabled>■ Stop</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="sec">
+      <h3>Status</h3>
+      <div class="sec-body">
+        <div class="kv"><span class="k">System</span><span class="v" id="st-sys">Stopped</span></div>
+        <div class="kv"><span class="k">Last Scan</span><span class="v" id="st-scan">—</span></div>
+        <div class="kv"><span class="k">Last Monitor</span><span class="v" id="st-mon">—</span></div>
+        <div class="kv"><span class="k">Active Trades</span><span class="v" id="st-trades">0</span></div>
+        <div class="kv"><span class="k">Pending Proposals</span><span class="v v-yellow" id="st-props">0</span></div>
+      </div>
+    </div>
+
+    <div class="sec" style="flex:1;overflow:hidden;display:flex;flex-direction:column">
+      <h3>Pending Proposals</h3>
+      <div class="sec-body" style="overflow-y:auto;flex:1">
+        <div id="proposals-list"><span class="no-items">None — agents are deliberating</span></div>
+        <p style="color:var(--muted);font-size:10px;margin-top:8px;line-height:1.5">
+          Open the <strong style="color:var(--accent)">Cowork Artifact</strong> in your session to review and execute proposals.
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const AGENT_COLORS = {
+  Scanner:'#60a5fa',Technical:'#34d399',Options:'#c084fc',
+  Fundamental:'#fbbf24',Sentiment:'#38bdf8',Risk:'#f87171',
+  DevilsAdvocate:'#fb923c',Judge:'#facc15',Monitor:'#a3e635',system:'#6060ff'
+};
+
+let ws = null;
+function connect() {
+  const proto = location.protocol==='https:'?'wss':'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onmessage = e => handle(JSON.parse(e.data));
+  ws.onclose = () => setTimeout(connect, 3000);
+}
+
+function handle(msg) {
+  const {agent, type, data, timestamp} = msg;
+  if (type==='init') { applyInit(data); return; }
+  if (type==='status') { updateStatus(data.status); return; }
+  if (type==='cycle_start') {
+    document.getElementById('cycle').textContent = `Cycle: ${data.cycle}`;
+    addMsg('system','🔄 CYCLE START',`Scanning... cycle #${data.cycle}`,timestamp,'t-system');
+    return;
+  }
+  if (type==='thinking_start') {
+    document.getElementById('t-agent').textContent = agent;
+    document.getElementById('t-agent').style.color = AGENT_COLORS[agent]||'#fff';
+    document.getElementById('t-text').textContent = '';
+    return;
+  }
+  if (type==='thinking_chunk') {
+    document.getElementById('t-text').textContent += data;
+    return;
+  }
+  if (type==='trade_proposal') {
+    addMsg('Judge','📋 PROPOSAL STORED',
+      `${data.symbol} ${data.option_type?.toUpperCase()} $${data.strike} | Exp ${data.expiration_date} | ${data.contracts}x | Cost $${data.total_max_loss?.toFixed(0)}`,
+      timestamp,'t-proposal');
+    refreshStatus();
+    return;
+  }
+  if (type==='decision') {
+    const cls = data.decision==='trade'?'t-proposal':'t-pass';
+    addMsg('Judge',data.decision==='trade'?'✅ GO':'⏭ PASS',
+      `${data.symbol} | Confidence ${data.confidence}/10\n${data.reasoning}`,timestamp,cls);
+    return;
+  }
+  if (type==='proposal_resolved') {
+    addMsg('system',data.action==='executed'?'✅ EXECUTED':'✗ REJECTED',
+      `Proposal ${data.proposal_id} — ${data.action}`,timestamp,'t-system');
+    refreshStatus();
+    return;
+  }
+  if (type==='error') {
+    addMsg(agent||'system','⚠ ERROR',data.message||JSON.stringify(data),timestamp,'t-error');
+    return;
+  }
+  if (type==='info') {
+    addMsg('system','ℹ',data.message||JSON.stringify(data),timestamp,'t-system');
+    return;
+  }
+  if (type==='analyzing') {
+    addMsg('system','📊',`Analyzing ${data.symbol} (${data.direction})`,timestamp,'t-status');
+    return;
+  }
+  if (type==='status') {
+    addMsg(agent,type,typeof data==='string'?data:JSON.stringify(data),timestamp,'t-status');
+    return;
+  }
+}
+
+function applyInit(data) {
+  updateStatus(data.status);
+  document.getElementById('cycle').textContent = `Cycle: ${data.cycle_count||0}`;
+  if (data.pending_proposals?.length) showProposals(data.pending_proposals);
+  (data.recent_events||[]).forEach(ev => {
+    if (ev.type==='info' && ev.data?.data?.message) {
+      addMsg('system','ℹ',ev.data.data.message,ev.timestamp,'t-system');
+    }
+  });
+}
+
+function updateStatus(st) {
+  const b = document.getElementById('sys-badge');
+  b.textContent = st.toUpperCase();
+  b.className = `badge ${st==='running'?'b-run':'b-stop'}`;
+  document.getElementById('st-sys').textContent = st.charAt(0).toUpperCase()+st.slice(1);
+  document.getElementById('btn-start').disabled = st==='running';
+  document.getElementById('btn-stop').disabled  = st==='stopped';
+}
+
+function addMsg(agent, type, content, ts, cls='') {
+  const feed = document.getElementById('feed-body');
+  const el = document.createElement('div');
+  el.className = `msg ${cls}`;
+  const color = AGENT_COLORS[agent]||'#999';
+  const time = ts ? new Date(ts).toLocaleTimeString() : '';
+  el.innerHTML = `<div class="meta"><span style="color:${color};font-weight:700">${agent}</span><span>${esc(type)}</span><span style="margin-left:auto">${time}</span></div><div class="body">${esc(content||'')}</div>`;
+  feed.appendChild(el);
+  feed.scrollTop = feed.scrollHeight;
+  while(feed.children.length>300) feed.removeChild(feed.firstChild);
+}
+
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+
+function showProposals(proposals) {
+  const el = document.getElementById('proposals-list');
+  if (!proposals.length) { el.innerHTML='<span class="no-items">None</span>'; return; }
+  el.innerHTML = proposals.map(p => `
+    <div class="proposal-card">
+      <div class="sym">${p.symbol} ${p.option_type?.toUpperCase()} $${p.strike}</div>
+      <div class="detail">Exp: ${p.expiration_date} | ${p.contracts}x contracts</div>
+      <div class="detail">Max loss: $${Number(p.total_max_loss||0).toFixed(0)} | Limit: $${Number(p.limit_price||0).toFixed(2)}/share</div>
+      <div class="conf">Confidence: ${p.analysis_summary?.confidence||'?'}/10</div>
+    </div>
+  `).join('');
+  document.getElementById('st-props').textContent = proposals.length;
+}
+
+async function refreshStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+    document.getElementById('st-scan').textContent  = d.last_scan ? new Date(d.last_scan).toLocaleTimeString()  : '—';
+    document.getElementById('st-mon').textContent   = d.last_monitor ? new Date(d.last_monitor).toLocaleTimeString() : '—';
+    document.getElementById('st-trades').textContent = d.active_trades;
+    document.getElementById('st-props').textContent  = d.pending_proposals;
+    const pr = await fetch('/api/proposals');
+    const pd = await pr.json();
+    showProposals(pd.pending||[]);
+  } catch(e){}
+}
+
+function apiKey() { return document.getElementById('api-key').value; }
+
+async function startSystem() {
+  const r = await fetch('/api/system/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({api_key:apiKey()})});
+  if(r.ok) updateStatus('running');
+}
+async function stopSystem() {
+  const r = await fetch('/api/system/stop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({api_key:apiKey()})});
+  if(r.ok) updateStatus('stopped');
+}
+
+function updateMarket() {
+  const now=new Date();
+  const u=now.getUTCHours()*60+now.getUTCMinutes(), d=now.getUTCDay();
+  const open = d>0&&d<6&&u>=810&&u<=1200;
+  document.getElementById('mkt').textContent = open?'🟢 Market Open':'🔴 Market Closed';
+}
+setInterval(updateMarket,60000); updateMarket();
+setInterval(refreshStatus,60000);
+
+connect(); refreshStatus();
+</script>
+</body>
+</html>
