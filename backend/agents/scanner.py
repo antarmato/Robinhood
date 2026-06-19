@@ -81,9 +81,8 @@ class ScannerAgent(BaseAgent):
                 c["pct_change"]       = d["pct_change"]
                 c["iv_rank"]          = None  # computed later by Options Analyst
 
-        await self._emit("status",
-            f"Found {len(candidates)} candidate(s): "
-            f"{[f\"{c.get('symbol')} {c.get('direction')}\" for c in candidates]}")
+        cand_summary = [c.get("symbol", "") + " " + c.get("direction", "") for c in candidates]
+        await self._emit("status", f"Found {len(candidates)} candidate(s): {cand_summary}")
         return candidates
 
     # ── Parallel data fetch and scoring ────────────────────────────────────────
