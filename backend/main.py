@@ -137,9 +137,72 @@ async def resolve_proposal(proposal_id: str, req: ResolveProposalRequest):
         {"proposal_id": proposal_id, "action": req.action})
     return {"status": "ok", "proposal_id": proposal_id, "action": req.action}
 
+# ── GET-based mutation endpoints (used by Cowork artifact via web_fetch, GET only) ──
+
+@app.get("/api/proposals/{proposal_id}/resolve")
+async def resolve_proposal_get(proposal_id: str, action: str, api_key: str = "",
+                                order_id: str = "", ref_id: str = ""):
+    _check_key(api_key)
+    if action not in ("executed", "rejected"):
+        raise HTTPException(status_code=400, detail="action must be 'executed' or 'rejected'")
+    order_info = {}
+    if order_id:
+        order_info = {"order_id": order_id, "ref_id": ref_id,
+                      "placed_at": __import__("datetime").datetime.utcnow().isoformat()}
+    get_state().resolve_proposal(proposal_id, action, order_info)
+    await _broadcast("system", "proposal_resolved", {"proposal_id": proposal_id, "action": action})
+    return {"status": "ok", "proposal_id": proposal_id, "action": action}
+
+@app.get("/api/trades/register")
+async def register_trade_get(api_key: str = "", symbol: str = "", option_type: str = "",
+                              strike: str = "", expiration_date: str = "", contracts: int = 1,
+                              limit_price: str = "", total_max_loss: str = "",
+                              option_id: str = "", order_id: str = "", trade_id: str = ""):
+    _check_key(api_key)
+    trade = {
+        "trade_id": trade_id or order_id,
+        "symbol": symbol, "option_type": option_type, "strike": strike,
+        "expiration_date": expiration_date, "contracts": contracts,
+        "limit_price": limit_price, "total_max_loss": total_max_loss,
+        "option_id": option_id, "order_id": order_id,
+    }
+    get_state().add_active_trade(trade)
+    await _broadcast("system", "trade_opened", trade)
+    return {"status": "ok", "trade_id": trade["trade_id"]}
+
+@app.get("/api/trades/{trade_id}/close")
+async def close_trade_get(trade_id: str, api_key: str = "", pnl: float = 0.0):
+    _check_key(api_key)
+    get_state().close_trade(trade_id, pnl)
+    get_state().resolve_exit_signal(trade_id)
+    await _broadcast("system", "trade_closed", {"trade_id": trade_id, "pnl": pnl})
+    return {"status": "ok"}
+
+@app.get("/api/exits/{trade_id}/resolve")
+async def resolve_exit_get(trade_id: str, api_key: str = ""):
+    _check_key(api_key)
+    get_state().resolve_exit_signal(trade_id)
+    return {"status": "ok"}
+
+@app.get("/api/system/start")
+async def start_get(api_key: str = ""):
+    _check_key(api_key)
+    try:
+        await orchestrator.start()
+        return {"status": "started"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/api/system/stop")
+async def stop_get(api_key: str = ""):
+    _check_key(api_key)
+    await orchestrator.stop()
+    return {"status": "stopped"}
+
+# ── POST versions (kept for Railway web dashboard) ─────────────────────────────
+
 @app.post("/api/trades")
 async def add_trade(req: AddTradeRequest):
-    """Called by Cowork artifact after successfully placing an order."""
     _check_key(req.api_key)
     get_state().add_active_trade(req.trade)
     await _broadcast("system", "trade_opened", req.trade)
@@ -147,7 +210,6 @@ async def add_trade(req: AddTradeRequest):
 
 @app.post("/api/trades/close")
 async def close_trade(req: CloseTradeRequest):
-    """Called by Cowork artifact after closing a position."""
     _check_key(req.api_key)
     get_state().close_trade(req.trade_id, req.pnl)
     get_state().resolve_exit_signal(req.trade_id)
@@ -160,7 +222,7 @@ async def resolve_exit(trade_id: str, req: ResolveExitRequest):
     get_state().resolve_exit_signal(trade_id)
     return {"status": "ok"}
 
-# ── System control ─────────────────────────────────────────────────────────────
+# ── System control (POST) ──────────────────────────────────────────────────────
 
 @app.post("/api/system/start")
 async def start(req: StartRequest):
