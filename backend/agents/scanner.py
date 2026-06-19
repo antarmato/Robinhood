@@ -2,11 +2,12 @@
 Scanner Agent — identifies the best 1-3 option trade candidates from the watchlist.
 
 Architecture:
-  1. Single yf.download() batch call for all symbols (reliable, proven to work)
-  2. Compute 12 quantitative signals per symbol from 3-month daily data
-  3. Score each symbol independently for BULL (calls) and BEAR (puts)
-  4. Claude Haiku gets the pre-scored table and selects top 1-3 with direction
-  5. Auto-select fallback if LLM returns bad JSON
+  1. Fetch each symbol individually via yf.Ticker.history() (no MultiIndex issues)
+  2. Run all fetches concurrently via asyncio.gather + run_in_executor
+  3. Compute 12 quantitative signals per symbol from 3-month daily data
+  4. Score each symbol independently for BULL (calls) and BEAR (puts)
+  5. Claude Haiku gets the pre-scored table and selects top 1-3 with direction
+  6. Auto-select fallback if LLM returns bad JSON
 """
 
 import asyncio
@@ -38,15 +39,32 @@ class ScannerAgent(BaseAgent):
     async def scan(self) -> list[dict]:
         await self._emit("status", f"Fetching market data for {len(self.watchlist)} symbols...")
 
-        # Fetch and score all symbols (runs in thread to not block event loop)
+        # Fetch each symbol concurrently (individual Ticker.history() calls — no MultiIndex)
         loop = asyncio.get_event_loop()
-        scored = await loop.run_in_executor(None, self._fetch_and_score_all)
+        tasks = [
+            loop.run_in_executor(None, self._fetch_one, sym)
+            for sym in self.watchlist
+        ]
+        raw_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        scored: dict = {}
+        failed: list[str] = []
+        for sym, r in zip(self.watchlist, raw_results):
+            if isinstance(r, dict) and r:
+                scored[sym] = r
+            else:
+                failed.append(sym)
+                if isinstance(r, Exception):
+                    logger.error(f"Fetch error for {sym}: {r}")
+
+        if failed:
+            await self._emit("status", f"No data for {len(failed)} symbol(s): {failed}. Got data for {len(scored)}.")
 
         if not scored:
-            await self._emit("status", "No market data — yfinance may be rate-limited.")
+            await self._emit("status", "No market data returned — yfinance may be blocked or rate-limited on Railway.")
             return []
 
-        await self._emit("status", f"Scored {len(scored)} symbols. Selecting best setups...")
+        await self._emit("status", f"Scored {len(scored)}/{len(self.watchlist)} symbols. Selecting best setups...")
         summary = self._build_summary(scored)
 
         # LLM selects top 1-3 candidates
@@ -58,6 +76,7 @@ class ScannerAgent(BaseAgent):
         )
         candidates = self._parse_json(raw)
         if not isinstance(candidates, list) or len(candidates) == 0:
+            await self._emit("status", "LLM returned no candidates — using auto-select fallback.")
             candidates = self._auto_select(scored)
 
         # Enrich with computed data
@@ -77,72 +96,46 @@ class ScannerAgent(BaseAgent):
         await self._emit("status", f"Found {len(candidates)} candidate(s): {cand_list}")
         return candidates
 
-    # ── Data fetch and scoring ─────────────────────────────────────────────────
+    # ── Data fetch — one symbol at a time, no MultiIndex ──────────────────────
 
-    def _fetch_and_score_all(self) -> dict:
+    def _fetch_one(self, sym: str) -> Optional[dict]:
         """
-        Single yf.download() batch call then compute signals per symbol.
-        Runs synchronously inside run_in_executor.
+        Fetch 3 months of daily OHLCV for one symbol using yf.Ticker.history().
+        Returns computed signal dict or None on failure.
+        Called from run_in_executor — must be synchronous.
         """
         import yfinance as yf
-
-        result = {}
-
-        # ── Primary path: batch download ──────────────────────────────────────
         try:
-            raw = yf.download(
-                self.watchlist,
-                period="3mo",
-                interval="1d",
-                progress=False,
-                auto_adjust=True,
-                group_by="ticker",
-                threads=True,
-            )
+            t = yf.Ticker(sym)
+            # history() returns flat columns: Open, High, Low, Close, Volume, Dividends, Stock Splits
+            df = t.history(period="3mo", interval="1d", auto_adjust=True)
+            if df is None or df.empty:
+                logger.warning(f"{sym}: empty history from yfinance")
+                return None
+            if len(df) < 20:
+                logger.warning(f"{sym}: only {len(df)} rows — need 20+")
+                return None
 
-            for sym in self.watchlist:
-                try:
-                    # Extract per-symbol DataFrame
-                    if len(self.watchlist) == 1:
-                        df_sym = raw.copy()
-                    else:
-                        lvl0 = raw.columns.get_level_values(0)
-                        if sym not in lvl0:
-                            continue
-                        df_sym = raw[sym].copy()
+            # Normalize columns to lowercase
+            df.columns = [c.lower() for c in df.columns]
+            needed = [c for c in ["open", "close", "high", "low", "volume"] if c in df.columns]
+            if "close" not in needed:
+                logger.warning(f"{sym}: no close column in {list(df.columns)}")
+                return None
+            df = df[needed].dropna(subset=["close"])
+            if len(df) < 20:
+                return None
 
-                    df_sym.columns = [c.lower() for c in df_sym.columns]
-                    needed = [c for c in ["open", "close", "high", "low", "volume"] if c in df_sym.columns]
-                    if "close" not in needed:
-                        continue
-                    df_sym = df_sym[needed].dropna(subset=["close"])
-
-                    if len(df_sym) < 20:
-                        continue
-
-                    data = self._compute_signals(sym, df_sym)
-                    if data:
-                        result[sym] = data
-                except Exception as e:
-                    logger.debug(f"Parse error for {sym}: {e}")
+            result = self._compute_signals(sym, df)
+            if result:
+                logger.debug(f"{sym}: bull={result['bull_score']} bear={result['bear_score']} rsi={result['rsi']:.1f}")
+            return result
 
         except Exception as e:
-            logger.error(f"Batch download failed: {e}")
+            logger.error(f"_fetch_one({sym}): {type(e).__name__}: {e}")
+            return None
 
-        # ── Fallback: individual md.get_historicals calls ────────────────────
-        if not result:
-            logger.warning("Batch download returned no data — trying individual fetches")
-            for sym in self.watchlist:
-                try:
-                    df = md.get_historicals(sym, period="3mo")
-                    if not df.empty and len(df) >= 20:
-                        data = self._compute_signals(sym, df)
-                        if data:
-                            result[sym] = data
-                except Exception as e:
-                    logger.debug(f"Individual fetch failed for {sym}: {e}")
-
-        return result
+    # ── Signal computation ─────────────────────────────────────────────────────
 
     def _compute_signals(self, sym: str, df: pd.DataFrame) -> Optional[dict]:
         """Compute all quantitative signals for one symbol from OHLCV DataFrame."""
@@ -219,9 +212,9 @@ class ScannerAgent(BaseAgent):
             sma20 = close.rolling(20).mean()
             std20 = close.rolling(20).std()
             bb_up  = float((sma20 + 2 * std20).iloc[-1])
-            bb_low = float((sma20 - 2 * std20).iloc[-1])
-            bw = bb_up - bb_low
-            bb_pos = (price - bb_low) / bw if bw > 0 else 0.5
+            bb_low_val = float((sma20 - 2 * std20).iloc[-1])
+            bw = bb_up - bb_low_val
+            bb_pos = (price - bb_low_val) / bw if bw > 0 else 0.5
 
             # ═══════════════════════════════════════════════════════════════
             # BULL SCORING (0-12 points) — how good a CALL setup is this?

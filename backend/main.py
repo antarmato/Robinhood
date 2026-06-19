@@ -101,6 +101,25 @@ async def root():
 async def health():
     return {"status": "ok"}
 
+@app.get("/api/debug/yfinance")
+async def debug_yfinance():
+    """Test yfinance connectivity. Call this to verify data fetching works on Railway."""
+    import asyncio, yfinance as yf
+    results = {}
+    for sym in ["SPY", "AAPL", "NVDA"]:
+        try:
+            t = yf.Ticker(sym)
+            df = t.history(period="5d", interval="1d", auto_adjust=True)
+            results[sym] = {
+                "ok": not df.empty,
+                "rows": len(df),
+                "columns": list(df.columns),
+                "last_close": round(float(df["Close"].iloc[-1]), 2) if not df.empty else None,
+            }
+        except Exception as e:
+            results[sym] = {"ok": False, "error": str(e)}
+    return {"yfinance_test": results, "all_ok": all(v.get("ok") for v in results.values())}
+
 @app.get("/api/status")
 async def status():
     s = get_state()
