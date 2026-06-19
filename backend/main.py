@@ -103,33 +103,36 @@ async def health():
 
 @app.get("/api/debug/network")
 async def debug_network():
-    """Test direct HTTP connectivity from Railway — no yfinance, just requests."""
-    import asyncio, requests as req
-    from datetime import datetime, timedelta
+    """Test connectivity to Polygon.io and Yahoo Finance from Railway."""
+    import asyncio, requests as req, os
+    from datetime import date, timedelta
     loop = asyncio.get_event_loop()
 
     async def _test(name: str, url: str, params=None):
         def _fetch():
             try:
                 r = req.get(url, params=params, timeout=8,
-                            headers={"User-Agent": "Mozilla/5.0 Chrome/120"})
+                            headers={"User-Agent": "Mozilla/5.0"})
                 return {"ok": r.status_code == 200, "status": r.status_code, "bytes": len(r.content)}
             except Exception as e:
                 return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:120]}"}
         return name, await loop.run_in_executor(None, _fetch)
 
-    end_ts = int(datetime.now().timestamp())
-    start_ts = int((datetime.now() - timedelta(days=5)).timestamp())
+    api_key = os.getenv("POLYGON_API_KEY", "")
+    end   = date.today().strftime("%Y-%m-%d")
+    start = (date.today() - timedelta(days=5)).strftime("%Y-%m-%d")
 
     tests = await asyncio.gather(
-        _test("httpbin",     "https://httpbin.org/get"),
-        _test("yahoo_v8_SPY", "https://query1.finance.yahoo.com/v8/finance/chart/SPY",
-              {"period1": start_ts, "period2": end_ts, "interval": "1d"}),
-        _test("yahoo_v8_q2", "https://query2.finance.yahoo.com/v8/finance/chart/SPY",
-              {"period1": start_ts, "period2": end_ts, "interval": "1d"}),
+        _test("httpbin", "https://httpbin.org/get"),
+        _test("polygon_SPY",
+              f"https://api.polygon.io/v2/aggs/ticker/SPY/range/1/day/{start}/{end}",
+              {"adjusted": "true", "sort": "asc", "limit": 10, "apiKey": api_key or "NO_KEY"}),
+        _test("yahoo_SPY",
+              "https://query1.finance.yahoo.com/v8/finance/chart/SPY"),
     )
     result = {name: data for name, data in tests}
-    result["all_ok"] = all(v.get("ok") for v in result.values())
+    result["polygon_key_set"] = bool(api_key)
+    result["all_ok"] = result.get("polygon_SPY", {}).get("ok", False)
     return result
 
 @app.get("/api/status")

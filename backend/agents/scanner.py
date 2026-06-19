@@ -102,78 +102,27 @@ class ScannerAgent(BaseAgent):
         await self._emit("status", f"Found {len(candidates)} candidate(s): {cand_list}")
         return candidates
 
-    # ── Data fetch — direct Yahoo Finance v8 API (no yfinance/curl_cffi) ────────
+    # ── Data fetch — Polygon.io free tier ─────────────────────────────────────
 
     def _fetch_one(self, sym: str) -> Optional[dict]:
         """
-        Fetch 3 months of daily OHLCV via Yahoo Finance v8 Chart API using requests.
-        Bypasses yfinance's curl_cffi backend which is blocked on Railway's network.
+        Fetch 3 months of daily OHLCV via Polygon.io aggregates endpoint.
+        Requires POLYGON_API_KEY env var (free at polygon.io).
         Called from run_in_executor — must be synchronous.
         """
-        import requests
-        import pandas as pd
-        from datetime import datetime, timedelta
-
-        end_ts = int(datetime.now().timestamp())
-        start_ts = int((datetime.now() - timedelta(days=95)).timestamp())
-
-        headers = {
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/json,text/plain,*/*",
-            "Accept-Language": "en-US,en;q=0.9",
-        }
-        params = {"period1": start_ts, "period2": end_ts, "interval": "1d"}
-
-        last_error = "unknown"
-        for base in [
-            f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}",
-            f"https://query2.finance.yahoo.com/v8/finance/chart/{sym}",
-        ]:
-            try:
-                r = requests.get(base, params=params, headers=headers, timeout=12)
-                if r.status_code != 200:
-                    last_error = f"HTTP {r.status_code}"
-                    continue
-
-                data = r.json()
-                results = data.get("chart", {}).get("result")
-                if not results:
-                    err = data.get("chart", {}).get("error", {})
-                    last_error = f"No result: {err}"
-                    continue
-
-                timestamps = results[0].get("timestamp", [])
-                quotes = results[0].get("indicators", {}).get("quote", [{}])[0]
-                if not timestamps or not quotes.get("close"):
-                    last_error = "Empty timestamps or close"
-                    continue
-
-                df = pd.DataFrame(
-                    {
-                        "close":  quotes.get("close",  []),
-                        "open":   quotes.get("open",   []),
-                        "high":   quotes.get("high",   []),
-                        "low":    quotes.get("low",    []),
-                        "volume": quotes.get("volume", []),
-                    },
-                    index=[datetime.fromtimestamp(ts) for ts in timestamps],
-                )
-                df = df.dropna(subset=["close"])
-                if len(df) < 20:
-                    last_error = f"Only {len(df)} rows"
-                    continue
-
-                result = self._compute_signals(sym, df)
-                if result:
-                    logger.debug(f"{sym}: bull={result['bull_score']} bear={result['bear_score']} rsi={result['rsi']:.1f}")
-                return result
-
-            except Exception as e:
-                last_error = f"{type(e).__name__}: {str(e)[:80]}"
-                logger.debug(f"_fetch_one({sym}) {base}: {last_error}")
-
-        logger.error(f"_fetch_one({sym}) all attempts failed: {last_error}")
-        return Exception(last_error)  # type: ignore — returned as error signal
+        from .. import market_data as _md
+        try:
+            df = _md.get_historicals(sym, period="3mo")
+            if df.empty:
+                return Exception(f"{sym}: Polygon returned no data (check POLYGON_API_KEY)")
+            if len(df) < 20:
+                return Exception(f"{sym}: Only {len(df)} rows")
+            result = self._compute_signals(sym, df)
+            if result:
+                logger.debug(f"{sym}: bull={result['bull_score']} bear={result['bear_score']} rsi={result['rsi']:.1f}")
+            return result
+        except Exception as e:
+            return Exception(f"{type(e).__name__}: {str(e)[:80]}")
 
     # ── Signal computation ─────────────────────────────────────────────────────
 
