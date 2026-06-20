@@ -388,3 +388,32 @@ def get_pcr(symbol: str = "SPY") -> dict:
     except Exception as e:
         logger.error(f"get_pcr({symbol}): {e}")
         return neutral
+
+
+def get_hv(symbol: str) -> dict:
+    """Historical volatility proxy: HV20, HV60, HV rank (0-100), regime."""
+    import numpy as np
+    try:
+        hist = get_historicals(symbol, period="1y")
+        if hist.empty or len(hist) < 25:
+            return {"hv20": None, "hv60": None, "hv_rank": None, "regime": "unknown"}
+        lr = np.log(hist["close"] / hist["close"].shift(1))
+        hv20_series = lr.rolling(20).std() * np.sqrt(252) * 100
+        hv60_series = lr.rolling(60).std() * np.sqrt(252) * 100
+        curr20 = float(hv20_series.iloc[-1])
+        curr60_raw = float(hv60_series.iloc[-1])
+        curr60 = curr60_raw if not np.isnan(curr60_raw) else curr20
+        valid = hv20_series.dropna()
+        lo, hi = float(valid.min()), float(valid.max())
+        rank = (curr20 - lo) / (hi - lo) * 100 if hi > lo else 50.0
+        regime = "high" if rank > 65 else "normal" if rank > 35 else "low"
+        return {
+            "hv20":    round(curr20, 1),
+            "hv60":    round(curr60, 1),
+            "hv_rank": round(rank, 1),
+            "regime":  regime,
+        }
+    except Exception as e:
+        logger.warning(f"get_hv({symbol}): {e}")
+        return {"hv20": None, "hv60": None, "hv_rank": None, "regime": "unknown"}
+
