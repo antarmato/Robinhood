@@ -199,72 +199,149 @@ def get_fundamentals(symbol: str) -> dict:
 
 # ── Options ───────────────────────────────────────────────────────────────────
 
+def _yahoo_options_request(symbol: str, date_ts: int = None) -> Optional[dict]:
+    """
+    Direct request to Yahoo Finance v7 options endpoint.
+    This endpoint is different from the chart API that returns 429 on cloud IPs.
+    """
+    url = f"https://query1.finance.yahoo.com/v7/finance/options/{symbol}"
+    params = {}
+    if date_ts:
+        params["date"] = date_ts
+    headers = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+    }
+    try:
+        r = requests.get(url, params=params, headers=headers, timeout=12)
+        if r.status_code != 200:
+            logger.warning(f"Yahoo options {symbol}: HTTP {r.status_code}")
+            return None
+        data = r.json()
+        result = data.get("optionChain", {}).get("result", [])
+        return result[0] if result else None
+    except Exception as e:
+        logger.error(f"Yahoo options request {symbol}: {e}")
+        return None
+
+
 def get_options_expiration_dates(symbol: str) -> list[str]:
     """
-    Get available option expiration dates from Polygon options snapshot.
-    Returns sorted list of 'YYYY-MM-DD' strings.
+    Get available option expiration dates.
+    Primary: Yahoo Finance v7 options endpoint (direct requests, not yfinance).
+    Fallback: Polygon options snapshot (requires paid tier).
     """
-    # Fetch a broad snapshot to collect unique expiration dates
-    data = _get(f"/v3/snapshot/options/{symbol}",
-                {"limit": 250})
-    if not data or not data.get("results"):
-        logger.warning(f"get_options_expiration_dates({symbol}): no results")
-        return []
+    # Primary: Yahoo Finance v7 options API
+    data = _yahoo_options_request(symbol)
+    if data:
+        timestamps = data.get("expirationDates", [])
+        if timestamps:
+            today = date.today().strftime("%Y-%m-%d")
+            exps = []
+            for ts in timestamps:
+                try:
+                    exp = datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
+                    if exp >= today:
+                        exps.append(exp)
+                except Exception:
+                    pass
+            if exps:
+                return sorted(exps)
 
-    exps = set()
-    for r in data["results"]:
-        d = r.get("details", {})
-        exp = d.get("expiration_date")
-        if exp:
-            exps.add(exp)
+    # Fallback: Polygon (requires options subscription)
+    data = _get(f"/v3/snapshot/options/{symbol}", {"limit": 250})
+    if data and data.get("results"):
+        exps = set()
+        for r in data["results"]:
+            exp = r.get("details", {}).get("expiration_date")
+            if exp:
+                exps.add(exp)
+        today = date.today().strftime("%Y-%m-%d")
+        result = sorted(e for e in exps if e >= today)
+        if result:
+            return result
 
-    today = date.today().strftime("%Y-%m-%d")
-    return sorted(e for e in exps if e >= today)
+    logger.warning(f"get_options_expiration_dates({symbol}): no data from any source")
+    return []
 
 
 def get_options_chain(symbol: str, expiration_date: str, option_type: str = "call") -> list[dict]:
     """
-    Options chain for a specific expiry from Polygon options snapshot.
+    Options chain for a specific expiry.
+    Primary: Yahoo Finance v7 options API (direct requests).
+    Fallback: Polygon options snapshot.
     option_type: 'call' or 'put'
     """
+    # Convert expiration_date to Unix timestamp for Yahoo
+    try:
+        exp_ts = int(datetime.strptime(expiration_date, "%Y-%m-%d").timestamp())
+    except Exception:
+        exp_ts = None
+
+    # Primary: Yahoo Finance v7
+    if exp_ts:
+        data = _yahoo_options_request(symbol, exp_ts)
+        if data:
+            options = data.get("options", [{}])
+            if options:
+                raw = options[0].get("calls" if option_type == "call" else "puts", [])
+                result = []
+                for o in raw:
+                    bid  = float(o.get("bid",  0) or 0)
+                    ask  = float(o.get("ask",  0) or 0)
+                    last = float(o.get("lastPrice", 0) or 0)
+                    iv   = float(o.get("impliedVolatility", 0) or 0)
+                    mid  = round((bid + ask) / 2, 2) if bid and ask else last
+                    result.append({
+                        "symbol":             symbol,
+                        "expiration_date":    expiration_date,
+                        "option_type":        option_type,
+                        "strike_price":       float(o.get("strike", 0)),
+                        "bid":                bid,
+                        "ask":                ask,
+                        "last":               last,
+                        "mid":                mid,
+                        "volume":             int(o.get("volume", 0) or 0),
+                        "open_interest":      int(o.get("openInterest", 0) or 0),
+                        "implied_volatility": iv,
+                        "in_the_money":       bool(o.get("inTheMoney", False)),
+                    })
+                if result:
+                    return sorted(result, key=lambda x: x["strike_price"])
+
+    # Fallback: Polygon
     contract_type = "call" if option_type == "call" else "put"
     data = _get(f"/v3/snapshot/options/{symbol}",
                 {"expiration_date": expiration_date, "contract_type": contract_type, "limit": 100})
-    if not data or not data.get("results"):
-        logger.warning(f"get_options_chain({symbol}, {expiration_date}, {option_type}): empty")
-        return []
+    if data and data.get("results"):
+        result = []
+        for r in data["results"]:
+            details = r.get("details", {})
+            quote   = r.get("last_quote", {})
+            day     = r.get("day", {})
+            bid  = float(quote.get("bid", 0) or 0)
+            ask  = float(quote.get("ask", 0) or 0)
+            last = float(day.get("close", 0) or 0)
+            iv   = float(r.get("implied_volatility", 0) or 0)
+            mid  = round((bid + ask) / 2, 2) if bid and ask else last
+            result.append({
+                "symbol":             symbol,
+                "expiration_date":    expiration_date,
+                "option_type":        option_type,
+                "strike_price":       float(details.get("strike_price", 0)),
+                "bid":                bid,
+                "ask":                ask,
+                "last":               last,
+                "mid":                mid,
+                "volume":             int(day.get("volume", 0) or 0),
+                "open_interest":      int(r.get("open_interest", 0) or 0),
+                "implied_volatility": iv,
+                "in_the_money":       False,
+            })
+        return sorted(result, key=lambda x: x["strike_price"])
 
-    result = []
-    for r in data["results"]:
-        details = r.get("details", {})
-        quote   = r.get("last_quote", {})
-        day     = r.get("day", {})
-
-        bid  = float(quote.get("bid",  0) or 0)
-        ask  = float(quote.get("ask",  0) or 0)
-        last = float(day.get("close",  0) or 0)
-        iv   = float(r.get("implied_volatility", 0) or 0)
-        oi   = int(r.get("open_interest", 0) or 0)
-        vol  = int(day.get("volume", 0) or 0)
-
-        mid = round((bid + ask) / 2, 2) if bid and ask else last
-
-        result.append({
-            "symbol":             symbol,
-            "expiration_date":    expiration_date,
-            "option_type":        option_type,
-            "strike_price":       float(details.get("strike_price", 0)),
-            "bid":                bid,
-            "ask":                ask,
-            "last":               last,
-            "mid":                mid,
-            "volume":             vol,
-            "open_interest":      oi,
-            "implied_volatility": iv,
-            "in_the_money":       False,  # Polygon doesn't return ITM flag directly
-        })
-
-    return sorted(result, key=lambda x: x["strike_price"])
+    logger.warning(f"get_options_chain({symbol}, {expiration_date}, {option_type}): no data")
+    return []
 
 
 def get_iv_rank(symbol: str) -> Optional[float]:
