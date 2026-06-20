@@ -31,7 +31,6 @@ class FundamentalAgent(BaseAgent):
     async def analyze(self, symbol: str, expiration_date: Optional[str] = None) -> dict:
         await self._emit("status", f"Checking fundamentals for {symbol}...")
 
-        # Default to 45-day window (our max DTE) when no specific expiry known yet
         if not expiration_date:
             from datetime import timedelta
             expiration_date = (date.today() + timedelta(days=45)).strftime("%Y-%m-%d")
@@ -152,4 +151,8 @@ P/E (forward):    {fund.get('forward_pe', 'N/A')}
 Revenue growth:   {fund.get('revenue_growth', 'N/A')}
 Earnings growth:  {fund.get('earnings_growth', 'N/A')}
 Beta:             {fund.get('beta', 'N/A')}
-Short rat
+Short ratio:      {fund.get('short_ratio', 'N/A')} {'⚠ HIGH — squeeze risk' if (fund.get('short_ratio') or 0) > 8 else ''}
+52W High:         {fund.get('52w_high', 'N/A')}
+52W Low:          {fund.get('52w_low', 'N/A')}
+
+Description: {fund.get('description', 'N/A')}"""

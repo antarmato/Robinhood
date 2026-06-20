@@ -32,7 +32,7 @@ class SentimentAgent(BaseAgent):
 
         # Gather all context (these are fast yfinance calls)
         spy_ctx   = self._get_macro_context()
-        pcr       = self._compute_pcr(symbol, expiration_date) if expiration_date else {}
+        pcr       = self._compute_pcr(symbol, expiration_date)
         vix       = md.get_vix()
         sectors   = md.get_sector_etf_performance()
         context   = self._build_context(symbol, direction, spy_ctx, pcr, vix, sectors)
@@ -166,4 +166,4 @@ Put/Call Ratio (Vol): {pcr.get('pcr_vol', 'N/A')}
 Call OI:  {pcr.get('call_oi', 0):,}  |  Put OI:  {pcr.get('put_oi', 0):,}
 Call Vol: {pcr.get('call_vol', 0):,}  |  Put Vol: {pcr.get('put_vol', 0):,}
 Avg Call IV: {pcr.get('avg_call_iv', 0):.1%}  |  Avg Put IV: {pcr.get('avg_put_iv', 0):.1%}
-IV Skew (Put IV - Call IV): {s
+IV Skew (Put IV - Call IV): {skew_val:.4f}  → {skew_desc}"""
