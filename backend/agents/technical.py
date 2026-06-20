@@ -48,8 +48,9 @@ class TechnicalAgent(BaseAgent):
         # Intraday hourly context (recent 5 days)
         hourly = md.get_intraday(symbol, period="5d", interval="1h")
         intraday_text = self._summarize_intraday(hourly)
+        hv_data = md.get_hv(symbol)
 
-        text = self._format_report(symbol, df, indicators, intraday_text)
+        text = self._format_report(symbol, df, indicators, intraday_text, hv_data=hv_data)
 
         option_side = "bullish call" if direction == "bullish" else "bearish put"
         system = f"""You are a technical analysis expert evaluating whether the chart supports a {option_side} on {symbol}.
@@ -203,6 +204,18 @@ Respond ONLY with JSON:
         except Exception:
             return 20.0
 
+    def _hv_line(self, hv: dict | None) -> str:
+        if not hv or hv.get("hv20") is None:
+            return "HV data unavailable"
+        note = {
+            "high":   "IV likely elevated — consider debit spread",
+            "normal": "IV normal — reasonable premiums",
+            "low":    "IV low — cheap to buy premium"
+        }.get(hv.get("regime", ""), "")
+        rank = hv.get("hv_rank") or 0
+        return (f"HV20={hv.get('hv20')}%  HV60={hv.get('hv60')}%  "
+                f"HV Rank={rank:.0f}/100 ({hv.get('regime','?').upper()}) — {note}")
+
     def _summarize_intraday(self, hourly: pd.DataFrame) -> str:
         if hourly.empty or len(hourly) < 6:
             return "Intraday data unavailable."
@@ -236,7 +249,7 @@ Respond ONLY with JSON:
             logger.debug(f"Intraday summary error: {e}")
             return "Intraday data unavailable."
 
-    def _format_report(self, symbol: str, df: pd.DataFrame, i: dict, intraday_text: str) -> str:
+    def _format_report(self, symbol: str, df: pd.DataFrame, i: dict, intraday_text: str, hv_data: dict | None = None) -> str:
         p = i["price"]
         macd_cross = ("↑ Bullish cross" if i["macd_hist"] > 0 > i["macd_hist2"]
                       else "↓ Bearish cross" if i["macd_hist"] < 0 < i["macd_hist2"]
@@ -278,5 +291,8 @@ KEY LEVELS:
 
 INTRADAY (hourly):
   {intraday_text}
+
+HISTORICAL VOLATILITY:
+  {self._hv_line(hv_data)}
 
 Last 10 closes: {', '.join(f'${v:.2f}' for v in df['close'].tail(10).tolist())}"""
