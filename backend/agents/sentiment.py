@@ -37,41 +37,54 @@ class SentimentAgent(BaseAgent):
         sectors   = md.get_sector_etf_performance()
         context   = self._build_context(symbol, direction, spy_ctx, pcr, vix, sectors)
 
-        system = f"""You are a market sentiment analyst evaluating whether macro conditions and options flow support a {direction} trade on {symbol}.
+        system = f"""You are a market sentiment analyst. Does macro/sentiment SUPPORT the proposed {direction} trade on {symbol}?
 
-VIX context:
-- VIX < 15: low fear, good for buying calls (market complacent, trending up)
-- VIX 15-20: normal, neutral for either direction
-- VIX 20-30: elevated fear, good for buying puts OR contrarian calls (if oversold)
-- VIX > 30: high fear, puts are expensive, better for OTM calls as mean-reversion plays
+VIX calibration (be accurate — VIX 20 is NORMAL, not bad):
+- VIX < 15: "low" — very calm, great for buying premium
+- VIX 15-22: "normal" — healthy market, neither helps nor hurts
+- VIX 22-30: "elevated" — more volatile, prefer spreads over naked options
+- VIX > 30: "extreme" — high fear, options very expensive
 
-PCR interpretation (OI-based):
-- PCR < 0.6: very bullish sentiment (market positioned long)
-- PCR 0.6-0.8: mildly bullish
-- PCR 0.8-1.1: neutral
-- PCR 1.1-1.5: bearish/hedging
-- PCR > 1.5: extreme fear or crowded put positioning (often contrarian bullish)
+IMPORTANT SCORING RULES:
+- If VIX is "normal" (15-22) and sector is aligned: score should be 5-7
+- VIX alone should NOT drop score below 5 unless VIX > 30
+- If PCR data is missing/N/A: IGNORE IT entirely — score based on VIX + sector + breadth only
+- Breadth "unavailable": treat as neutral, do not penalize
 
-Does the overall sentiment SUPPORT or OPPOSE the {direction} trade on {symbol}?
+Score 7-9: strong macro support for the direction
+Score 5-6: neutral — no strong tailwind or headwind
+Score 3-4: weak headwinds (mild misalignment)
+Score 1-2: strong macro headwinds (VIX > 30, sector crashing opposite direction)
 
 Respond ONLY with JSON:
 {{
-  "score": <1-10 where 10=strongly supports the {direction} direction>,
-  "pcr": <pcr_oi value or null>,
+  "score": <1-10>,
   "skew": "bullish" | "neutral" | "bearish",
-  "vix_regime": "low_fear" | "normal" | "elevated" | "high_fear",
-  "vix_impact": "bullish_for_calls" | "neutral" | "bullish_for_puts" | "expensive_options",
+  "vix_regime": "low" | "normal" | "elevated" | "extreme",
   "macro_sentiment": "risk_on" | "neutral" | "risk_off",
   "sector_aligned": true | false,
-  "summary": "<2-3 sentences: VIX context, PCR signal, sector backdrop, and net impact on the proposed {direction} trade>"
+  "summary": "<2 sentences: key macro factors and net verdict on {direction} trade>"
 }}"""
 
         raw = await self._call(system, [{"role": "user", "content": context}], max_tokens=400, stream=False)
         result = self._parse_json(raw)
         result.setdefault("score", 5)
         result.setdefault("summary", "Sentiment analysis complete.")
-        result.setdefault("pcr", None)
         result.setdefault("skew", "neutral")
+        result.setdefault("macro_sentiment", "neutral")
+        result.setdefault("sector_aligned", True)
+
+        # Force accurate VIX data — do not trust LLM to infer these from text
+        result["vix_level"]  = round(float(vix), 1)
+        result["vix_regime"] = (
+            "extreme"  if vix > 30 else
+            "elevated" if vix > 22 else
+            "normal"   if vix > 15 else
+            "low"
+        )
+        # Clamp score: VIX 15-22 should never cause score < 4
+        if result["vix_regime"] in ("normal", "low") and result["score"] < 4:
+            result["score"] = 4
         return result
 
     # ── Data gathering ─────────────────────────────────────────────────────────
@@ -79,14 +92,21 @@ Respond ONLY with JSON:
     def _get_macro_context(self) -> dict:
         spy = md.get_quote("SPY")
         qqq = md.get_quote("QQQ")
-        iwm = md.get_quote("IWM")  # Small caps for breadth
+        iwm = md.get_quote("IWM")
+        # If prices are 0, data failed — mark explicitly
+        spy_ok = spy.get("price", 0) > 0
+        qqq_ok = qqq.get("price", 0) > 0
+        iwm_ok = iwm.get("price", 0) > 0
         return {
-            "spy_price":  spy.get("price", 0),
-            "spy_change": spy.get("pct_change", 0),
-            "qqq_price":  qqq.get("price", 0),
-            "qqq_change": qqq.get("pct_change", 0),
-            "iwm_price":  iwm.get("price", 0),
-            "iwm_change": iwm.get("pct_change", 0),
+            "spy_price":    spy.get("price", 0),
+            "spy_change":   spy.get("pct_change", 0),
+            "qqq_price":    qqq.get("price", 0),
+            "qqq_change":   qqq.get("pct_change", 0),
+            "iwm_price":    iwm.get("price", 0),
+            "iwm_change":   iwm.get("pct_change", 0),
+            "data_ok":      spy_ok and qqq_ok,
+            "green_count":  sum([spy.get("pct_change",0)>0, qqq.get("pct_change",0)>0,
+                                 iwm.get("pct_change",0)>0]) if spy_ok else None,
         }
 
     def _compute_pcr(self, symbol: str, expiration_date: str) -> dict:
@@ -132,10 +152,12 @@ Respond ONLY with JSON:
         vix: float,
         sectors: dict,
     ) -> str:
-        # Macro breadth: count how many indexes are green today
-        changes = [macro.get("spy_change", 0), macro.get("qqq_change", 0), macro.get("iwm_change", 0)]
-        green_count = sum(1 for c in changes if c > 0)
-        breadth_str = f"{green_count}/3 major indexes green today"
+        # Macro breadth
+        if macro.get("data_ok") and macro.get("green_count") is not None:
+            green_count = macro["green_count"]
+            breadth_str = f"{green_count}/3 major indexes green today"
+        else:
+            breadth_str = "breadth data unavailable (ignore for scoring)"
 
         # Sector context (top 3 movers)
         sector_lines = ""

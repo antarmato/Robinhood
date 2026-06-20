@@ -70,6 +70,28 @@ class ScannerAgent(BaseAgent):
                 f"First error: {next(iter(errors.values()), 'unknown')}")
             return []
 
+        # ── Relative Strength vs group ──────────────────────────────
+        # Stocks outperforming peers = better call candidates; underperforming = better puts
+        if len(scored) >= 3:
+            ret_vals = sorted(d['ret_20d'] for d in scored.values())
+            median_ret = ret_vals[len(ret_vals) // 2]
+            for d in scored.values():
+                rs = round(d['ret_20d'] - median_ret, 2)
+                d['rs_vs_group'] = rs
+                if rs > 3:
+                    d['bull_score'] = min(16, d['bull_score'] + 2)
+                elif rs < -3:
+                    d['bear_score'] = min(16, d['bear_score'] + 2)
+                elif rs > 1:
+                    d['bull_score'] = min(16, d['bull_score'] + 1)
+                elif rs < -1:
+                    d['bear_score'] = min(16, d['bear_score'] + 1)
+                d['best_score']     = max(d['bull_score'], d['bear_score'])
+                d['best_direction'] = 'bullish' if d['bull_score'] >= d['bear_score'] else 'bearish'
+        else:
+            for d in scored.values():
+                d['rs_vs_group'] = 0.0
+
         await self._emit("status", f"Scored {len(scored)}/{len(self.watchlist)} symbols. Selecting best setups...")
         summary = self._build_summary(scored)
 
@@ -84,6 +106,8 @@ class ScannerAgent(BaseAgent):
         if not isinstance(candidates, list) or len(candidates) == 0:
             await self._emit("status", "LLM returned no candidates — using auto-select fallback.")
             candidates = self._auto_select(scored)
+
+        candidates = self._ensure_diversity(candidates, scored)
 
         # Enrich with computed data
         for c in candidates:
@@ -296,7 +320,7 @@ class ScannerAgent(BaseAgent):
             "WATCHLIST SIGNAL SCORES — sorted by best setup quality",
             "",
             f"{'Sym':6} | {'Price':>8} | {'1d%':>6} | {'Vol':>5} | {'RSI':>5} | "
-            f"{'5d%':>6} | {'10d%':>6} | {'52wH%':>6} | {'Trend':>5} | "
+            f"{'5d%':>6} | {'RS':>6} | {'52wH%':>6} | {'Trend':>5} | "
             f"{'MACD':>5} | {'SQZ':>3} | {'Bull':>5} | {'Bear':>5}",
             "-" * 100,
         ]
@@ -312,29 +336,29 @@ class ScannerAgent(BaseAgent):
             lines.append(
                 f"{d['symbol']:6} | ${d['price']:7.2f} | {d['pct_change']:+5.1f}% | "
                 f"{d['volume_ratio']:4.1f}x | {d['rsi']:5.1f} | "
-                f"{d['ret_5d']:+5.1f}% | {d['ret_10d']:+5.1f}% | "
+                f"{d['ret_5d']:+5.1f}% | {d.get('rs_vs_group',0):+5.1f}% | "
                 f"{d['pct_from_high']:+5.1f}% | {trend:>5} | {macd_s:>5} | "
                 f"{sqz} | {d['bull_score']:>5} | {d['bear_score']:>5}"
             )
         lines.append("")
-        lines.append("Bull/Bear: 0-14 pts. SQZ=BB squeeze (breakout setup). TURN=fresh MACD cross.")
+        lines.append("Bull/Bear: 0-16 pts (includes RS bonus). RS=20d return vs group median. SQZ=BB squeeze. TURN=fresh MACD cross.")
         return "\n".join(lines)
 
     def _system_prompt(self) -> str:
         return """You are a professional options trader selecting the best 3-5 directional trade candidates.
 
-Pre-scored data: Bull/Bear pts (0-14). SQZ = Bollinger Band squeeze (potential breakout).
+Pre-scored data: Bull/Bear pts (0-16 including RS bonus). RS = 20-day return vs group median.
 
 SELECTION RULES:
 1. Choose CALLS when BullPts >= 4 and BullPts > BearPts
 2. Choose PUTS when BearPts >= 4 and BearPts > BullPts
-3. Fresh MACD crossovers (+TURN/-TURN) = high conviction — prioritize
-4. Volume > 1.3x adds directional conviction
-5. RSI 40-72 = good call entry. RSI 28-58 = good put entry
-6. SQZ = volatility compression before potential expansion — great option setup if direction is clear
-7. Near 52w high (52wH% -8% to 0%) = strong bullish momentum continuation
-8. ALWAYS return at least 3 candidates — rank best available even in quiet markets
-9. OK to pick same symbol for both directions if both scores are high
+3. RS > +3%: stock is outperforming peers — favor calls. RS < -3%: underperforming — favor puts
+4. Fresh MACD crossovers (+TURN/-TURN) = high conviction — prioritize
+5. Volume > 1.3x adds directional conviction
+6. RSI 40-72 = good call entry. RSI 28-58 = good put entry
+7. SQZ = volatility compression — great if direction confirmed by RS and trend
+8. ALWAYS return at least 3 candidates — include BOTH directions if scores support it
+9. Do NOT return all bullish if some stocks have strong bear scores
 
 Return JSON array of 3-5 candidates:
 [
@@ -349,6 +373,36 @@ Return JSON array of 3-5 candidates:
 ]
 
 Only valid JSON. No text outside the array."""
+
+    def _ensure_diversity(self, candidates: list, scored: dict) -> list:
+        """Replace weakest same-direction pick with best opposite if all one direction."""
+        if len(candidates) < 2:
+            return candidates
+        dirs = [c.get("direction") for c in candidates]
+        if "bullish" in dirs and "bearish" in dirs:
+            return candidates  # already diverse
+
+        same_dir = dirs[0]
+        opposite = "bearish" if same_dir == "bullish" else "bullish"
+        opp_score_key = "bear_score" if opposite == "bearish" else "bull_score"
+
+        existing = {c["symbol"] for c in candidates}
+        best_opp = max(
+            ((sym, d) for sym, d in scored.items() if d.get(opp_score_key, 0) >= 3),
+            key=lambda x: x[1].get(opp_score_key, 0),
+            default=None,
+        )
+        if best_opp:
+            sym, d = best_opp
+            candidates[-1] = {
+                "symbol":         sym,
+                "direction":      opposite,
+                "option_type":    "put" if opposite == "bearish" else "call",
+                "signal_strength": d.get(opp_score_key, 0),
+                "key_reason":     f"Diversity: best {opposite} (score={d.get(opp_score_key,0)}, RS={d.get('rs_vs_group',0):+.1f}%)",
+                "priority":       len(candidates),
+            }
+        return candidates
 
     def _auto_select(self, scored: dict) -> list[dict]:
         """Fallback: pick top 3 by score when LLM fails."""

@@ -107,16 +107,23 @@ Recommended strategy: {recommended_strategy.upper()}
 
 NOTE: Options chain data (OI, bid-ask, live IV) is NOT available here — it is fetched at Cowork execution time. DO NOT flag absence of options data as a concern. DO NOT penalise for missing option chain information.
 
-SCORING GUIDE:
+SCORING FORMULA:
 weighted_score = (
-  tech_score * 2.0 +
-  fund_score * 1.5 +
-  sent_score * 1.5 +
-  risk_score * 1.5 +
-  advocate_penalty         # = objection_strength * 1.0 (negative weight)
+  tech_score    * 2.5    +   # 25 max
+  fund_score    * 1.5    +   # 15 max
+  sent_score    * 1.5    +   # 15 max
+  risk_score    * 1.5    +   # 15 max
+  advocate_adj             # see below
 )
-Typical range: 20-80. Decision = "trade" only if score >= {threshold} AND confidence >= {PASS_THRESHOLD_CONF}.
-Fatal flaw → automatic "pass" regardless of score.
+advocate_adj = max(-15, -(objection_strength * 1.5))  # capped at -15 so advocate can't single-handedly kill a 65+ score
+Typical range: 0-70+. Threshold: {threshold}.
+Decision = "trade" only if weighted_score >= {threshold} AND confidence >= {PASS_THRESHOLD_CONF}.
+Fatal flaw → automatic "pass".
+
+CALIBRATION NOTES:
+- Sentiment score 5/10 (neutral VIX, no strong macro signal) is EXPECTED and should not be penalized heavily
+- Technical 5/10 in a ranging market is neutral — wait for ADX to rise or BB squeeze
+- Advocate objection_strength 4-5 = normal healthy skepticism, not a trade killer
 """
 
         system = f"""You are the final decision-maker for a multi-agent options trading system.
