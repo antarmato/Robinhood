@@ -23,7 +23,7 @@ from .. import market_data as md
 logger = logging.getLogger(__name__)
 
 PASS_THRESHOLD_MARKET     = 50
-PASS_THRESHOLD_AFTERHOURS = 45
+PASS_THRESHOLD_AFTERHOURS = 40
 PASS_THRESHOLD_CONF       = 6
 
 
@@ -218,6 +218,7 @@ If decision is "pass": set trade_proposal to null and fill pass_reason."""
 
         tp = result.get("trade_proposal") or {}
         await self._emit("decision", {
+            "symbol":         symbol,
             "decision":       result["decision"],
             "weighted_score": result.get("weighted_score"),
             "confidence":     result.get("confidence"),
