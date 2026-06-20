@@ -35,7 +35,9 @@ class Orchestrator:
         watchlist_raw = os.getenv("WATCHLIST", "SPY,QQQ,NVDA,AAPL,MSFT,TSLA,AMZN,META,GOOGL")
         self.watchlist        = [s.strip() for s in watchlist_raw.split(",")]
         self.max_loss         = float(os.getenv("MAX_LOSS_PER_TRADE", "200"))
-        self.scan_interval    = int(os.getenv("SCAN_INTERVAL_MINUTES", "30")) * 60
+        self._scan_interval_market = int(os.getenv("SCAN_INTERVAL_MINUTES", "30")) * 60
+        self._scan_interval_after  = int(os.getenv("SCAN_INTERVAL_AFTER_HOURS_MINUTES", "120")) * 60
+        self.scan_interval = self._scan_interval_market  # updated dynamically
         self.monitor_interval = int(os.getenv("MONITOR_INTERVAL_MINUTES", "15")) * 60
         self.max_dte          = int(os.getenv("MAX_DTE", "45"))
         self.min_dte          = int(os.getenv("MIN_DTE", "7"))
@@ -85,16 +87,18 @@ class Orchestrator:
                     await self._run_monitor()
                     last_monitor = now
 
+                # Use shorter interval during market hours, longer overnight
+                self.scan_interval = (
+                    self._scan_interval_market if self._is_market_hours()
+                    else self._scan_interval_after
+                )
+
                 if now - last_scan >= self.scan_interval:
-                    if self._is_market_hours():
-                        if not self.state.has_pending_proposal():
-                            await self._run_scan_cycle()
-                        else:
-                            await self._emit("system", "info",
-                                {"message": "Pending proposal awaiting execution — skipping scan."})
+                    if not self.state.has_pending_proposal():
+                        await self._run_scan_cycle()
                     else:
                         await self._emit("system", "info",
-                            {"message": "Market closed — standing by."})
+                            {"message": "Pending proposal awaiting execution — skipping scan."})
                     last_scan = now
 
                 await asyncio.sleep(30)
@@ -111,8 +115,10 @@ class Orchestrator:
     async def _run_scan_cycle(self):
         self.state.increment_cycle()
         cycle = self.state.cycle_count
-        await self._emit("system", "cycle_start", {"cycle": cycle})
-        logger.info(f"Starting cycle {cycle}")
+        market_open = self._is_market_hours()
+        session_label = "LIVE" if market_open else "PRE-MARKET RESEARCH"
+        await self._emit("system", "cycle_start", {"cycle": cycle, "session": session_label})
+        logger.info(f"Starting cycle {cycle} [{session_label}]")
 
         scanner    = ScannerAgent(self.claude, self.watchlist, self._make_broadcast())
         candidates = await scanner.scan()
