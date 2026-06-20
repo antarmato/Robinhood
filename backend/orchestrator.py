@@ -232,7 +232,7 @@ class Orchestrator:
             return
 
         proposal["proposal_id"]  = str(uuid.uuid4())
-        proposal["proposed_at"]  = datetime.utcnow().isoformat()
+        proposal["proposed_at"]  = datetime.now().isoformat()
         proposal["status"]       = "pending"
         proposal["current_price"] = analysis.get("price", 0)
         proposal["analysis_summary"] = {
@@ -297,7 +297,7 @@ class Orchestrator:
 
     @staticmethod
     def _is_market_hours() -> bool:
-        now = datetime.utcnow()
+        now = datetime.now()
         if now.weekday() >= 5:
             return False
         return dtime(13, 30) <= now.time() <= dtime(20, 0)

@@ -53,7 +53,7 @@ async def _broadcast(agent: str, event_type: str, data):
     import datetime
     await manager.broadcast({
         "agent": agent, "type": event_type, "data": data,
-        "timestamp": datetime.datetime.utcnow().isoformat(),
+        "timestamp": datetime.datetime.now().isoformat(),
     })
 
 orchestrator = get_orchestrator()
@@ -182,7 +182,7 @@ async def resolve_proposal_get(proposal_id: str, action: str, api_key: str = "",
     order_info = {}
     if order_id:
         order_info = {"order_id": order_id, "ref_id": ref_id,
-                      "placed_at": __import__("datetime").datetime.utcnow().isoformat()}
+                      "placed_at": __import__("datetime").datetime.now().isoformat()}
     get_state().resolve_proposal(proposal_id, action, order_info)
     await _broadcast("system", "proposal_resolved", {"proposal_id": proposal_id, "action": action})
     return {"status": "ok", "proposal_id": proposal_id, "action": action}
@@ -293,7 +293,7 @@ async def websocket_endpoint(ws: WebSocket):
             "pending_proposals": s.get_pending_proposals(),
             "recent_events":    s.get_full_state().get("event_log", [])[-20:],
         },
-        "timestamp": datetime.datetime.utcnow().isoformat(),
+        "timestamp": datetime.datetime.now().isoformat(),
     })
     try:
         while True:

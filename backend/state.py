@@ -67,11 +67,11 @@ class StateManager:
 
     def increment_cycle(self):
         self._s["cycle_count"] += 1
-        self._s["last_scan"] = datetime.utcnow().isoformat()
+        self._s["last_scan"] = datetime.now().isoformat()
         self.save()
 
     def update_last_monitor(self):
-        self._s["last_monitor"] = datetime.utcnow().isoformat()
+        self._s["last_monitor"] = datetime.now().isoformat()
         self.save()
 
     def get_full_state(self) -> dict:
@@ -86,7 +86,7 @@ class StateManager:
     def add_proposal(self, proposal: dict):
         proposal.setdefault("proposal_id", str(uuid.uuid4()))
         proposal["status"] = "pending"
-        proposal["proposed_at"] = datetime.utcnow().isoformat()
+        proposal["proposed_at"] = datetime.now().isoformat()
         self._s["proposals"].append(proposal)
         if len(self._s["proposals"]) > 50:
             self._s["proposals"] = self._s["proposals"][-50:]
@@ -103,7 +103,7 @@ class StateManager:
         for p in self._s["proposals"]:
             if p.get("proposal_id") == proposal_id:
                 p["status"] = action  # "executed" | "rejected"
-                p["resolved_at"] = datetime.utcnow().isoformat()
+                p["resolved_at"] = datetime.now().isoformat()
                 if order_info:
                     p["order_info"] = order_info
                 break
@@ -116,7 +116,7 @@ class StateManager:
         return self._s["active_trades"]
 
     def add_active_trade(self, trade: dict):
-        trade["opened_at"] = datetime.utcnow().isoformat()
+        trade["opened_at"] = datetime.now().isoformat()
         self._s["active_trades"].append(trade)
         self.save()
 
@@ -134,7 +134,7 @@ class StateManager:
         return self._s["exit_signals"]
 
     def add_exit_signal(self, signal: dict):
-        signal["created_at"] = datetime.utcnow().isoformat()
+        signal["created_at"] = datetime.now().isoformat()
         signal["status"] = "pending"
         self._s["exit_signals"].append(signal)
         self.save()
@@ -143,7 +143,7 @@ class StateManager:
         for s in self._s["exit_signals"]:
             if s.get("trade_id") == trade_id:
                 s["status"] = "resolved"
-                s["resolved_at"] = datetime.utcnow().isoformat()
+                s["resolved_at"] = datetime.now().isoformat()
         self.save()
 
     def get_pending_exit_signals(self) -> list[dict]:
@@ -156,7 +156,7 @@ class StateManager:
             "id":        str(uuid.uuid4())[:8],
             "type":      event_type,
             "data":      data,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now().isoformat(),
         })
         if len(self._s["event_log"]) > 200:
             self._s["event_log"] = self._s["event_log"][-200:]
