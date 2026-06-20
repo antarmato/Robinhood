@@ -47,39 +47,45 @@ class DevilsAdvocateAgent(BaseAgent):
             earn_date = fundamental.get("earnings_date", "upcoming")
             pre_fatal = f"Earnings confirmed {earn_date} — binary gap risk before we can exit"
 
-        context = f"""Proposed trade to stress-test:
-{symbol} — {direction.upper()} thesis | Budget: {risk.get('contracts', 1)} contract(s), max ${risk.get('max_premium', 0):.2f}/share premium
+        vix_regime = sentiment.get("vix_regime", "normal")
+        vix_level  = sentiment.get("vix_level", 20)
 
-Bull case (what supporters say):
+        context = f"""Proposed trade to stress-test:
+{symbol} — {direction.upper()} | Budget: {risk.get('contracts', 1)} contract(s), max ${risk.get('max_premium', 0):.2f}/share
+
+NOTE: Options chain data (OI, volume, IV, bid-ask spreads) is NOT available at this stage — it is fetched at execution time. Do NOT raise options liquidity or premium cost as objections here.
+
+Bull case:
 - Technical ({technical.get('score', 5)}/10): {technical.get('trend', '?')} | {technical.get('summary', '')}
 - Fundamental ({fundamental.get('score', 5)}/10): {fundamental.get('summary', '')}
-- Sentiment ({sentiment.get('score', 5)}/10): VIX={sentiment.get('vix_regime', 'N/A')} | {sentiment.get('summary', '')}
+- Sentiment ({sentiment.get('score', 5)}/10): VIX={vix_regime} ({vix_level}) | {sentiment.get('summary', '')}
 - Earnings in 45-day window: {fundamental.get('earnings_before_expiry', False)}
 
-Your job: find the 2-4 strongest SPECIFIC reasons this trade could fail.
-Use actual numbers from the data. Be honest — if the setup is solid, say so (objection_strength 1-3).
+Your job: find 2-4 SPECIFIC, data-backed reasons this DIRECTIONAL trade could fail:
+  * Trend or momentum concerns (use the technical numbers)
+  * Poor timing (RSI extreme, trend exhaustion, price at resistance)
+  * Macro or sector headwinds
+  * Calendar risks (earnings, Fed, macro events)
+  * VIX={vix_regime}: {'elevated volatility means the stock can chop violently' if vix_regime in ('elevated', 'extreme') else 'normal/low VIX'}
 
-IMPORTANT — fatal_flaw definition (must meet at least one to qualify):
-- Confirmed earnings within the next 45 days (binary gap risk, trade is disqualified)
-- RSI > 80 on a bullish call play (severely overbought, mean-reversion risk)
-- RSI < 20 on a bearish put play (severely oversold, mean-reversion risk)
-For anything else: use objection_strength (1-9) — NOT a fatal flaw."""
+Be calibrated — if the setup is genuinely solid, objection_strength 1-3 is correct.
 
-        system = """You are a professional risk manager stress-testing trade theses.
-You are honest — if the setup is clean, give a LOW objection_strength (1-3).
-You are NOT trying to kill every trade. Many trades ARE worth taking.
+FATAL FLAW (only these 3 qualify — everything else is objection_strength):
+1. Confirmed earnings within the next 45 days
+2. RSI > 80 on a bullish call play
+3. RSI < 20 on a bearish put play"""
 
-fatal_flaw: ONLY set this (non-null) for the criteria listed. Otherwise null.
+        system = """You are a risk manager stress-testing directional option trade theses. Be calibrated.
+Strong setups deserve objection_strength 1-3. Only cry wolf on real problems.
+Do NOT mention options data (OI, volume, IV, bid-ask) — not your concern at this stage.
+Focus on: directional timing, macro headwinds, momentum quality, calendar risk.
 
 Respond ONLY with JSON:
 {
-  "objection_strength": <1-9, where 9=very strong case against, 1-3=minor concerns only>,
-  "key_objections": [
-    "<specific objection with numbers>",
-    "<specific objection with numbers>"
-  ],
+  "objection_strength": <1-9>,
+  "key_objections": ["<specific objection with data>", "<specific objection with data>"],
   "fatal_flaw": null,
-  "summary": "<2 sentences — specific risks and net verdict on this trade>"
+  "summary": "<2 sentences: key risks and net verdict>"
 }"""
 
         raw = await self._call(system, [{"role": "user", "content": context}], max_tokens=500)

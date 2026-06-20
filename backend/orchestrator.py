@@ -32,7 +32,7 @@ class Orchestrator:
         self._task: asyncio.Task | None = None
         self._claude: anthropic.AsyncAnthropic | None = None
 
-        watchlist_raw = os.getenv("WATCHLIST", "SPY,QQQ,NVDA,AAPL,MSFT,TSLA,AMZN,META,GOOGL")
+        watchlist_raw = os.getenv("WATCHLIST", "SPY,QQQ,NVDA,AAPL,MSFT,TSLA,AMZN,META,GOOGL,AMD,NFLX,CRM,COIN,MSTR,PLTR")
         self.watchlist        = [s.strip() for s in watchlist_raw.split(",")]
         self.max_loss         = float(os.getenv("MAX_LOSS_PER_TRADE", "200"))
         self._scan_interval_market = int(os.getenv("SCAN_INTERVAL_MINUTES", "30")) * 60
@@ -135,7 +135,7 @@ class Orchestrator:
         best_score  = -1
         rejection_log = []
 
-        for i, candidate in enumerate(candidates[:3]):
+        for i, candidate in enumerate(candidates[:5]):
             symbol    = candidate.get("symbol", "")
             direction = candidate.get("direction", "bullish")
             price     = candidate.get("current_price", 0)
@@ -180,6 +180,7 @@ class Orchestrator:
 
     async def _analyze_candidate(self, symbol: str, direction: str, price: float) -> dict | None:
         try:
+            market_open = self._is_market_hours()
             # Step 1: Technical, Fundamental, Sentiment — run in parallel (no options data needed)
             tech_agent  = TechnicalAgent(self.claude, self._make_broadcast())
             fund_agent  = FundamentalAgent(self.claude, self._make_broadcast())
@@ -205,7 +206,8 @@ class Orchestrator:
             judge_agent = JudgeAgent(self.claude, self._make_broadcast())
             judge = await judge_agent.decide(
                 symbol, direction, technical, fundamental, sentiment,
-                risk, advocate, self.state.cycle_count
+                risk, advocate, self.state.cycle_count,
+                market_open=market_open,
             )
 
             return {

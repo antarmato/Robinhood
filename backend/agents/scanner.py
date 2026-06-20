@@ -205,8 +205,18 @@ class ScannerAgent(BaseAgent):
             bw = bb_up - bb_low_val
             bb_pos = (price - bb_low_val) / bw if bw > 0 else 0.5
 
+            # ── BB Squeeze detection ─────────────────────────────────────
+            bb_bandwidth = bb_up - bb_low_val
+            bb_bw_pct = bb_bandwidth / float(sma20.iloc[-1]) if float(sma20.iloc[-1]) > 0 else 0.05
+            try:
+                bw_hist = (close.rolling(20).std() * 4 / close.rolling(20).mean()).tail(60).dropna()
+                bw_avg  = float(bw_hist.mean()) if len(bw_hist) > 5 else bb_bw_pct * 2
+                squeeze = bb_bw_pct < bw_avg * 0.75
+            except Exception:
+                squeeze = False
+
             # ═══════════════════════════════════════════════════════════════
-            # BULL SCORING (0-12 points) — how good a CALL setup is this?
+            # BULL SCORING (0-14 points) — how good a CALL setup is this?
             # ═══════════════════════════════════════════════════════════════
             bull = 0
             if above_ema20 and above_ema50:   bull += 3
@@ -222,9 +232,10 @@ class ScannerAgent(BaseAgent):
             elif ret_5d > 0.3:                 bull += 1
             if near_52w_high:                  bull += 1
             if 0.2 <= bb_pos <= 0.55 and above_ema20: bull += 1
+            if squeeze and above_ema20:        bull += 1   # squeeze breakout setup
 
             # ═══════════════════════════════════════════════════════════════
-            # BEAR SCORING (0-12 points) — how good a PUT setup is this?
+            # BEAR SCORING (0-14 points) — how good a PUT setup is this?
             # ═══════════════════════════════════════════════════════════════
             bear = 0
             if not above_ema20 and not above_ema50: bear += 3
@@ -240,6 +251,7 @@ class ScannerAgent(BaseAgent):
             elif ret_5d < -0.3:                bear += 1
             if near_52w_low:                   bear += 1
             if 0.45 <= bb_pos <= 0.8 and not above_ema20: bear += 1
+            if squeeze and not above_ema20:    bear += 1   # squeeze breakdown setup
 
             best_dir   = "bullish" if bull >= bear else "bearish"
             best_score = max(bull, bear)
@@ -265,6 +277,7 @@ class ScannerAgent(BaseAgent):
                 "macd_turning_bear": macd_turning_bear,
                 "near_52w_high": near_52w_high,
                 "near_52w_low":  near_52w_low,
+                "squeeze":       squeeze,
                 "bull_score":    bull,
                 "bear_score":    bear,
                 "best_direction": best_dir,
@@ -280,12 +293,12 @@ class ScannerAgent(BaseAgent):
         rows = sorted(data.values(), key=lambda x: x["best_score"], reverse=True)
 
         lines = [
-            "WATCHLIST SIGNAL SCORES — sorted by best setup quality (BullPts or BearPts)",
+            "WATCHLIST SIGNAL SCORES — sorted by best setup quality",
             "",
-            f"{'Sym':6} | {'Price':>8} | {'1d%':>6} | {'VolRatio':>8} | {'RSI':>5} | "
-            f"{'5d%':>6} | {'10d%':>6} | {'52wH%':>6} | {'Trend':>7} | "
-            f"{'MACD':>5} | {'BullPts':>7} | {'BearPts':>7}",
-            "-" * 96,
+            f"{'Sym':6} | {'Price':>8} | {'1d%':>6} | {'Vol':>5} | {'RSI':>5} | "
+            f"{'5d%':>6} | {'10d%':>6} | {'52wH%':>6} | {'Trend':>5} | "
+            f"{'MACD':>5} | {'SQZ':>3} | {'Bull':>5} | {'Bear':>5}",
+            "-" * 100,
         ]
         for d in rows:
             trend = ("↑↑" if d["above_ema20"] and d["above_ema50"]
@@ -295,42 +308,42 @@ class ScannerAgent(BaseAgent):
             macd_s = ("+TURN" if d["macd_turning_bull"] else
                       "-TURN" if d["macd_turning_bear"] else
                       "+" if d["macd_above_zero"] else "-")
+            sqz = "SQZ" if d.get("squeeze") else "   "
             lines.append(
                 f"{d['symbol']:6} | ${d['price']:7.2f} | {d['pct_change']:+5.1f}% | "
-                f"{d['volume_ratio']:7.1f}x | {d['rsi']:5.1f} | "
+                f"{d['volume_ratio']:4.1f}x | {d['rsi']:5.1f} | "
                 f"{d['ret_5d']:+5.1f}% | {d['ret_10d']:+5.1f}% | "
-                f"{d['pct_from_high']:+5.1f}% | {trend:>7} | {macd_s:>5} | "
-                f"{d['bull_score']:>7} | {d['bear_score']:>7}"
+                f"{d['pct_from_high']:+5.1f}% | {trend:>5} | {macd_s:>5} | "
+                f"{sqz} | {d['bull_score']:>5} | {d['bear_score']:>5}"
             )
         lines.append("")
-        lines.append("BullPts/BearPts: 0-12 quantitative score (higher = stronger setup)")
-        lines.append("Trend: ↑↑=strong uptrend, ↓↓=strong downtrend, ↑/↓=mixed")
-        lines.append("MACD: +TURN/-TURN = fresh bullish/bearish crossover (strong signal)")
+        lines.append("Bull/Bear: 0-14 pts. SQZ=BB squeeze (breakout setup). TURN=fresh MACD cross.")
         return "\n".join(lines)
 
     def _system_prompt(self) -> str:
-        return """You are a professional options trader selecting the best 1-3 directional trades.
+        return """You are a professional options trader selecting the best 3-5 directional trade candidates.
 
-Pre-scored data: BullPts (0-12) = call setup quality. BearPts (0-12) = put setup quality.
+Pre-scored data: Bull/Bear pts (0-14). SQZ = Bollinger Band squeeze (potential breakout).
 
 SELECTION RULES:
-1. Choose CALLS when BullPts > BearPts and BullPts >= 4
-2. Choose PUTS when BearPts > BullPts and BearPts >= 4
-3. Fresh MACD crossovers (+TURN/-TURN) are high-conviction — prioritize these
-4. Volume ratio > 1.3x adds conviction
+1. Choose CALLS when BullPts >= 4 and BullPts > BearPts
+2. Choose PUTS when BearPts >= 4 and BearPts > BullPts
+3. Fresh MACD crossovers (+TURN/-TURN) = high conviction — prioritize
+4. Volume > 1.3x adds directional conviction
 5. RSI 40-72 = good call entry. RSI 28-58 = good put entry
-6. Near 52w high (52wH% between -8% and 0%) = strong bullish momentum
-7. ALWAYS return at least 1 candidate — pick the BEST available even in quiet markets
-8. You may pick the SAME symbol twice if both a bullish AND bearish case are strong
+6. SQZ = volatility compression before potential expansion — great option setup if direction is clear
+7. Near 52w high (52wH% -8% to 0%) = strong bullish momentum continuation
+8. ALWAYS return at least 3 candidates — rank best available even in quiet markets
+9. OK to pick same symbol for both directions if both scores are high
 
-Return JSON array of 1-3 candidates:
+Return JSON array of 3-5 candidates:
 [
   {
     "symbol": "NVDA",
     "direction": "bullish",
     "option_type": "call",
-    "signal_strength": 8,
-    "key_reason": "Strong uptrend, +TURN MACD, volume 1.6x — momentum continuation",
+    "signal_strength": 9,
+    "key_reason": "Strong uptrend, +TURN MACD, volume 1.8x, BB squeeze resolving up",
     "priority": 1
   }
 ]
@@ -338,17 +351,18 @@ Return JSON array of 1-3 candidates:
 Only valid JSON. No text outside the array."""
 
     def _auto_select(self, scored: dict) -> list[dict]:
-        """Fallback: pick top 1-2 by score when LLM fails."""
+        """Fallback: pick top 3 by score when LLM fails."""
         ranked = sorted(scored.values(), key=lambda x: x["best_score"], reverse=True)
         result = []
-        for d in ranked[:2]:
+        for d in ranked[:3]:
             direction = d["best_direction"]
+            sqz = " BB-squeeze" if d.get("squeeze") else ""
             result.append({
                 "symbol":         d["symbol"],
                 "direction":      direction,
                 "option_type":    "call" if direction == "bullish" else "put",
                 "signal_strength": d["best_score"],
-                "key_reason":     f"Auto-selected: bull={d['bull_score']}, bear={d['bear_score']}, RSI={d['rsi']}",
+                "key_reason":     f"Auto: bull={d['bull_score']}, bear={d['bear_score']}, RSI={d['rsi']}{sqz}",
                 "priority":       len(result) + 1,
             })
         return result
