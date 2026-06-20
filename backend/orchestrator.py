@@ -14,7 +14,7 @@ from typing import Any, Callable, Awaitable
 import anthropic
 
 from .agents import (
-    ScannerAgent, TechnicalAgent, OptionsAnalystAgent,
+    ScannerAgent, TechnicalAgent,
     FundamentalAgent, SentimentAgent, RiskAgent,
     DevilsAdvocateAgent, JudgeAgent, MonitorAgent,
 )
@@ -180,56 +180,38 @@ class Orchestrator:
 
     async def _analyze_candidate(self, symbol: str, direction: str, price: float) -> dict | None:
         try:
-            # Step 1: Options chain — fail fast if no viable strike/expiry
-            options_agent = OptionsAnalystAgent(
-                self.claude, self.max_dte, self.min_dte, self._make_broadcast()
-            )
-            options = await options_agent.analyze(symbol, direction, price)
-
-            if not options.get("expiration_date"):
-                await self._emit("system", "info",
-                    {"message": f"{symbol}: No valid expiration found — skipping."})
-                return None
-            if not options.get("strike"):
-                await self._emit("system", "info",
-                    {"message": f"{symbol}: No viable strike — skipping."})
-                return None
-
-            expiry = options["expiration_date"]
-
-            # Step 2: Technical, Fundamental, Sentiment — run in parallel
+            # Step 1: Technical, Fundamental, Sentiment — run in parallel (no options data needed)
             tech_agent  = TechnicalAgent(self.claude, self._make_broadcast())
             fund_agent  = FundamentalAgent(self.claude, self._make_broadcast())
             sent_agent  = SentimentAgent(self.claude, self._make_broadcast())
 
             technical, fundamental, sentiment = await asyncio.gather(
                 tech_agent.analyze(symbol, direction),
-                fund_agent.analyze(symbol, expiry),
-                sent_agent.analyze(symbol, direction, expiry),
+                fund_agent.analyze(symbol),          # uses 45-day window default
+                sent_agent.analyze(symbol, direction),
             )
 
-            # Step 3: Risk sizing
+            # Step 2: Risk sizing (budget-only, no premium required)
             risk_agent = RiskAgent(self.claude, self.max_loss, self._make_broadcast())
-            risk = await risk_agent.evaluate(symbol, options, self.state.active_trades)
+            risk = await risk_agent.evaluate(symbol, {}, self.state.active_trades)
 
-            # Step 4: Devil's Advocate
+            # Step 3: Devil's Advocate
             advocate_agent = DevilsAdvocateAgent(self.claude, self._make_broadcast())
             advocate = await advocate_agent.challenge(
-                symbol, direction, technical, options, fundamental, sentiment, risk
+                symbol, direction, technical, {}, fundamental, sentiment, risk
             )
 
-            # Step 5: Judge
+            # Step 4: Judge — outputs option parameters as recommendation for Cowork
             judge_agent = JudgeAgent(self.claude, self._make_broadcast())
             judge = await judge_agent.decide(
-                symbol, direction, technical, options, fundamental, sentiment,
+                symbol, direction, technical, fundamental, sentiment,
                 risk, advocate, self.state.cycle_count
             )
 
             return {
-                "symbol": symbol, "direction": direction,
-                "technical": technical, "options": options,
-                "fundamental": fundamental, "sentiment": sentiment,
-                "risk": risk, "advocate": advocate, "judge": judge,
+                "symbol": symbol, "direction": direction, "price": price,
+                "technical": technical, "fundamental": fundamental,
+                "sentiment": sentiment, "risk": risk, "advocate": advocate, "judge": judge,
             }
 
         except Exception as e:
@@ -250,6 +232,7 @@ class Orchestrator:
         proposal["proposal_id"]  = str(uuid.uuid4())
         proposal["proposed_at"]  = datetime.utcnow().isoformat()
         proposal["status"]       = "pending"
+        proposal["current_price"] = analysis.get("price", 0)
         proposal["analysis_summary"] = {
             "direction":      analysis.get("direction"),
             "bull_case":      judge.get("bull_case", ""),
@@ -259,7 +242,6 @@ class Orchestrator:
             "weighted_score": judge.get("weighted_score"),
             "agent_scores": {
                 "technical":          analysis["technical"].get("score"),
-                "options":            analysis["options"].get("score"),
                 "fundamental":        analysis["fundamental"].get("score"),
                 "sentiment":          analysis["sentiment"].get("score"),
                 "risk":               analysis["risk"].get("score"),
@@ -272,9 +254,10 @@ class Orchestrator:
         await self._emit("system", "info", {
             "message": (
                 f"📋 PROPOSAL: {proposal['symbol']} {proposal.get('option_type','').upper()} "
-                f"${proposal['strike']} exp {proposal['expiration_date']} "
-                f"| Conf={judge.get('confidence')}/10 | Score={judge.get('weighted_score'):.0f} "
-                f"| Open Cowork to approve/reject."
+                f"| DTE {proposal.get('dte_min')}-{proposal.get('dte_max')} "
+                f"| Max ${proposal.get('max_premium', 0):.2f}/share "
+                f"| Conf={judge.get('confidence')}/10 Score={judge.get('weighted_score'):.0f} "
+                f"| Open Cowork to approve."
             )
         })
 
@@ -322,3 +305,4 @@ _orchestrator = Orchestrator()
 
 def get_orchestrator() -> Orchestrator:
     return _orchestrator
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       

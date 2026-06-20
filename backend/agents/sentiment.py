@@ -27,12 +27,12 @@ class SentimentAgent(BaseAgent):
     ):
         super().__init__(client, "Sentiment", model="claude-haiku-4-5-20251001", broadcast=broadcast)
 
-    async def analyze(self, symbol: str, direction: str, expiration_date: str) -> dict:
+    async def analyze(self, symbol: str, direction: str, expiration_date: str = None) -> dict:
         await self._emit("status", f"Analyzing sentiment and macro for {symbol}...")
 
         # Gather all context (these are fast yfinance calls)
         spy_ctx   = self._get_macro_context()
-        pcr       = self._compute_pcr(symbol, expiration_date)
+        pcr       = self._compute_pcr(symbol, expiration_date) if expiration_date else {}
         vix       = md.get_vix()
         sectors   = md.get_sector_etf_performance()
         context   = self._build_context(symbol, direction, spy_ctx, pcr, vix, sectors)
@@ -166,4 +166,4 @@ Put/Call Ratio (Vol): {pcr.get('pcr_vol', 'N/A')}
 Call OI:  {pcr.get('call_oi', 0):,}  |  Put OI:  {pcr.get('put_oi', 0):,}
 Call Vol: {pcr.get('call_vol', 0):,}  |  Put Vol: {pcr.get('put_vol', 0):,}
 Avg Call IV: {pcr.get('avg_call_iv', 0):.1%}  |  Avg Put IV: {pcr.get('avg_put_iv', 0):.1%}
-IV Skew (Put IV - Call IV): {skew_val:.4f}  → {skew_desc}"""
+IV Skew (Put IV - Call IV): {s
