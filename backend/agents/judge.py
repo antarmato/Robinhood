@@ -209,12 +209,13 @@ If decision is "pass": set trade_proposal to null and fill pass_reason."""
             tp["max_premium"]    = round(mp, 2)
             tp["total_max_loss"] = int(mp * 100 * risk.get("contracts", 1))
 
+        tp = result.get("trade_proposal") or {}
         await self._emit("decision", {
             "decision":       result["decision"],
             "weighted_score": result.get("weighted_score"),
             "confidence":     result.get("confidence"),
             "reasoning":      result.get("reasoning"),
             "pass_reason":    result.get("pass_reason"),
-            "strategy":       result.get("trade_proposal", {}) and result["trade_proposal"].get("strategy"),
+            "strategy":       tp.get("strategy", "—"),
         })
         return result
