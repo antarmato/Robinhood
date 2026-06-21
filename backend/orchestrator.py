@@ -94,12 +94,12 @@ class Orchestrator:
                 )
 
                 if now - last_scan >= self.scan_interval:
+                    last_scan = now  # set BEFORE cycle so errors don't cause tight retry loop
                     if not self.state.has_pending_proposal():
                         await self._run_scan_cycle()
                     else:
                         await self._emit("system", "info",
                             {"message": "Pending proposal awaiting execution — skipping scan."})
-                    last_scan = now
 
                 await asyncio.sleep(30)
 
@@ -107,8 +107,14 @@ class Orchestrator:
                 break
             except Exception as e:
                 logger.exception(f"Orchestrator error: {e}")
-                await self._emit("system", "error", {"message": str(e)})
-                await asyncio.sleep(60)
+                err_str = str(e)
+                await self._emit("system", "error", {"message": err_str})
+                if "credit balance" in err_str.lower() or "billing" in err_str.lower():
+                    await self._emit("system", "error",
+                        {"message": "⚠️ Anthropic API credits exhausted — pausing 30 min. Add credits at console.anthropic.com/billing"})
+                    await asyncio.sleep(1800)  # 30 min — don't hammer a dead API
+                else:
+                    await asyncio.sleep(60)
 
     # ── Scan cycle ─────────────────────────────────────────────────────────────
 
