@@ -81,20 +81,37 @@ class Orchestrator:
 
         while True:
             try:
+                # Only scan during market hours (9:15am–4pm ET, Mon–Fri)
+                if not self._is_market_hours():
+                    now_dt = datetime.now()
+                    if not self._is_trading_day():
+                        wait_msg = "Weekend — system idle until Monday 9:15am ET."
+                        sleep_s  = 3600  # check every hour on weekends
+                    else:
+                        # Weekday but outside hours
+                        market_open = now_dt.replace(hour=9, minute=15, second=0, microsecond=0)
+                        if now_dt < market_open:
+                            secs = (market_open - now_dt).total_seconds()
+                            wait_msg = f"Pre-market — resuming at 9:15am ET ({int(secs/60)} min away)."
+                            sleep_s  = min(secs, 1800)
+                        else:
+                            wait_msg = "Market closed — system idle until 9:15am ET tomorrow."
+                            sleep_s  = 3600
+
+                    await self._emit("system", "info", {"message": wait_msg})
+                    await asyncio.sleep(max(sleep_s, 60))
+                    continue
+
                 now = asyncio.get_event_loop().time()
 
                 if now - last_monitor >= self.monitor_interval:
                     await self._run_monitor()
                     last_monitor = now
 
-                # Use shorter interval during market hours, longer overnight
-                self.scan_interval = (
-                    self._scan_interval_market if self._is_market_hours()
-                    else self._scan_interval_after
-                )
+                self.scan_interval = self._scan_interval_market
 
                 if now - last_scan >= self.scan_interval:
-                    last_scan = now  # set BEFORE cycle so errors don't cause tight retry loop
+                    last_scan = now
                     if not self.state.has_pending_proposal():
                         await self._run_scan_cycle()
                     else:
@@ -111,8 +128,8 @@ class Orchestrator:
                 await self._emit("system", "error", {"message": err_str})
                 if "credit balance" in err_str.lower() or "billing" in err_str.lower():
                     await self._emit("system", "error",
-                        {"message": "⚠️ Anthropic API credits exhausted — pausing 30 min. Add credits at console.anthropic.com/billing"})
-                    await asyncio.sleep(1800)  # 30 min — don't hammer a dead API
+                        {"message": "⚠️ API credits exhausted — pausing 30 min. Add credits at console.anthropic.com/billing"})
+                    await asyncio.sleep(1800)
                 else:
                     await asyncio.sleep(60)
 
@@ -303,10 +320,15 @@ class Orchestrator:
 
     @staticmethod
     def _is_market_hours() -> bool:
+        """9:15am–4:00pm ET, Mon–Fri. Requires TZ=America/New_York on Railway."""
         now = datetime.now()
         if now.weekday() >= 5:
             return False
-        return dtime(13, 30) <= now.time() <= dtime(20, 0)
+        return dtime(9, 15) <= now.time() <= dtime(16, 0)
+
+    @staticmethod
+    def _is_trading_day() -> bool:
+        return datetime.now().weekday() < 5
 
 
 _orchestrator = Orchestrator()
