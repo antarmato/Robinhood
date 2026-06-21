@@ -9,6 +9,11 @@ import logging
 import os
 import uuid
 from datetime import datetime, time as dtime
+try:
+    from zoneinfo import ZoneInfo
+    _ET = ZoneInfo("America/New_York")
+except ImportError:
+    _ET = None  # falls back to system TZ — set TZ=America/New_York in Railway
 from typing import Any, Callable, Awaitable
 
 import anthropic
@@ -35,7 +40,7 @@ class Orchestrator:
         watchlist_raw = os.getenv("WATCHLIST", "SPY,QQQ,NVDA,AAPL,MSFT,TSLA,AMZN,META,GOOGL,AMD,NFLX,CRM,COIN,MSTR,PLTR")
         self.watchlist        = [s.strip() for s in watchlist_raw.split(",")]
         self.max_loss         = float(os.getenv("MAX_LOSS_PER_TRADE", "200"))
-        self._scan_interval_market = int(os.getenv("SCAN_INTERVAL_MINUTES", "30")) * 60
+        self._scan_interval_market = int(os.getenv("SCAN_INTERVAL_MINUTES", "20")) * 60
         self._scan_interval_after  = int(os.getenv("SCAN_INTERVAL_AFTER_HOURS_MINUTES", "120")) * 60
         self.scan_interval = self._scan_interval_market  # updated dynamically
         self.monitor_interval = int(os.getenv("MONITOR_INTERVAL_MINUTES", "15")) * 60
@@ -85,14 +90,14 @@ class Orchestrator:
                 if not self._is_market_hours():
                     now_dt = datetime.now()
                     if not self._is_trading_day():
-                        wait_msg = "Weekend — system idle until Monday 9:15am ET."
+                        wait_msg = f"Weekend — system idle until Monday 9:00am ET. (Now {self._now_et().strftime('%a %I:%M %p ET')})"
                         sleep_s  = 3600  # check every hour on weekends
                     else:
                         # Weekday but outside hours
-                        market_open = now_dt.replace(hour=9, minute=15, second=0, microsecond=0)
+                        market_open = now_dt.replace(hour=9, minute=0, second=0, microsecond=0)
                         if now_dt < market_open:
                             secs = (market_open - now_dt).total_seconds()
-                            wait_msg = f"Pre-market — resuming at 9:15am ET ({int(secs/60)} min away)."
+                            wait_msg = f"Pre-market — warm-up scan at 9:00am ET ({int(secs/60)} min away). Now {self._now_et().strftime('%I:%M %p ET')}."
                             sleep_s  = min(secs, 1800)
                         else:
                             wait_msg = "Market closed — system idle until 9:15am ET tomorrow."
@@ -139,7 +144,9 @@ class Orchestrator:
         self.state.increment_cycle()
         cycle = self.state.cycle_count
         market_open = self._is_market_hours()
-        session_label = "LIVE" if market_open else "PRE-MARKET RESEARCH"
+        phase = self._session_phase()
+        session_label = {"pre_open": "PRE-OPEN WARM-UP", "market": "LIVE MARKET",
+                         "after_hours": "AFTER-HOURS", "closed": "CLOSED"}.get(phase, "LIVE")
         await self._emit("system", "cycle_start", {"cycle": cycle, "session": session_label})
         logger.info(f"Starting cycle {cycle} [{session_label}]")
 
@@ -324,16 +331,36 @@ class Orchestrator:
                 logger.debug(f"Broadcast error: {e}")
 
     @staticmethod
-    def _is_market_hours() -> bool:
-        """9:15am–4:00pm ET, Mon–Fri. Requires TZ=America/New_York on Railway."""
-        now = datetime.now()
+    def _now_et() -> datetime:
+        """Current time in US/Eastern — works correctly regardless of Railway TZ setting."""
+        if _ET:
+            return datetime.now(_ET)
+        return datetime.now()  # fallback: set TZ=America/New_York in Railway Variables
+
+    @classmethod
+    def _is_market_hours(cls) -> bool:
+        """9:00am–4:00pm ET, Mon–Fri. 9:00 start gives a warm-up scan before the 9:30 open."""
+        now = cls._now_et()
         if now.weekday() >= 5:
             return False
-        return dtime(9, 15) <= now.time() <= dtime(16, 0)
+        return dtime(9, 0) <= now.time() <= dtime(16, 0)
 
-    @staticmethod
-    def _is_trading_day() -> bool:
-        return datetime.now().weekday() < 5
+    @classmethod
+    def _is_trading_day(cls) -> bool:
+        return cls._now_et().weekday() < 5
+
+    @classmethod
+    def _session_phase(cls) -> str:
+        """Returns 'pre_open', 'market', 'after_hours', or 'closed'."""
+        now = cls._now_et()
+        t   = now.time()
+        if now.weekday() >= 5:
+            return "closed"
+        if t < dtime(9, 30):
+            return "pre_open"
+        if t <= dtime(16, 0):
+            return "market"
+        return "after_hours"
 
 
 _orchestrator = Orchestrator()

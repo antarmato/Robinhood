@@ -13,9 +13,15 @@ Option parameters it outputs:
 """
 
 import logging
+from datetime import datetime, time as dtime
 from typing import Optional
 
 import anthropic
+try:
+    from zoneinfo import ZoneInfo
+    _ET = ZoneInfo("America/New_York")
+except ImportError:
+    _ET = None
 
 from .base import BaseAgent, BroadcastFn
 from .. import market_data as md
@@ -104,8 +110,29 @@ class JudgeAgent(BaseAgent):
             if consistency_note:
                 hist_block += f"\n{consistency_note}"
 
+        # ── Time-of-day context ─────────────────────────────────────────────────
+        now_et = datetime.now(_ET) if _ET else datetime.now()
+        tod    = now_et.time()
+        if tod < dtime(9, 30):
+            tod_note = "⏰ PRE-OPEN WARM-UP (9:00-9:30am) — market not yet open, gaps possible at open."
+        elif tod < dtime(10, 30):
+            tod_note = "🔔 OPENING HOUR (9:30-10:30am) — highest volatility window. Momentum setups shine here."
+        elif tod < dtime(12, 0):
+            tod_note = "📈 MID-MORNING (10:30am-12pm) — trends establishing. Good for continuation setups."
+        elif tod < dtime(14, 0):
+            tod_note = "😴 MIDDAY LULL (12-2pm) — low volume, choppy. Avoid low-conviction setups."
+        elif tod < dtime(15, 30):
+            tod_note = "📊 AFTERNOON (2-3:30pm) — volume picks up, institutional activity. Good for breakouts."
+        else:
+            tod_note = "🔔 POWER HOUR (3:30-4pm) — high volume close. Strong directional moves likely to follow through."
+
+        # Monday: check for weekend gap risk
+        if now_et.weekday() == 0:
+            tod_note += " ⚠️ MONDAY OPEN — weekend news may have caused gaps. Verify price hasn't moved significantly from scanner price."
+
         context = f"""
 [CYCLE {cycle} — {session}]
+{tod_note}
 Pass threshold this session: {threshold}/100 weighted score OR confidence < {PASS_THRESHOLD_CONF}/10
 
 Trade under consideration: {symbol} {direction.upper()} ({option_type})

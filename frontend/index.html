@@ -81,6 +81,7 @@
   <span id="sys-badge" class="badge b-stop">STOPPED</span>
   <span id="cycle">Cycle: 0</span>
   <span id="mkt">Checking market...</span>
+  <span id="et-clock" style="font-size:11px;color:var(--muted);margin-left:12px">—</span>
 </div>
 
 <div id="main">
@@ -254,6 +255,26 @@ function showProposals(proposals) {
   `).join('');
   document.getElementById('st-props').textContent = proposals.length;
 }
+
+function tickETClock() {
+  const et = new Date().toLocaleString('en-US', {timeZone:'America/New_York', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:true});
+  const h  = parseInt(new Date().toLocaleString('en-US', {timeZone:'America/New_York', hour:'numeric', hour12:false}));
+  const m  = parseInt(new Date().toLocaleString('en-US', {timeZone:'America/New_York', minute:'numeric'}));
+  const day= new Date().toLocaleString('en-US', {timeZone:'America/New_York', weekday:'short'});
+  const mins = h*60+m;
+  const isWeekend = day==='Sat'||day==='Sun';
+  let phase;
+  if (isWeekend)           phase = {label:'WEEKEND', color:'#6b7280'};
+  else if (mins < 9*60)    phase = {label:'PRE-MARKET', color:'#6b7280'};
+  else if (mins < 9*60+30) phase = {label:'PRE-OPEN WARM-UP', color:'#fbbf24'};
+  else if (mins < 16*60)   phase = {label:'MARKET OPEN', color:'#34d399'};
+  else                     phase = {label:'MARKET CLOSED', color:'#6b7280'};
+  document.getElementById('et-clock').textContent = `${et} ET`;
+  document.getElementById('mkt').textContent = phase.label;
+  document.getElementById('mkt').style.color = phase.color;
+}
+tickETClock();
+setInterval(tickETClock, 1000);
 
 async function refreshStatus() {
   try {

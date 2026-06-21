@@ -41,11 +41,17 @@ class ScannerAgent(BaseAgent):
 
         # Fetch each symbol concurrently (individual Ticker.history() calls — no MultiIndex)
         loop = asyncio.get_event_loop()
-        tasks = [
-            loop.run_in_executor(None, self._fetch_one, sym)
-            for sym in self.watchlist
-        ]
-        raw_results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Stagger in batches of 5 — Polygon free tier allows generous rate limits
+        # but batching avoids any transient 429s
+        raw_results = []
+        batch_size  = 5
+        for batch_start in range(0, len(self.watchlist), batch_size):
+            batch = self.watchlist[batch_start:batch_start + batch_size]
+            tasks = [loop.run_in_executor(None, self._fetch_one, sym) for sym in batch]
+            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+            raw_results.extend(batch_results)
+            if batch_start + batch_size < len(self.watchlist):
+                await asyncio.sleep(1)  # 1s gap between batches
 
         scored: dict = {}
         errors: dict = {}
@@ -345,7 +351,15 @@ class ScannerAgent(BaseAgent):
         return "\n".join(lines)
 
     def _system_prompt(self) -> str:
-        return """You are a professional options trader selecting the best 3-5 directional trade candidates.
+        from datetime import datetime
+        try:
+            from zoneinfo import ZoneInfo
+            _ET = ZoneInfo("America/New_York")
+            now_et = datetime.now(_ET)
+        except Exception:
+            now_et = datetime.now()
+        monday_note = "\n⚠️ MONDAY: Verify weekend gaps — scanner price may differ from Monday open price." if now_et.weekday() == 0 else ""
+        return f"""You are a professional options trader selecting the best 3-5 directional trade candidates.{monday_note}
 
 Pre-scored data: Bull/Bear pts (0-16 including RS bonus). RS = 20-day return vs group median.
 
