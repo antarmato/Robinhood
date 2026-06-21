@@ -46,6 +46,7 @@ class JudgeAgent(BaseAgent):
         advocate: dict,
         cycle: int,
         market_open: bool = False,
+        symbol_history: list | None = None,
     ) -> dict:
         await self._emit("status", f"Judge: deliberating on {symbol} {direction}...")
 
@@ -80,6 +81,29 @@ class JudgeAgent(BaseAgent):
 
         option_type = "call" if direction == "bullish" else "put"
 
+        # Build historical context string
+        hist_block = ""
+        if symbol_history:
+            lines = []
+            for h in symbol_history[-5:]:  # last 5 cycles
+                lines.append(
+                    f"  Cycle {h['cycle']}: {h['direction']} | decision={h['decision']} | "
+                    f"score={h['score']} | tech={h['tech_score']} sent={h['sent_score']} "
+                    f"adv={h['adv_strength']} | trend={h['tech_trend']}"
+                )
+            # Detect consistency signal
+            recent = symbol_history[-3:]
+            consistent_bull = all(h['tech_score'] and h['tech_score'] >= 6 and h['direction'] == 'bullish' for h in recent)
+            consistent_bear = all(h['tech_score'] and h['tech_score'] >= 6 and h['direction'] == 'bearish' for h in recent)
+            consistency_note = ""
+            if consistent_bull:
+                consistency_note = "⚡ CONSISTENCY SIGNAL: Bullish technical score ≥6 for 3+ consecutive cycles — elevated conviction."
+            elif consistent_bear:
+                consistency_note = "⚡ CONSISTENCY SIGNAL: Bearish technical score ≥6 for 3+ consecutive cycles — elevated conviction."
+            hist_block = "\n═══ PRIOR CYCLE HISTORY (use for conviction) ═══\n" + "\n".join(lines)
+            if consistency_note:
+                hist_block += f"\n{consistency_note}"
+
         context = f"""
 [CYCLE {cycle} — {session}]
 Pass threshold this session: {threshold}/100 weighted score OR confidence < {PASS_THRESHOLD_CONF}/10
@@ -104,6 +128,8 @@ VIX: {vix_level} ({vix_regime})
 HV20/HV60: {hv_data.get('hv20','?')}/{hv_data.get('hv60','?')}%  HV Rank: {hv_rank}/100 ({hv_data.get('regime','?')})
 Recommended strategy: {recommended_strategy.upper()}
 {"→ IV is elevated — debit spread reduces premium paid, limits IV crush risk" if high_iv else "→ IV is normal/low — naked option captures full directional move"}
+
+{hist_block}
 
 NOTE: Options chain data (OI, bid-ask, live IV) is NOT available here — it is fetched at Cowork execution time. DO NOT flag absence of options data as a concern. DO NOT penalise for missing option chain information.
 

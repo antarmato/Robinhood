@@ -150,6 +150,11 @@ async def status():
 
 # ── Proposal API (polled by Cowork artifact) ───────────────────────────────────
 
+@app.get("/api/history")
+async def get_history(api_key: str = ""):
+    _check_key(api_key)
+    return get_state().get_all_symbol_history()
+
 @app.get("/api/proposals")
 async def get_proposals(api_key: str = ""):
     _check_key(api_key)

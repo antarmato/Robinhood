@@ -180,6 +180,9 @@ class Orchestrator:
             score    = judge.get("weighted_score", 0)
             conf     = judge.get("confidence", 0)
 
+            # Persist analysis snapshot for future cycles to reference
+            self.state.record_symbol_analysis(symbol, direction, result, decision, score)
+
             if decision == "trade":
                 logger.info(f"Cycle {cycle}: {symbol} APPROVED — score={score}, conf={conf}")
                 if score > best_score:
@@ -226,11 +229,13 @@ class Orchestrator:
             )
 
             # Step 4: Judge — outputs option parameters as recommendation for Cowork
+            symbol_history = self.state.get_symbol_history(symbol)
             judge_agent = JudgeAgent(self.claude, self._make_broadcast())
             judge = await judge_agent.decide(
                 symbol, direction, technical, fundamental, sentiment,
                 risk, advocate, self.state.cycle_count,
                 market_open=market_open,
+                symbol_history=symbol_history,
             )
 
             return {
