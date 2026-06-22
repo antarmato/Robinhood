@@ -15,8 +15,15 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-_BASE = "https://api.polygon.io"
+_BASE    = "https://api.polygon.io"
 _TIMEOUT = 12
+
+# ── In-memory cache — prevents redundant Polygon calls within a cycle ─────────
+# Scanner fetches symbol data, then technical/HV agents re-fetch the same symbol.
+# Cache with 10-min TTL eliminates rate-limit 429s and speeds up each cycle.
+_HIST_CACHE: dict = {}   # (symbol, period) -> (timestamp, DataFrame)
+_INTRA_CACHE: dict = {}  # (symbol, period, interval) -> (timestamp, DataFrame)
+_CACHE_TTL = 600         # seconds
 
 
 def _key() -> str:
@@ -54,7 +61,18 @@ def get_historicals(symbol: str, period: str = "1y") -> pd.DataFrame:
     """
     Daily OHLCV via Polygon aggregates endpoint.
     period: '3mo', '6mo', '1y', '2y' — mapped to calendar days.
+    Caches results for 10 minutes — prevents rate-limit 429s when multiple
+    agents fetch the same symbol within a single cycle.
     """
+    import time as _time
+    cache_key = (symbol, period)
+    now_ts = _time.time()
+    if cache_key in _HIST_CACHE:
+        ts, cached_df = _HIST_CACHE[cache_key]
+        if now_ts - ts < _CACHE_TTL:
+            logger.debug(f"get_historicals({symbol},{period}): cache hit")
+            return cached_df.copy()
+
     days = {"3mo": 95, "6mo": 185, "1y": 370, "2y": 740}.get(period, 370)
     end   = date.today().strftime("%Y-%m-%d")
     start = (date.today() - timedelta(days=days)).strftime("%Y-%m-%d")
@@ -62,7 +80,7 @@ def get_historicals(symbol: str, period: str = "1y") -> pd.DataFrame:
     data = _get(f"/v2/aggs/ticker/{symbol}/range/1/day/{start}/{end}",
                 {"adjusted": "true", "sort": "asc", "limit": 500})
     if not data or not data.get("results"):
-        logger.warning(f"get_historicals({symbol}): no results")
+        logger.warning(f"get_historicals({symbol}): no results from Polygon")
         return pd.DataFrame()
 
     rows = data["results"]
@@ -74,14 +92,24 @@ def get_historicals(symbol: str, period: str = "1y") -> pd.DataFrame:
         "volume": [r.get("v") for r in rows],
     }, index=pd.to_datetime([r["t"] for r in rows], unit="ms", utc=True).tz_localize(None))
 
-    return df.dropna(subset=["close"])
+    df = df.dropna(subset=["close"])
+    _HIST_CACHE[cache_key] = (_time.time(), df)
+    return df.copy()
 
 
 def get_intraday(symbol: str, period: str = "5d", interval: str = "1h") -> pd.DataFrame:
     """
     Intraday OHLCV via Polygon aggregates.
     interval: '1m', '5m', '15m', '30m', '1h'
+    Cached for 10 min — prevents redundant calls within a cycle.
     """
+    import time as _time
+    cache_key = (symbol, period, interval)
+    if cache_key in _INTRA_CACHE:
+        ts, cached_df = _INTRA_CACHE[cache_key]
+        if _time.time() - ts < _CACHE_TTL:
+            return cached_df.copy()
+
     span_map = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60}
     mult = span_map.get(interval, 60)
     span = "minute" if mult < 60 else "hour"
@@ -103,7 +131,9 @@ def get_intraday(symbol: str, period: str = "5d", interval: str = "1h") -> pd.Da
         "close":  [r.get("c") for r in rows],
         "volume": [r.get("v") for r in rows],
     }, index=pd.to_datetime([r["t"] for r in rows], unit="ms", utc=True).tz_localize(None))
-    return df.dropna(subset=["close"])
+    result = df.dropna(subset=["close"])
+    _INTRA_CACHE[cache_key] = (_time.time(), result)
+    return result.copy()
 
 
 # ── Quotes ────────────────────────────────────────────────────────────────────

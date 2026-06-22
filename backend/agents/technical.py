@@ -33,14 +33,19 @@ class TechnicalAgent(BaseAgent):
     async def analyze(self, symbol: str, direction: str) -> dict:
         await self._emit("status", f"Running technical analysis on {symbol} ({direction})...")
 
-        # Daily data for indicators
+        # Daily data for indicators — try 1y, fall back to 6mo, then 3mo
         df = md.get_historicals(symbol, period="1y")
         if df.empty or len(df) < 30:
+            df = md.get_historicals(symbol, period="6mo")
+        if df.empty or len(df) < 30:
+            df = md.get_historicals(symbol, period="3mo")
+        if df.empty or len(df) < 20:
             return {
                 "score": 5, "signal": "neutral", "trend": "ranging",
                 "rsi_reading": "N/A", "macd_reading": "N/A",
                 "key_support": 0, "key_resistance": 0,
-                "summary": "Insufficient historical data for technical analysis.",
+                "summary": "Insufficient historical data — Polygon returned no data for this symbol.",
+                "current_price": 0,
             }
 
         indicators = self._compute_indicators(df)
