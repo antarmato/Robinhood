@@ -376,14 +376,14 @@ SELECTION RULES:
 
 Return JSON array of 3-5 candidates:
 [
-  {
+  {{
     "symbol": "NVDA",
     "direction": "bullish",
     "option_type": "call",
     "signal_strength": 9,
     "key_reason": "Strong uptrend, +TURN MACD, volume 1.8x, BB squeeze resolving up",
     "priority": 1
-  }
+  }}
 ]
 
 Only valid JSON. No text outside the array."""
