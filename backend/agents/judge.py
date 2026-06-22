@@ -1,15 +1,16 @@
 """
 Judge Agent — final decision-maker and option parameter architect.
 
-Responsibilities:
-  1. Weigh all agent outputs into a pass/trade decision
-  2. If trade: output concrete option parameters for Cowork to execute
-  3. Select strategy (naked vs debit spread) based on IV regime + VIX
-  4. Adaptive pass threshold: 50 market hours, 45 after-hours
+Architecture (v3 — deterministic scoring):
+  - Python computes weighted_score mathematically from actual agent outputs
+  - Claude ONLY provides: confidence (1-10), reasoning, bull_case, bear_case
+  - This removes the "Claude lands at 44 to safely fail" bias
+  - Decision is made by Python, not Claude
 
-Option parameters it outputs:
-  symbol, option_type, dte_min, dte_max, delta_target, max_premium,
-  total_max_loss, contracts, strategy, short_delta (spread only), spread_width (spread only)
+Thresholds:
+  - weighted_score >= 38 (market hours) or 32 (after-hours)
+  - confidence >= 5/10
+  - No fatal flaw from advocate
 """
 
 import logging
@@ -28,9 +29,43 @@ from .. import market_data as md
 
 logger = logging.getLogger(__name__)
 
-PASS_THRESHOLD_MARKET     = 45   # lowered from 50 — 50 was too strict for real market conditions
-PASS_THRESHOLD_AFTERHOURS = 38
-PASS_THRESHOLD_CONF       = 6
+THRESHOLD_MARKET     = 38   # Python-computed score threshold (market hours)
+THRESHOLD_AFTERHOURS = 32
+THRESHOLD_CONF       = 5    # minimum Claude confidence to trade
+
+
+def _compute_score(technical: dict, fundamental: dict, sentiment: dict,
+                   risk: dict, advocate: dict) -> float:
+    """
+    Deterministic weighted score — not computed by Claude.
+
+    Weights:
+      tech  * 3.0   (max 30) — primary signal
+      fund  * 1.5   (max 15) — context/risk
+      sent  * 1.5   (max 15) — macro environment
+      risk  * 1.0   (max 10) — always ~8, small contribution
+      adv   * -1.5  (max -7.5, hard-capped) — skepticism discount
+
+    Threshold 38 means: need at least tech=6 OR strong fund+sent with tech=5.
+    Pure ranging (tech=5, neutral everything): ~36 → correct PASS.
+    Decent setup (tech=7, normal fund/sent): ~42 → TRADE.
+    """
+    tech_s = float(technical.get("score", 5))
+    fund_s = float(fundamental.get("score", 5))
+    sent_s = float(sentiment.get("score", 5))
+    risk_s = float(risk.get("score", 8))
+
+    # Hard-cap advocate at 5 — prevents single agent killing a 45-point setup
+    adv_s  = min(5.0, float(advocate.get("objection_strength", 3)))
+
+    score = (
+        tech_s * 3.0
+        + fund_s * 1.5
+        + sent_s * 1.5
+        + risk_s * 1.0
+        - adv_s  * 1.5
+    )
+    return round(score, 1)
 
 
 class JudgeAgent(BaseAgent):
@@ -54,232 +89,187 @@ class JudgeAgent(BaseAgent):
         market_open: bool = False,
         symbol_history: list | None = None,
     ) -> dict:
-        await self._emit("status", f"Judge: deliberating on {symbol} {direction}...")
+        await self._emit("status", f"Judge: evaluating {symbol} {direction}...")
 
-        threshold = PASS_THRESHOLD_MARKET if market_open else PASS_THRESHOLD_AFTERHOURS
+        threshold = THRESHOLD_MARKET if market_open else THRESHOLD_AFTERHOURS
         session   = "LIVE MARKET" if market_open else "PRE-MARKET RESEARCH"
 
-        # ── IV regime ────────────────────────────────────────────────────────
+        # ── Hard reject first (before any API call) ───────────────────────────
+        if advocate.get("fatal_flaw"):
+            msg = f"Fatal flaw: {advocate['fatal_flaw']}"
+            await self._emit("decision", {
+                "symbol": symbol, "decision": "pass",
+                "weighted_score": 0, "confidence": 0,
+                "reasoning": msg, "pass_reason": msg, "strategy": "—",
+            })
+            return {"decision": "pass", "weighted_score": 0, "confidence": 0,
+                    "reasoning": msg, "pass_reason": msg, "trade_proposal": None,
+                    "bull_case": "", "bear_case": ""}
+
+        # ── Deterministic score (Python, not Claude) ──────────────────────────
+        weighted_score = _compute_score(technical, fundamental, sentiment, risk, advocate)
+        score_failed   = weighted_score < threshold
+
+        # ── IV / strategy ─────────────────────────────────────────────────────
         vix_level  = sentiment.get("vix_level", 20)
         vix_regime = sentiment.get("vix_regime", "normal")
         hv_data    = md.get_hv(symbol)
         hv_rank    = hv_data.get("hv_rank") or 50
 
-        high_iv = (
-            vix_regime in ("elevated", "extreme")
-            or vix_level > 22
-            or hv_rank > 65
-        )
+        high_iv = (vix_regime in ("elevated", "extreme") or vix_level > 22 or hv_rank > 65)
         recommended_strategy = "debit_spread" if high_iv else "naked_option"
 
-        # Spread width by price tier
         price = technical.get("current_price") or risk.get("current_price") or 100
         try:
             price = float(price)
         except (TypeError, ValueError):
             price = 100.0
-        if price < 200:
-            spread_width = 5
-        elif price < 500:
-            spread_width = 10
-        else:
-            spread_width = 25
+        spread_width = 5 if price < 200 else (10 if price < 500 else 25)
+        option_type  = "call" if direction == "bullish" else "put"
 
-        option_type = "call" if direction == "bullish" else "put"
-
-        # Build historical context string
-        hist_block = ""
+        # ── History block ─────────────────────────────────────────────────────
+        hist_lines = []
+        consistency_note = ""
         if symbol_history:
-            lines = []
-            for h in symbol_history[-5:]:  # last 5 cycles
-                lines.append(
-                    f"  Cycle {h['cycle']}: {h['direction']} | decision={h['decision']} | "
-                    f"score={h['score']} | tech={h['tech_score']} sent={h['sent_score']} "
-                    f"adv={h['adv_strength']} | trend={h['tech_trend']}"
+            for h in symbol_history[-5:]:
+                hist_lines.append(
+                    f"  Cycle {h['cycle']}: {h['direction']} decision={h['decision']} "
+                    f"score={h['score']} tech={h['tech_score']} sent={h['sent_score']} "
+                    f"adv={h['adv_strength']}"
                 )
-            # Detect consistency signal
             recent = symbol_history[-3:]
-            consistent_bull = all(h['tech_score'] and h['tech_score'] >= 6 and h['direction'] == 'bullish' for h in recent)
-            consistent_bear = all(h['tech_score'] and h['tech_score'] >= 6 and h['direction'] == 'bearish' for h in recent)
-            consistency_note = ""
-            if consistent_bull:
-                consistency_note = "⚡ CONSISTENCY SIGNAL: Bullish technical score ≥6 for 3+ consecutive cycles — elevated conviction."
-            elif consistent_bear:
-                consistency_note = "⚡ CONSISTENCY SIGNAL: Bearish technical score ≥6 for 3+ consecutive cycles — elevated conviction."
-            hist_block = "\n═══ PRIOR CYCLE HISTORY (use for conviction) ═══\n" + "\n".join(lines)
+            if all(h.get('tech_score') and h['tech_score'] >= 6 and h['direction'] == 'bullish' for h in recent):
+                consistency_note = "⚡ CONSISTENCY: Bullish 6+ tech for 3 straight cycles — elevated conviction."
+            elif all(h.get('tech_score') and h['tech_score'] >= 6 and h['direction'] == 'bearish' for h in recent):
+                consistency_note = "⚡ CONSISTENCY: Bearish 6+ tech for 3 straight cycles — elevated conviction."
+
+        # ── Time of day ───────────────────────────────────────────────────────
+        now_et = datetime.now(_ET) if _ET else datetime.now()
+        tod    = now_et.time()
+        if   tod < dtime(9, 30):  tod_note = "Pre-open warm-up."
+        elif tod < dtime(10, 30): tod_note = "Opening hour — momentum setups preferred."
+        elif tod < dtime(12, 0):  tod_note = "Mid-morning — trends establishing."
+        elif tod < dtime(14, 0):  tod_note = "Midday lull — raise bar for low-conviction setups."
+        elif tod < dtime(15, 30): tod_note = "Afternoon — institutional activity picks up."
+        else:                     tod_note = "Power hour — directional moves tend to follow through."
+        if now_et.weekday() == 0:
+            tod_note += " Monday open — check for overnight gap vs scanner price."
+
+        # ── Build Claude context ──────────────────────────────────────────────
+        hist_block = ""
+        if hist_lines:
+            hist_block = "Prior cycles:\n" + "\n".join(hist_lines)
             if consistency_note:
                 hist_block += f"\n{consistency_note}"
 
-        # ── Time-of-day context ─────────────────────────────────────────────────
-        now_et = datetime.now(_ET) if _ET else datetime.now()
-        tod    = now_et.time()
-        if tod < dtime(9, 30):
-            tod_note = "⏰ PRE-OPEN WARM-UP (9:00-9:30am) — market not yet open, gaps possible at open."
-        elif tod < dtime(10, 30):
-            tod_note = "🔔 OPENING HOUR (9:30-10:30am) — highest volatility window. Momentum setups shine here."
-        elif tod < dtime(12, 0):
-            tod_note = "📈 MID-MORNING (10:30am-12pm) — trends establishing. Good for continuation setups."
-        elif tod < dtime(14, 0):
-            tod_note = "😴 MIDDAY LULL (12-2pm) — low volume, choppy. Avoid low-conviction setups."
-        elif tod < dtime(15, 30):
-            tod_note = "📊 AFTERNOON (2-3:30pm) — volume picks up, institutional activity. Good for breakouts."
-        else:
-            tod_note = "🔔 POWER HOUR (3:30-4pm) — high volume close. Strong directional moves likely to follow through."
-
-        # Monday: check for weekend gap risk
-        if now_et.weekday() == 0:
-            tod_note += " ⚠️ MONDAY OPEN — weekend news may have caused gaps. Verify price hasn't moved significantly from scanner price."
+        tech_s = technical.get('score', 5)
+        fund_s = fundamental.get('score', 5)
+        sent_s = sentiment.get('score', 5)
+        adv_s  = min(5, advocate.get('objection_strength', 3))
 
         context = f"""
-[CYCLE {cycle} — {session}]
-{tod_note}
-Pass threshold this session: {threshold}/100 weighted score OR confidence < {PASS_THRESHOLD_CONF}/10
+[{session} | Cycle {cycle} | {tod_note}]
 
-Trade under consideration: {symbol} {direction.upper()} ({option_type})
-Price: ${price:.2f}  Max budget: ${risk.get('max_premium', 2.0):.2f}/share  Contracts: {risk.get('contracts', 1)}
+TRADE: {symbol} {direction.upper()} {option_type} @ ${price:.2f}
+Strategy: {recommended_strategy.upper()} | VIX {vix_level} ({vix_regime}) | HV Rank {hv_rank}/100
 
-═══ AGENT SCORES ═══
-Technical   ({technical.get('score', 5)}/10): {technical.get('trend', 'N/A')} | {technical.get('summary', '')}
-Fundamental ({fundamental.get('score', 5)}/10): {fundamental.get('summary', '')}
-Sentiment   ({sentiment.get('score', 5)}/10): VIX={vix_regime} ({vix_level}) | {sentiment.get('summary', '')}
-Risk        ({risk.get('score', 5)}/10): {risk.get('summary', '')}
+AGENT SCORES:
+  Technical   {tech_s}/10: {technical.get('trend','?')} — {technical.get('summary','')}
+  Fundamental {fund_s}/10: {fundamental.get('summary','')}
+  Sentiment   {sent_s}/10: {sentiment.get('summary','')}
+  Advocate    strength={adv_s}/9 (capped at 5): {advocate.get('summary','')}
+  Key objections: {advocate.get('key_objections', [])}
 
-═══ DEVIL'S ADVOCATE ═══
-Objection strength: {advocate.get('objection_strength', 5)}/9
-Key objections: {advocate.get('key_objections', [])}
-Fatal flaw: {advocate.get('fatal_flaw')}
-Advocate summary: {advocate.get('summary', '')}
-
-═══ IV ENVIRONMENT ═══
-VIX: {vix_level} ({vix_regime})
-HV20/HV60: {hv_data.get('hv20','?')}/{hv_data.get('hv60','?')}%  HV Rank: {hv_rank}/100 ({hv_data.get('regime','?')})
-Recommended strategy: {recommended_strategy.upper()}
-{"→ IV is elevated — debit spread reduces premium paid, limits IV crush risk" if high_iv else "→ IV is normal/low — naked option captures full directional move"}
+COMPUTED SCORE: {weighted_score} / threshold {threshold}
+Score breakdown: tech({tech_s}×3={tech_s*3}) + fund({fund_s}×1.5={fund_s*1.5}) + sent({sent_s}×1.5={sent_s*1.5}) + risk(8×1.0=8.0) - adv({adv_s}×1.5={adv_s*1.5}) = {weighted_score}
+{"✅ SCORE PASSES — provide confidence and reasoning" if not score_failed else f"❌ SCORE FAILS ({weighted_score} < {threshold}) — provide pass_reason"}
 
 {hist_block}
-
-NOTE: Options chain data (OI, bid-ask, live IV) is NOT available here — it is fetched at Cowork execution time. DO NOT flag absence of options data as a concern. DO NOT penalise for missing option chain information.
-
-SCORING FORMULA:
-weighted_score = (
-  tech_score    * 2.5    +   # 25 max
-  fund_score    * 1.5    +   # 15 max
-  sent_score    * 1.5    +   # 15 max
-  risk_score    * 1.5    +   # 15 max
-  advocate_adj             # see below
-)
-advocate_adj = max(-15, -(objection_strength * 1.5))  # capped at -15 so advocate can't single-handedly kill a 65+ score
-Typical range: 0-70+. Threshold: {threshold}.
-Decision = "trade" only if weighted_score >= {threshold} AND confidence >= {PASS_THRESHOLD_CONF}.
-Example passing score: tech=7, fund=7, sent=6, risk=8, adv_strength=3 → 17.5+10.5+9+12-4.5 = 44.5 → TRADE at 45.
-Fatal flaw → automatic "pass".
-
-CALIBRATION NOTES:
-- Sentiment 5/10 (neutral VIX) is EXPECTED — do not penalize
-- Technical 5/10 in a ranging market is already captured in the score — the advocate SHOULD NOT add additional penalty for "ranging" on top of a 5/10 tech score (that's double-counting)
-- Advocate objection_strength 2-3 = healthy skepticism. 4-5 = real concerns. 6+ = serious problems only
-- If the only concern is "ranging market" and technicals scored 5/10, objection_strength should be 2-3, not 6
-- A weighted_score of 45-55 with confidence 6-7 is a reasonable live trade in normal conditions
 """
 
-        system = f"""You are the final decision-maker for a multi-agent options trading system.
-You synthesize all agent outputs into a binary trade/pass decision with concrete option parameters.
+        # ── Claude prompt: reasoning + confidence ONLY ─────────────────────────
+        system = f"""You are the final judge for an options trading system.
+The weighted score has already been computed mathematically: {weighted_score} (threshold: {threshold}).
 
-CRITICAL INSTRUCTION: DO NOT flag missing options data as a concern.
-Options chain data (OI, volume, IV, bid-ask spreads) is intentionally absent at this stage.
-It is fetched at execution time by the Cowork dashboard. This is by design. Ignore its absence.
+{"The score PASSES. Your job: provide confidence (1-10) and reasoning. If you have genuine conviction concerns, reflect them in confidence. Trade happens if confidence >= {THRESHOLD_CONF}." if not score_failed else f"The score FAILS. Confirm pass with clear reason."}
 
-Decision rules:
-- "trade": weighted_score >= {threshold} AND confidence >= {PASS_THRESHOLD_CONF} AND no fatal_flaw
-- "pass": weighted_score < {threshold} OR confidence < {PASS_THRESHOLD_CONF} OR fatal_flaw present
-- If passing, set pass_reason to the main disqualifying factor
+RULES:
+- Confidence 1-4: serious reservations (risky timing, real headwinds)
+- Confidence 5-6: reasonable setup, normal uncertainty
+- Confidence 7-8: clear directional setup, good risk/reward
+- Confidence 9-10: exceptional setup, multiple confirming signals
+- Do NOT factor in missing options data (OI, IV, bid-ask) — handled at execution
+- Ranging market alone is NOT a confidence killer if technicals already show that in their score
 
-Respond ONLY with JSON (no text outside it):
+Respond ONLY with JSON:
 {{
-  "decision": "trade" | "pass",
-  "weighted_score": <float 0-100>,
   "confidence": <int 1-10>,
-  "reasoning": "<2-3 sentences on key factors driving the decision>",
-  "bull_case": "<strongest 1-2 reasons this works>",
-  "bear_case": "<strongest 1-2 reasons it fails>",
-  "pass_reason": null,
-  "trade_proposal": {{
-    "symbol": "{symbol}",
-    "option_type": "{option_type}",
-    "direction": "{direction}",
-    "dte_min": 21,
-    "dte_max": 45,
-    "delta_target": 0.40,
-    "max_premium": <float from risk budget>,
-    "total_max_loss": <int dollars, contracts * max_premium * 100>,
-    "contracts": {risk.get('contracts', 1)},
-    "strategy": "{recommended_strategy}",
-    "short_delta": {"0.20" if recommended_strategy == "debit_spread" else "null"},
-    "spread_width": {spread_width if recommended_strategy == "debit_spread" else "null"}
-  }}
-}}
+  "reasoning": "<2-3 sentences: what drives your conviction or lack thereof>",
+  "bull_case": "<strongest reason this works>",
+  "bear_case": "<strongest reason it fails>",
+  "pass_reason": "<only if score failed: one clear reason>"
+}}"""
 
-If decision is "pass": set trade_proposal to null and fill pass_reason."""
-
-        raw    = await self._call(system, [{"role": "user", "content": context}], max_tokens=900)
+        raw    = await self._call(system, [{"role": "user", "content": context}], max_tokens=500)
         result = self._parse_json(raw)
 
-        result.setdefault("decision",        "pass")
-        result.setdefault("weighted_score",  0)
-        result.setdefault("confidence",      0)
-        result.setdefault("reasoning",       "")
-        result.setdefault("bull_case",       "")
-        result.setdefault("bear_case",       "")
-        result.setdefault("pass_reason",     None)
-        result.setdefault("trade_proposal",  None)
+        confidence  = int(result.get("confidence", 5))
+        reasoning   = result.get("reasoning", "")
+        bull_case   = result.get("bull_case", "")
+        bear_case   = result.get("bear_case", "")
+        pass_reason = result.get("pass_reason", "")
 
-        # Hard reject: fatal flaw
-        hard_rejection = None
-        if advocate.get("fatal_flaw"):
-            hard_rejection = f"Fatal flaw: {advocate['fatal_flaw']}"
+        # ── Final decision (Python, not Claude) ───────────────────────────────
+        if score_failed:
+            decision    = "pass"
+            pass_reason = pass_reason or f"Score {weighted_score} below threshold {threshold}"
+            trade_proposal = None
+        elif confidence < THRESHOLD_CONF:
+            decision    = "pass"
+            pass_reason = f"Confidence {confidence}/10 below minimum {THRESHOLD_CONF}"
+            trade_proposal = None
+        else:
+            decision = "trade"
+            pass_reason = None
 
-        if hard_rejection:
-            result["decision"]       = "pass"
-            result["pass_reason"]    = hard_rejection
-            result["trade_proposal"] = None
-        elif result["decision"] == "trade":
-            if result.get("confidence", 0) < PASS_THRESHOLD_CONF:
-                result["decision"]    = "pass"
-                result["pass_reason"] = f"Confidence {result['confidence']}/10 below minimum {PASS_THRESHOLD_CONF}"
-                result["trade_proposal"] = None
-            elif result.get("weighted_score", 0) < threshold:
-                result["decision"]    = "pass"
-                result["pass_reason"] = f"Score {result['weighted_score']:.1f} below threshold {threshold}"
-                result["trade_proposal"] = None
-
-        # Enrich trade proposal with IV / strategy context
-        if result["decision"] == "trade" and result.get("trade_proposal"):
-            tp = result["trade_proposal"]
-            tp.setdefault("strategy",     recommended_strategy)
-            tp.setdefault("short_delta",  0.20 if recommended_strategy == "debit_spread" else None)
-            tp.setdefault("spread_width", spread_width if recommended_strategy == "debit_spread" else None)
-            tp.setdefault("symbol",    symbol)
-            tp.setdefault("option_type", option_type)
-            tp.setdefault("direction",   direction)
-            tp.setdefault("dte_min",     21)
-            tp.setdefault("dte_max",     45)
-            tp.setdefault("delta_target", 0.40)
-            mp = tp.get("max_premium") or risk.get("max_premium", 2.0)
+            mp = risk.get("max_premium", 2.0)
             try:
                 mp = float(mp)
             except (TypeError, ValueError):
                 mp = 2.0
-            tp["max_premium"]    = round(mp, 2)
-            tp["total_max_loss"] = int(mp * 100 * risk.get("contracts", 1))
 
-        tp = result.get("trade_proposal") or {}
+            trade_proposal = {
+                "symbol":         symbol,
+                "option_type":    option_type,
+                "direction":      direction,
+                "dte_min":        21,
+                "dte_max":        45,
+                "delta_target":   0.40,
+                "max_premium":    round(mp, 2),
+                "total_max_loss": int(mp * 100 * risk.get("contracts", 1)),
+                "contracts":      risk.get("contracts", 1),
+                "strategy":       recommended_strategy,
+                "short_delta":    0.20 if recommended_strategy == "debit_spread" else None,
+                "spread_width":   spread_width if recommended_strategy == "debit_spread" else None,
+            }
+
         await self._emit("decision", {
             "symbol":         symbol,
-            "decision":       result["decision"],
-            "weighted_score": result.get("weighted_score"),
-            "confidence":     result.get("confidence"),
-            "reasoning":      result.get("reasoning"),
-            "pass_reason":    result.get("pass_reason"),
-            "strategy":       tp.get("strategy", "—"),
+            "decision":       decision,
+            "weighted_score": weighted_score,
+            "confidence":     confidence,
+            "reasoning":      reasoning,
+            "pass_reason":    pass_reason,
+            "strategy":       trade_proposal.get("strategy", "—") if trade_proposal else "—",
         })
-        return result
+
+        return {
+            "decision":       decision,
+            "weighted_score": weighted_score,
+            "confidence":     confidence,
+            "reasoning":      reasoning,
+            "bull_case":      bull_case,
+            "bear_case":      bear_case,
+            "pass_reason":    pass_reason,
+            "trade_proposal": trade_proposal,
+        }

@@ -58,12 +58,14 @@ class TechnicalAgent(BaseAgent):
 Your job: give an honest, quantitative assessment. Score 1-3 if the setup is against the proposed direction. Score 7-10 only if multiple indicators CONFIRM the direction.
 
 Key rules:
-- Score for calls: ADX > 20 + price above EMAs + RSI 40-70 + MACD bullish = 7-9
-- Score for puts: ADX > 20 + price below EMAs + RSI 30-60 + MACD bearish = 7-9
-- Low ADX (< 18) means the market is ranging — options lose value faster in ranging markets → score max 6
-- RSI divergences (price makes new high but RSI doesn't) → mention and score down
-- For calls: RSI > 75 or price far above BB upper = overbought, score 4-5
-- For puts: RSI < 25 or price far below BB lower = oversold, score 4-5
+- Score for calls: price above EMAs + RSI 40-70 + MACD bullish cross or above zero = 6-9
+- Score for puts: price below EMAs + RSI 30-60 + MACD bearish cross or below zero = 6-9
+- ADX > 25: strong trend → add 1-2 points. ADX 18-25: moderate trend → neutral. ADX < 18: weak/ranging overall market
+- LOW ADX RULE: ADX < 18 does NOT cap score at 6 if the INDIVIDUAL STOCK shows clear direction (e.g., below both EMAs + MACD bearish + RSI falling = valid 7 PUT score even with low market ADX)
+- RSI divergences (price makes new high but RSI doesn't) → mention and score down 1-2
+- For calls: RSI > 78 or price >2% above BB upper = overbought, score 4-5 max
+- For puts: RSI < 22 or price >2% below BB lower = oversold, score 4-5 max
+- Be decisive: if 3+ signals confirm the direction, score 7+. Do not hedge into 5/10.
 
 Respond ONLY with JSON:
 {{
