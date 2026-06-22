@@ -37,12 +37,29 @@ class ScannerAgent(BaseAgent):
     # ── Public entry point ─────────────────────────────────────────────────────
 
     async def scan(self) -> list[dict]:
-        await self._emit("status", f"Fetching market data for {len(self.watchlist)} symbols...")
+        import os
+        from .. import market_data as _md
 
-        # Fetch each symbol concurrently (individual Ticker.history() calls — no MultiIndex)
+        # ── Pre-flight: check Polygon API key ───────────────────────────────
+        poly_key = os.getenv("POLYGON_API_KEY", "")
+        if not poly_key:
+            await self._emit("status",
+                "❌ POLYGON_API_KEY not set in Railway Variables. "
+                "Go to Railway → your service → Variables → add POLYGON_API_KEY. "
+                "Get a free key at polygon.io")
+            return []
+
+        # Quick connectivity test on one symbol before batch fetch
+        test_df = _md.get_historicals("SPY", period="3mo")
+        if test_df.empty:
+            await self._emit("status",
+                "❌ Polygon API returned no data for SPY — key may be invalid or rate-limited. "
+                f"Key prefix: {poly_key[:6]}... Check railway logs for HTTP status codes.")
+            return []
+
+        await self._emit("status", f"✅ Polygon OK. Fetching {len(self.watchlist)} symbols...")
+
         loop = asyncio.get_event_loop()
-        # Stagger in batches of 5 — Polygon free tier allows generous rate limits
-        # but batching avoids any transient 429s
         raw_results = []
         batch_size  = 5
         for batch_start in range(0, len(self.watchlist), batch_size):
@@ -67,13 +84,14 @@ class ScannerAgent(BaseAgent):
         if errors:
             sample = next(iter(errors.values()))
             await self._emit("status",
-                f"{len(errors)}/{len(self.watchlist)} symbols failed. "
-                f"Got data for {len(scored)}. Sample error: {sample}")
+                f"⚠️ {len(errors)}/{len(self.watchlist)} symbols failed (e.g. {sample[:80]}). "
+                f"Got data for {len(scored)}.")
 
         if not scored:
+            first_err = next(iter(errors.values()), 'unknown')
             await self._emit("status",
-                f"ZERO symbols returned data. Network issue on Railway? "
-                f"First error: {next(iter(errors.values()), 'unknown')}")
+                f"❌ ZERO symbols returned usable data. "
+                f"Errors: {len(errors)}. Example: {first_err[:120]}")
             return []
 
         # ── Relative Strength vs group ──────────────────────────────

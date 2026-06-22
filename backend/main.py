@@ -150,6 +150,27 @@ async def status():
 
 # ── Proposal API (polled by Cowork artifact) ───────────────────────────────────
 
+@app.get("/api/health")
+async def health_check():
+    """Quick diagnostic — check Polygon connectivity and env vars."""
+    import os
+    from . import market_data as md
+    poly_key = os.getenv("POLYGON_API_KEY", "")
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+    result = {
+        "polygon_key_set": bool(poly_key),
+        "polygon_key_prefix": poly_key[:6] + "..." if poly_key else "NOT SET",
+        "anthropic_key_set": bool(anthropic_key),
+        "tz": os.getenv("TZ", "NOT SET — set to America/New_York"),
+    }
+    if poly_key:
+        try:
+            df = md.get_historicals("SPY", period="3mo")
+            result["polygon_test"] = f"OK — {len(df)} rows for SPY" if not df.empty else "FAIL — empty response"
+        except Exception as e:
+            result["polygon_test"] = f"ERROR — {e}"
+    return result
+
 @app.get("/api/history")
 async def get_history(api_key: str = ""):
     _check_key(api_key)
