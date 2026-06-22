@@ -28,8 +28,8 @@ from .. import market_data as md
 
 logger = logging.getLogger(__name__)
 
-PASS_THRESHOLD_MARKET     = 50
-PASS_THRESHOLD_AFTERHOURS = 40
+PASS_THRESHOLD_MARKET     = 45   # lowered from 50 — 50 was too strict for real market conditions
+PASS_THRESHOLD_AFTERHOURS = 38
 PASS_THRESHOLD_CONF       = 6
 
 
@@ -171,12 +171,15 @@ weighted_score = (
 advocate_adj = max(-15, -(objection_strength * 1.5))  # capped at -15 so advocate can't single-handedly kill a 65+ score
 Typical range: 0-70+. Threshold: {threshold}.
 Decision = "trade" only if weighted_score >= {threshold} AND confidence >= {PASS_THRESHOLD_CONF}.
+Example passing score: tech=7, fund=7, sent=6, risk=8, adv_strength=3 → 17.5+10.5+9+12-4.5 = 44.5 → TRADE at 45.
 Fatal flaw → automatic "pass".
 
 CALIBRATION NOTES:
-- Sentiment score 5/10 (neutral VIX, no strong macro signal) is EXPECTED and should not be penalized heavily
-- Technical 5/10 in a ranging market is neutral — wait for ADX to rise or BB squeeze
-- Advocate objection_strength 4-5 = normal healthy skepticism, not a trade killer
+- Sentiment 5/10 (neutral VIX) is EXPECTED — do not penalize
+- Technical 5/10 in a ranging market is already captured in the score — the advocate SHOULD NOT add additional penalty for "ranging" on top of a 5/10 tech score (that's double-counting)
+- Advocate objection_strength 2-3 = healthy skepticism. 4-5 = real concerns. 6+ = serious problems only
+- If the only concern is "ranging market" and technicals scored 5/10, objection_strength should be 2-3, not 6
+- A weighted_score of 45-55 with confidence 6-7 is a reasonable live trade in normal conditions
 """
 
         system = f"""You are the final decision-maker for a multi-agent options trading system.

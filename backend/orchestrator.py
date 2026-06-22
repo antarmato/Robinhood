@@ -37,7 +37,9 @@ class Orchestrator:
         self._task: asyncio.Task | None = None
         self._claude: anthropic.AsyncAnthropic | None = None
 
-        watchlist_raw = os.getenv("WATCHLIST", "SPY,QQQ,NVDA,AAPL,MSFT,TSLA,AMZN,META,GOOGL,AMD,NFLX,CRM,COIN,MSTR,PLTR")
+        # SPY/QQQ removed — they're macro benchmarks that always score 5/10 technical
+        # Replaced with more directional names that actually trend
+        watchlist_raw = os.getenv("WATCHLIST", "NVDA,AAPL,MSFT,TSLA,AMZN,META,GOOGL,AMD,NFLX,CRM,COIN,MSTR,PLTR,SMCI,CRWD,HOOD,UBER,SOFI,RIVN,IONQ")
         self.watchlist        = [s.strip() for s in watchlist_raw.split(",")]
         self.max_loss         = float(os.getenv("MAX_LOSS_PER_TRADE", "200"))
         self._scan_interval_market = int(os.getenv("SCAN_INTERVAL_MINUTES", "20")) * 60

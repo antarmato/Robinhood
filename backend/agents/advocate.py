@@ -61,14 +61,17 @@ Bull case:
 - Sentiment ({sentiment.get('score', 5)}/10): VIX={vix_regime} ({vix_level}) | {sentiment.get('summary', '')}
 - Earnings in 45-day window: {fundamental.get('earnings_before_expiry', False)}
 
-Your job: find 2-4 SPECIFIC, data-backed reasons this DIRECTIONAL trade could fail:
-  * Trend or momentum concerns (use the technical numbers)
-  * Poor timing (RSI extreme, trend exhaustion, price at resistance)
-  * Macro or sector headwinds
-  * Calendar risks (earnings, Fed, macro events)
-  * VIX={vix_regime}: {'elevated volatility means the stock can chop violently' if vix_regime in ('elevated', 'extreme') else 'normal/low VIX'}
+Your job: find 2-4 SPECIFIC, data-backed reasons this DIRECTIONAL trade could fail.
+REMINDER: Technical score {technical.get('score',5)}/10 already captures trend quality.
+If tech=5 for ranging, objection_strength should be 2-3 unless there's a SEPARATE real problem.
 
-Be calibrated — if the setup is genuinely solid, objection_strength 1-3 is correct.
+Focus on:
+  * Momentum red flags BEYOND what's in the tech score (specific divergences, exhaustion)
+  * Real macro/sector headwinds (sector down >1% while stock bullish = real concern)
+  * Calendar risks (earnings, Fed, CPI within 45 days)
+  * VIX={vix_regime}: {'elevated — stock can chop violently, wider stops needed' if vix_regime in ('elevated', 'extreme') else 'normal/low — not a concern'}
+
+Be calibrated — if tech=5 (ranging) is the only issue, score 2-3 maximum.
 
 FATAL FLAW (only these 3 qualify — everything else is objection_strength):
 1. Confirmed earnings within the next 45 days
@@ -76,9 +79,20 @@ FATAL FLAW (only these 3 qualify — everything else is objection_strength):
 3. RSI < 20 on a bearish put play"""
 
         system = """You are a risk manager stress-testing directional option trade theses. Be calibrated.
-Strong setups deserve objection_strength 1-3. Only cry wolf on real problems.
+
+CRITICAL CALIBRATION — objection_strength scale:
+1-2: Minor timing concern only. Healthy setup.
+3-4: Genuine concern (real headwind, weak momentum). Not a trade killer.
+5-6: Significant problem (confirmed negative catalyst, strong counter-trend).
+7-9: Fatal territory — reserved for EXTREME situations only.
+
+DOUBLE-PENALIZATION RULE (important):
+If the technical agent scored 5/10 for "ranging market", that already captures the ranging risk.
+DO NOT add 5+ objection_strength just because the market is ranging — that's double-counting.
+In a ranging market with no other concerns, objection_strength should be 2-3 maximum.
+
 Do NOT mention options data (OI, volume, IV, bid-ask) — not your concern at this stage.
-Focus on: directional timing, macro headwinds, momentum quality, calendar risk.
+Focus on: genuine momentum quality, real macro headwinds, calendar risk.
 
 Respond ONLY with JSON:
 {
