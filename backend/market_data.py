@@ -155,6 +155,35 @@ def get_quote(symbol: str) -> dict:
     return {"symbol": symbol, "price": 0, "prev_close": 0, "pct_change": 0, "volume": 0}
 
 
+def get_premarket_snapshot(symbol: str) -> dict:
+    """
+    Overnight gap and pre-market volume via Polygon snapshot.
+    'todaysChange' reflects pre-market price vs previous close before 9:30am ET.
+    """
+    data = _get(f"/v2/snapshot/locale/us/markets/stocks/tickers/{symbol}")
+    if not data or not data.get("ticker"):
+        return {"symbol": symbol, "gap_pct": 0.0, "gap_direction": "flat",
+                "vol_ratio": 1.0, "significant": False}
+    t        = data["ticker"]
+    day      = t.get("day", {})
+    prev     = t.get("prevDay", {})
+    current  = day.get("o") or day.get("c") or prev.get("c") or 0
+    prev_c   = prev.get("c") or current
+    vol_today = float(day.get("v") or 0)
+    vol_prev  = float(prev.get("v") or 0)
+    gap_pct  = round((current - prev_c) / prev_c * 100, 2) if prev_c else 0.0
+    vol_ratio = round(vol_today / vol_prev, 2) if vol_prev > 0 else 1.0
+    return {
+        "symbol":       symbol,
+        "gap_pct":      gap_pct,
+        "gap_direction": "up" if gap_pct > 0.5 else ("down" if gap_pct < -0.5 else "flat"),
+        "vol_ratio":    vol_ratio,
+        "current":      current,
+        "prev_close":   prev_c,
+        "significant":  abs(gap_pct) >= 1.5 and vol_ratio >= 1.1,
+    }
+
+
 def get_vix() -> float:
     """VIX via Polygon (falls back to 20 if unavailable on free tier)."""
     try:

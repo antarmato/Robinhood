@@ -32,10 +32,16 @@ class ScannerAgent(BaseAgent):
 
     # ── Public entry point ─────────────────────────────────────────────────────
 
-    async def scan(self, symbol_performance: dict = None) -> list[dict]:
+    async def scan(
+        self,
+        symbol_performance: dict = None,
+        market_regime: dict = None,
+        premarket_context: dict = None,
+    ) -> list[dict]:
         """
-        symbol_performance: optional dict of {symbol: {win_rate, trade_count, avg_pnl}}
-        from OutcomeTracker. Used to boost/penalize symbols based on historical results.
+        symbol_performance : {symbol: {win_rate, trade_count, avg_pnl}} from OutcomeTracker
+        market_regime      : classify_regime() result — biases bull/bear scores
+        premarket_context  : {symbol: premarket_snapshot} — gap confirms direction
         """
         import os
         poly_key = os.getenv("POLYGON_API_KEY", "")
@@ -125,6 +131,48 @@ class ScannerAgent(BaseAgent):
                         logger.debug(f"{sym}: -1 performance penalty (win_rate={win_rate:.0%})")
                 d["best_score"]     = max(d["bull_score"], d["bear_score"])
                 d["best_direction"] = "bullish" if d["bull_score"] >= d["bear_score"] else "bearish"
+
+        # ── Market regime bias ────────────────────────────────────────────────
+        if market_regime:
+            regime   = market_regime.get("regime", "neutral")
+            strength = market_regime.get("strength", 5)
+            boost    = 2 if strength >= 8 else 1
+            if regime == "bull":
+                for d in iv_passed.values():
+                    d["bull_score"] = min(16, d["bull_score"] + boost)
+            elif regime == "bear":
+                for d in iv_passed.values():
+                    d["bear_score"] = min(16, d["bear_score"] + boost)
+            if regime != "neutral":
+                await self._emit("status",
+                    f"Regime {regime.upper()} (strength {strength}/10): "
+                    f"{'+' if regime == 'bull' else '-'}{boost} applied to "
+                    f"{'bull' if regime == 'bull' else 'bear'} scores")
+            for d in iv_passed.values():
+                d["best_score"]     = max(d["bull_score"], d["bear_score"])
+                d["best_direction"] = "bullish" if d["bull_score"] >= d["bear_score"] else "bearish"
+
+        # ── Pre-market gap bonus ───────────────────────────────────────────────
+        if premarket_context:
+            gap_notes = []
+            for sym, d in iv_passed.items():
+                pm = premarket_context.get(sym, {})
+                if not pm.get("significant"):
+                    continue
+                gap_pct = pm.get("gap_pct", 0.0)
+                gap_dir = pm.get("gap_direction", "flat")
+                d["premarket_gap"] = gap_pct
+                # Strong gap confirming direction = +2 bonus
+                if gap_dir == "up":
+                    d["bull_score"] = min(16, d["bull_score"] + 2)
+                    gap_notes.append(f"{sym}↑{gap_pct:+.1f}%")
+                elif gap_dir == "down":
+                    d["bear_score"] = min(16, d["bear_score"] + 2)
+                    gap_notes.append(f"{sym}↓{gap_pct:+.1f}%")
+                d["best_score"]     = max(d["bull_score"], d["bear_score"])
+                d["best_direction"] = "bullish" if d["bull_score"] >= d["bear_score"] else "bearish"
+            if gap_notes:
+                await self._emit("status", f"Pre-market gap signals: {', '.join(gap_notes)}")
 
         # ── Relative strength across filtered group ────────────────────────────
         if len(iv_passed) >= 3:
@@ -358,7 +406,9 @@ class ScannerAgent(BaseAgent):
                     f"{'bull' if direction=='bullish' else 'bear'}={score}, "
                     f"RSI={d['rsi']}, RS={d.get('rs_vs_group',0):+.1f}%"
                     f"{sqz}"
+                    + (f", gap{d['premarket_gap']:+.1f}%" if d.get("premarket_gap") else "")
                 ),
+                "premarket_gap": d.get("premarket_gap", 0.0),
                 "priority": len(selected) + 1,
             })
 

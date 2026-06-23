@@ -25,19 +25,38 @@ PROFIT_TARGET_PCT = 50 # close at 50% gain
 STOP_LOSS_PCT     = 50 # close at 50% loss
 
 
-def score_threshold(iv_rank: float, market_open: bool) -> float:
+def score_threshold(iv_rank: float, market_open: bool, time_of_day=None) -> float:
     """
-    Return the weighted_score threshold for this IV environment.
-    Lower IV = lower bar (cheap premium is forgiving).
-    Higher IV = higher bar (expensive premium needs a stronger setup).
+    Return the weighted_score threshold for this IV environment + time of day.
+
+    IV rank:
+      < 20  → 35 (cheap premium, easier bar)
+      40-60 → 43 (elevated premium, harder bar)
+      else  → 38 base
+
+    Time of day adjustments (ET):
+      9:30-10:30am  +3  opening chaos — prices whip, fakeouts common
+      12:00-2:00pm  +2  midday lull — low conviction moves
+      10:30-12:00pm -1  best morning window — momentum clear
+      2:30-4:00pm   -1  power hour — institutional trend follow-through
     """
-    base = THRESHOLD_MARKET if market_open else THRESHOLD_AFTERHOURS
+    from datetime import time as dtime
 
     if iv_rank > IV_RANK_HARD_MODE:
-        return THRESHOLD_HARD_MODE      # 43 — strong setup required
-    if iv_rank < 20:
-        return THRESHOLD_CHEAP_IV       # 35 — cheap premium, slightly lower bar
-    return base                         # 38 default
+        base = THRESHOLD_HARD_MODE
+    elif iv_rank < 20:
+        base = THRESHOLD_CHEAP_IV
+    else:
+        base = THRESHOLD_MARKET if market_open else THRESHOLD_AFTERHOURS
+
+    if time_of_day:
+        tod = time_of_day
+        if   dtime(9, 30)  <= tod < dtime(10, 30): base += 3
+        elif dtime(12, 0)  <= tod < dtime(14, 0):  base += 2
+        elif dtime(10, 30) <= tod < dtime(12, 0):  base -= 1
+        elif dtime(14, 30) <= tod <= dtime(16, 0): base -= 1
+
+    return float(base)
 
 
 def iv_edge_label(iv_rank: float) -> str:

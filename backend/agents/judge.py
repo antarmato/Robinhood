@@ -63,6 +63,7 @@ class JudgeAgent(BaseAgent):
         market_open: bool = False,
         symbol_history: list | None = None,
         iv_rank: float = 50.0,
+        market_regime: dict = None,
     ) -> dict:
         await self._emit("status", f"Judge: evaluating {symbol} {direction}...")
 
@@ -82,8 +83,10 @@ class JudgeAgent(BaseAgent):
                         "bull_case": "", "bear_case": ""}
 
         # ── Deterministic score + IV-aware threshold ──────────────────────────
+        now_et = datetime.now(_ET) if _ET else datetime.now()
+        tod    = now_et.time()
         weighted_score = _compute_score(technical, fundamental, sentiment, risk)
-        threshold      = score_threshold(iv_rank, market_open)
+        threshold      = score_threshold(iv_rank, market_open, time_of_day=tod)
         score_failed   = weighted_score < threshold
 
         # ── Strategy / HV context ─────────────────────────────────────────────
@@ -162,8 +165,6 @@ class JudgeAgent(BaseAgent):
             risk_flags.append("Price near lower Bollinger Band — limited downside room")
 
         # ── Time of day ───────────────────────────────────────────────────────
-        now_et = datetime.now(_ET) if _ET else datetime.now()
-        tod    = now_et.time()
         if   tod < dtime(9, 30):  tod_note = "Pre-open warm-up."
         elif tod < dtime(10, 30): tod_note = "Opening hour — momentum setups preferred."
         elif tod < dtime(12, 0):  tod_note = "Mid-morning."
@@ -186,11 +187,30 @@ class JudgeAgent(BaseAgent):
             if consistency_note:
                 hist_block += f"\n{consistency_note}"
 
+        # ── Market regime block ───────────────────────────────────────────────
+        regime_block = ""
+        if market_regime:
+            regime    = market_regime.get("regime", "neutral")
+            reg_str   = market_regime.get("summary", "")
+            vix_trend = market_regime.get("vix_trend", "flat")
+            mismatch  = (regime == "bear" and direction == "bullish") or \
+                        (regime == "bull" and direction == "bearish")
+            align     = (regime == "bull" and direction == "bullish") or \
+                        (regime == "bear" and direction == "bearish")
+            regime_block = (
+                f"\nMARKET REGIME: {regime.upper()} "
+                f"({'aligned with trade ✅' if align else 'misaligned with trade ⚠️' if mismatch else 'neutral'})"
+                f"\n  {reg_str}"
+                f"\n  VIX trend: {vix_trend}"
+                + (f"\n  ⚠️ Regime mismatch — directional trade against {regime} market" if mismatch else "")
+            )
+
         context = f"""[{session} | Cycle {cycle} | {tod_note}]
 
 TRADE: {symbol} {direction.upper()} {option_type.upper()} @ ${price:.2f}
 IV Rank: {iv_rank:.0f}/100 — {iv_edge_label(iv_rank)}
 VIX: {vix_level:.1f} ({vix_regime}) | HV Rank: {hv_rank:.0f}/100
+{regime_block}
 
 AGENT SCORES (Python-computed):
   Technical   {tech_s}/10: {technical.get('trend','?')} | {', '.join(technical.get('signals', [])[:3]) or technical.get('summary','')}

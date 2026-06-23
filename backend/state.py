@@ -15,14 +15,19 @@ STATE_FILE = Path("/app/data/state.json")
 
 def _default() -> dict:
     return {
-        "system_status": "stopped",
-        "active_trades":  [],       # trades confirmed and placed by Cowork artifact
-        "proposals":      [],       # pending/resolved/rejected proposals from agents
-        "exit_signals":   [],       # pending exit signals for Cowork to action
-        "cycle_count":    0,
-        "last_scan":      None,
-        "last_monitor":   None,
-        "event_log":      [],
+        "system_status":           "stopped",
+        "active_trades":           [],
+        "proposals":               [],
+        "exit_signals":            [],
+        "cycle_count":             0,
+        "last_scan":               None,
+        "last_monitor":            None,
+        "event_log":               [],
+        "symbol_history":          {},  # symbol -> list of last 10 analysis snapshots
+        "market_regime":           {},  # latest classify_regime() result
+        "premarket_context":       {},  # symbol -> premarket snapshot, reset each morning
+        "last_premarket_prep":     None,
+        "last_afterhours_capture": None,
     }
 
 
@@ -74,6 +79,39 @@ class StateManager:
         self._s["last_monitor"] = datetime.now().isoformat()
         self.save()
 
+    def record_symbol_analysis(self, symbol: str, direction: str, analysis: dict, decision: str, score: float):
+        """Store per-symbol analysis snapshot so future cycles can see history."""
+        if "symbol_history" not in self._s:
+            self._s["symbol_history"] = {}
+        hist = self._s["symbol_history"].setdefault(symbol, [])
+        tech = analysis.get("technical", {})
+        sent = analysis.get("sentiment", {})
+        fund = analysis.get("fundamental", {})
+        snap = {
+            "cycle":       self._s["cycle_count"],
+            "timestamp":   datetime.now().isoformat(),
+            "direction":   direction,
+            "decision":    decision,
+            "score":       round(score, 1),
+            "tech_score":  tech.get("score"),
+            "tech_trend":  tech.get("trend"),
+            "sent_score":  sent.get("score"),
+            "fund_score":  fund.get("score"),
+            "vix_regime":  sent.get("vix_regime"),
+            "rsi":         tech.get("rsi_reading", "")[:20] if tech.get("rsi_reading") else None,
+            "macd":        tech.get("macd_reading"),
+            "adv_strength":analysis.get("advocate", {}).get("objection_strength"),
+        }
+        hist.append(snap)
+        self._s["symbol_history"][symbol] = hist[-10:]  # keep last 10 per symbol
+        self.save()
+
+    def get_symbol_history(self, symbol: str) -> list:
+        return self._s.get("symbol_history", {}).get(symbol, [])
+
+    def get_all_symbol_history(self) -> dict:
+        return self._s.get("symbol_history", {})
+
     def get_full_state(self) -> dict:
         return self._s.copy()
 
@@ -120,6 +158,14 @@ class StateManager:
         self._s["active_trades"].append(trade)
         self.save()
 
+    def update_trade(self, trade_id: str, updates: dict):
+        """Patch fields on an active trade (e.g. high_water_pct, trailing_stop)."""
+        for t in self._s["active_trades"]:
+            if t.get("trade_id") == trade_id:
+                t.update(updates)
+                break
+        self.save()
+
     def close_trade(self, trade_id: str, pnl: float):
         self._s["active_trades"] = [
             t for t in self._s["active_trades"] if t.get("trade_id") != trade_id
@@ -148,6 +194,46 @@ class StateManager:
 
     def get_pending_exit_signals(self) -> list[dict]:
         return [s for s in self._s["exit_signals"] if s.get("status") == "pending"]
+
+    # ── Market regime + pre-market context ─────────────────────────────────────
+
+    @property
+    def market_regime(self) -> dict:
+        return self._s.get("market_regime", {})
+
+    @market_regime.setter
+    def market_regime(self, v: dict):
+        self._s["market_regime"] = v
+        self.save()
+
+    @property
+    def premarket_context(self) -> dict:
+        return self._s.get("premarket_context", {})
+
+    @premarket_context.setter
+    def premarket_context(self, v: dict):
+        self._s["premarket_context"] = v
+        self.save()
+
+    def mark_premarket_done(self):
+        self._s["last_premarket_prep"] = datetime.now().isoformat()
+        self.save()
+
+    def mark_afterhours_done(self):
+        self._s["last_afterhours_capture"] = datetime.now().isoformat()
+        self.save()
+
+    def get_last_premarket_date(self) -> Optional[str]:
+        ts = self._s.get("last_premarket_prep")
+        if ts:
+            return ts[:10]
+        return None
+
+    def get_last_afterhours_date(self) -> Optional[str]:
+        ts = self._s.get("last_afterhours_capture")
+        if ts:
+            return ts[:10]
+        return None
 
     # ── Event log ──────────────────────────────────────────────────────────────
 

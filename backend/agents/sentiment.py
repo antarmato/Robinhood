@@ -17,14 +17,19 @@ class SentimentAgent(BaseAgent):
     def __init__(self, client, broadcast: Optional[BroadcastFn] = None):
         super().__init__(client, "Sentiment", broadcast=broadcast)
 
-    async def analyze(self, symbol: str, direction: str, expiration_date: str = None) -> dict:
+    async def analyze(
+        self, symbol: str, direction: str,
+        expiration_date: str = None,
+        market_regime: dict = None,
+    ) -> dict:
         await self._emit("status", f"Sentiment: scoring macro for {symbol} ({direction})...")
 
-        vix     = md.get_vix()
-        macro   = self._get_macro_context()
-        sectors = md.get_sector_etf_performance()
+        vix       = md.get_vix()
+        macro     = self._get_macro_context()
+        sectors   = md.get_sector_etf_performance()
+        vix_trend = (market_regime or {}).get("vix_trend", "flat")
 
-        score, components = self._score(direction, vix, macro, sectors)
+        score, components = self._score(direction, vix, macro, sectors, vix_trend)
 
         # Compute VIX regime (same logic as before — still used by Judge)
         if vix > 30:   vix_regime = "extreme"
@@ -43,7 +48,7 @@ class SentimentAgent(BaseAgent):
             "sector_aligned": sector_aligned,
             "components":     components,
             "summary": (
-                f"VIX {vix:.1f} ({vix_regime}), "
+                f"VIX {vix:.1f} ({vix_regime}) {vix_trend if vix_trend != 'flat' else ''}, "
                 f"breadth {components.get('breadth_green', 0)}/3 green, "
                 f"sector {'aligned' if sector_aligned else 'misaligned'} — score {score}/10"
             ),
@@ -71,7 +76,7 @@ class SentimentAgent(BaseAgent):
 
     # ── Pure Python scoring ───────────────────────────────────────────────────
 
-    def _score(self, direction: str, vix: float, macro: dict, sectors: dict) -> tuple[float, dict]:
+    def _score(self, direction: str, vix: float, macro: dict, sectors: dict, vix_trend: str = "flat") -> tuple[float, dict]:
         score = 5.0
         components: dict = {}
 
@@ -135,5 +140,22 @@ class SentimentAgent(BaseAgent):
                         components["sector"] = "mixed sectors"
 
         components["sector_aligned"] = sector_aligned
+
+        # ── VIX trend ─────────────────────────────────────────────────────────
+        if vix_trend == "rising":
+            if direction == "bullish":
+                score -= 0.5
+                components["vix_trend"] = "rising — expanding fear, headwind for calls"
+            else:
+                score += 0.5
+                components["vix_trend"] = "rising — expanding fear, tailwind for puts"
+        elif vix_trend == "falling":
+            if direction == "bullish":
+                score += 0.5
+                components["vix_trend"] = "falling — fear contracting, tailwind for calls"
+            else:
+                score -= 0.5
+                components["vix_trend"] = "falling — fear contracting, headwind for puts"
+
         score = round(max(1.0, min(10.0, score)), 1)
         return score, components
