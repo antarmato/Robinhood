@@ -420,6 +420,24 @@ def get_pcr(symbol: str = "SPY") -> dict:
         return neutral
 
 
+def get_iv_rank_best(symbol: str) -> float:
+    """
+    Best available IV rank 0-100.
+    Tries Tradier (real options IV) first; falls back to HV rank from Polygon.
+    HV rank is a solid proxy — IV and HV are highly correlated.
+    Returns 50.0 if no data available (neutral — don't penalize or reward).
+    """
+    try:
+        iv = get_iv_rank(symbol)
+        if iv is not None:
+            return float(iv)
+    except Exception:
+        pass
+    hv = get_hv(symbol)
+    rank = hv.get("hv_rank")
+    return float(rank) if rank is not None else 50.0
+
+
 def get_hv(symbol: str) -> dict:
     """Historical volatility proxy: HV20, HV60, HV rank (0-100), regime."""
     import numpy as np

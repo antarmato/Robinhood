@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from .orchestrator import get_orchestrator
 from .state import get_state
+from .outcome_tracker import get_outcome_tracker
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -233,9 +234,16 @@ async def register_trade_get(api_key: str = "", symbol: str = "", option_type: s
 @app.get("/api/trades/{trade_id}/close")
 async def close_trade_get(trade_id: str, api_key: str = "", pnl: float = 0.0):
     _check_key(api_key)
-    get_state().close_trade(trade_id, pnl)
-    get_state().resolve_exit_signal(trade_id)
-    await _broadcast("system", "trade_closed", {"trade_id": trade_id, "pnl": pnl})
+    s = get_state()
+    # Find the trade to compute total PnL before removing it
+    trade = next((t for t in s.active_trades if t.get("trade_id") == trade_id), {})
+    contracts     = trade.get("contracts", 1)
+    entry_premium = float(trade.get("limit_price") or trade.get("max_premium") or 0)
+    pnl_pct = (pnl / (entry_premium * contracts * 100) * 100) if entry_premium and contracts else 0.0
+    s.close_trade(trade_id, pnl)
+    s.resolve_exit_signal(trade_id)
+    get_outcome_tracker().record_outcome(trade_id, pnl_pct, pnl)
+    await _broadcast("system", "trade_closed", {"trade_id": trade_id, "pnl": pnl, "pnl_pct": round(pnl_pct, 2)})
     return {"status": "ok"}
 
 @app.get("/api/exits/{trade_id}/resolve")
@@ -271,9 +279,15 @@ async def add_trade(req: AddTradeRequest):
 @app.post("/api/trades/close")
 async def close_trade(req: CloseTradeRequest):
     _check_key(req.api_key)
-    get_state().close_trade(req.trade_id, req.pnl)
-    get_state().resolve_exit_signal(req.trade_id)
-    await _broadcast("system", "trade_closed", {"trade_id": req.trade_id, "pnl": req.pnl})
+    s = get_state()
+    trade = next((t for t in s.active_trades if t.get("trade_id") == req.trade_id), {})
+    contracts     = trade.get("contracts", 1)
+    entry_premium = float(trade.get("limit_price") or trade.get("max_premium") or 0)
+    pnl_pct = (req.pnl / (entry_premium * contracts * 100) * 100) if entry_premium and contracts else 0.0
+    s.close_trade(req.trade_id, req.pnl)
+    s.resolve_exit_signal(req.trade_id)
+    get_outcome_tracker().record_outcome(req.trade_id, pnl_pct, req.pnl)
+    await _broadcast("system", "trade_closed", {"trade_id": req.trade_id, "pnl": req.pnl, "pnl_pct": round(pnl_pct, 2)})
     return {"status": "ok"}
 
 @app.post("/api/exits/{trade_id}/resolve")
@@ -302,6 +316,16 @@ async def stop(req: StartRequest):
 @app.get("/api/events")
 async def events():
     return {"events": get_state().get_full_state().get("event_log", [])[-50:]}
+
+@app.get("/api/stats")
+async def stats():
+    """Trade statistics: win rate, Kelly fraction, expectancy."""
+    tracker = get_outcome_tracker()
+    return {
+        "performance": tracker.get_stats(),
+        "kelly_ready": tracker.is_kelly_ready(),
+        "kelly_fraction": tracker.get_kelly_fraction(),
+    }
 
 # ── WebSocket ──────────────────────────────────────────────────────────────────
 

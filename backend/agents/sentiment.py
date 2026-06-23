@@ -1,17 +1,11 @@
 """
-Sentiment Agent — evaluates put/call ratio, options skew, VIX, and macro context.
+Sentiment Agent — pure Python scoring, no LLM.
 
-Improvements from v1:
-- VIX level context (fear/greed regime)
-- Sector ETF performance (is the stock's sector cooperating?)
-- More nuanced PCR interpretation
-- Macro breadth: SPY + QQQ + sector
+Scores 1-10 based on VIX level, sector ETF alignment, and market breadth.
 """
 
 import logging
 from typing import Optional
-
-import anthropic
 
 from .base import BaseAgent, BroadcastFn
 from .. import market_data as md
@@ -20,71 +14,42 @@ logger = logging.getLogger(__name__)
 
 
 class SentimentAgent(BaseAgent):
-    def __init__(
-        self,
-        client: anthropic.AsyncAnthropic,
-        broadcast: Optional[BroadcastFn] = None,
-    ):
-        super().__init__(client, "Sentiment", model="claude-haiku-4-5-20251001", broadcast=broadcast)
+    def __init__(self, client, broadcast: Optional[BroadcastFn] = None):
+        super().__init__(client, "Sentiment", broadcast=broadcast)
 
     async def analyze(self, symbol: str, direction: str, expiration_date: str = None) -> dict:
-        await self._emit("status", f"Analyzing sentiment and macro for {symbol}...")
+        await self._emit("status", f"Sentiment: scoring macro for {symbol} ({direction})...")
 
-        # Gather all context (these are fast yfinance calls)
-        spy_ctx   = self._get_macro_context()
-        pcr       = self._compute_pcr(symbol, expiration_date)
-        vix       = md.get_vix()
-        sectors   = md.get_sector_etf_performance()
-        context   = self._build_context(symbol, direction, spy_ctx, pcr, vix, sectors)
+        vix     = md.get_vix()
+        macro   = self._get_macro_context()
+        sectors = md.get_sector_etf_performance()
 
-        system = f"""You are a market sentiment analyst. Does macro/sentiment SUPPORT the proposed {direction} trade on {symbol}?
+        score, components = self._score(direction, vix, macro, sectors)
 
-VIX calibration (be accurate — VIX 20 is NORMAL, not bad):
-- VIX < 15: "low" — very calm, great for buying premium
-- VIX 15-22: "normal" — healthy market, neither helps nor hurts
-- VIX 22-30: "elevated" — more volatile, prefer spreads over naked options
-- VIX > 30: "extreme" — high fear, options very expensive
+        # Compute VIX regime (same logic as before — still used by Judge)
+        if vix > 30:   vix_regime = "extreme"
+        elif vix > 22: vix_regime = "elevated"
+        elif vix > 15: vix_regime = "normal"
+        else:          vix_regime = "low"
 
-IMPORTANT SCORING RULES:
-- If VIX is "normal" (15-22) and sector is aligned: score should be 5-7
-- VIX alone should NOT drop score below 5 unless VIX > 30
-- If PCR data is missing/N/A: IGNORE IT entirely — score based on VIX + sector + breadth only
-- Breadth "unavailable": treat as neutral, do not penalize
+        sector_aligned = components.get("sector_aligned", True)
 
-Score 7-9: strong macro support for the direction
-Score 5-6: neutral — no strong tailwind or headwind
-Score 3-4: weak headwinds (mild misalignment)
-Score 1-2: strong macro headwinds (VIX > 30, sector crashing opposite direction)
-
-Respond ONLY with JSON:
-{{
-  "score": <1-10>,
-  "skew": "bullish" | "neutral" | "bearish",
-  "vix_regime": "low" | "normal" | "elevated" | "extreme",
-  "macro_sentiment": "risk_on" | "neutral" | "risk_off",
-  "sector_aligned": true | false,
-  "summary": "<2 sentences: key macro factors and net verdict on {direction} trade>"
-}}"""
-
-        raw = await self._call(system, [{"role": "user", "content": context}], max_tokens=400, stream=False)
-        result = self._parse_json(raw)
-        result.setdefault("score", 5)
-        result.setdefault("summary", "Sentiment analysis complete.")
-        result.setdefault("skew", "neutral")
-        result.setdefault("macro_sentiment", "neutral")
-        result.setdefault("sector_aligned", True)
-
-        # Force accurate VIX data — do not trust LLM to infer these from text
-        result["vix_level"]  = round(float(vix), 1)
-        result["vix_regime"] = (
-            "extreme"  if vix > 30 else
-            "elevated" if vix > 22 else
-            "normal"   if vix > 15 else
-            "low"
-        )
-        # Clamp score: VIX 15-22 should never cause score < 4
-        if result["vix_regime"] in ("normal", "low") and result["score"] < 4:
-            result["score"] = 4
+        result = {
+            "score":          score,
+            "skew":           "bullish" if score >= 6 else ("bearish" if score <= 4 else "neutral"),
+            "vix_level":      round(float(vix), 1),
+            "vix_regime":     vix_regime,
+            "macro_sentiment": "risk_on" if score >= 6 else ("risk_off" if score <= 4 else "neutral"),
+            "sector_aligned": sector_aligned,
+            "components":     components,
+            "summary": (
+                f"VIX {vix:.1f} ({vix_regime}), "
+                f"breadth {components.get('breadth_green', 0)}/3 green, "
+                f"sector {'aligned' if sector_aligned else 'misaligned'} — score {score}/10"
+            ),
+        }
+        await self._emit("score", {"symbol": symbol, "score": score, "vix": vix,
+                                    "vix_regime": vix_regime, "sector_aligned": sector_aligned})
         return result
 
     # ── Data gathering ─────────────────────────────────────────────────────────
@@ -93,99 +58,82 @@ Respond ONLY with JSON:
         spy = md.get_quote("SPY")
         qqq = md.get_quote("QQQ")
         iwm = md.get_quote("IWM")
-        # If prices are 0, data failed — mark explicitly
-        spy_ok = spy.get("price", 0) > 0
-        qqq_ok = qqq.get("price", 0) > 0
-        iwm_ok = iwm.get("price", 0) > 0
+        spy_chg = spy.get("pct_change", 0)
+        qqq_chg = qqq.get("pct_change", 0)
+        iwm_chg = iwm.get("pct_change", 0)
         return {
-            "spy_price":    spy.get("price", 0),
-            "spy_change":   spy.get("pct_change", 0),
-            "qqq_price":    qqq.get("price", 0),
-            "qqq_change":   qqq.get("pct_change", 0),
-            "iwm_price":    iwm.get("price", 0),
-            "iwm_change":   iwm.get("pct_change", 0),
-            "data_ok":      spy_ok and qqq_ok,
-            "green_count":  sum([spy.get("pct_change",0)>0, qqq.get("pct_change",0)>0,
-                                 iwm.get("pct_change",0)>0]) if spy_ok else None,
+            "spy_change":  spy_chg,
+            "qqq_change":  qqq_chg,
+            "iwm_change":  iwm_chg,
+            "green_count": sum([spy_chg > 0, qqq_chg > 0, iwm_chg > 0]),
+            "data_ok":     spy.get("price", 0) > 0,
         }
 
-    def _compute_pcr(self, symbol: str, expiration_date: str) -> dict:
-        try:
-            calls = md.get_options_chain(symbol, expiration_date, "call")
-            puts  = md.get_options_chain(symbol, expiration_date, "put")
-            if not calls or not puts:
-                return {}
+    # ── Pure Python scoring ───────────────────────────────────────────────────
 
-            call_oi   = sum(c.get("open_interest", 0) for c in calls)
-            put_oi    = sum(p.get("open_interest", 0) for p in puts)
-            call_vol  = sum(c.get("volume", 0) for c in calls)
-            put_vol   = sum(p.get("volume", 0) for p in puts)
+    def _score(self, direction: str, vix: float, macro: dict, sectors: dict) -> tuple[float, dict]:
+        score = 5.0
+        components: dict = {}
 
-            call_ivs  = [c["implied_volatility"] for c in calls if c.get("implied_volatility", 0) > 0]
-            put_ivs   = [p["implied_volatility"] for p in puts  if p.get("implied_volatility", 0) > 0]
-            avg_call_iv = sum(call_ivs) / len(call_ivs) if call_ivs else 0
-            avg_put_iv  = sum(put_ivs)  / len(put_ivs)  if put_ivs  else 0
-
-            # OTM skew: compare 10-delta puts vs 10-delta calls
-            # Use options at ~10% OTM as proxy for skew
-            return {
-                "pcr_oi":      round(put_oi  / call_oi,  3) if call_oi  else None,
-                "pcr_vol":     round(put_vol / call_vol, 3) if call_vol else None,
-                "call_oi":     call_oi,
-                "put_oi":      put_oi,
-                "call_vol":    call_vol,
-                "put_vol":     put_vol,
-                "avg_call_iv": round(avg_call_iv, 4),
-                "avg_put_iv":  round(avg_put_iv, 4),
-                "iv_skew":     round(avg_put_iv - avg_call_iv, 4),
-            }
-        except Exception as e:
-            logger.error(f"PCR error for {symbol}: {e}")
-            return {}
-
-    def _build_context(
-        self,
-        symbol: str,
-        direction: str,
-        macro: dict,
-        pcr: dict,
-        vix: float,
-        sectors: dict,
-    ) -> str:
-        # Macro breadth
-        if macro.get("data_ok") and macro.get("green_count") is not None:
-            green_count = macro["green_count"]
-            breadth_str = f"{green_count}/3 major indexes green today"
+        # ── VIX component ──────────────────────────────────────────────────────
+        if vix < 15:
+            vix_adj = 1.5;   components["vix"] = f"low ({vix:.1f}) — calm, favor premium buyers"
+        elif vix <= 22:
+            vix_adj = 0.0;   components["vix"] = f"normal ({vix:.1f}) — no headwind"
+        elif vix <= 30:
+            vix_adj = -1.0;  components["vix"] = f"elevated ({vix:.1f}) — volatile, watch sizing"
         else:
-            breadth_str = "breadth data unavailable (ignore for scoring)"
+            vix_adj = -2.5;  components["vix"] = f"extreme ({vix:.1f}) — high fear, skip"
 
-        # Sector context (top 3 movers)
-        sector_lines = ""
+        # For put plays, high VIX is somewhat aligned (fear = bearish)
+        if direction == "bearish" and vix > 22:
+            vix_adj = max(0.0, vix_adj + 1.0)  # partial credit for bears in fearful market
+
+        score += vix_adj
+
+        # ── Breadth component ──────────────────────────────────────────────────
+        green_count = macro.get("green_count", 0) if macro.get("data_ok") else None
+        if green_count is not None:
+            if direction == "bullish":
+                breadth_adj = {0: -1.0, 1: -0.5, 2: 0.5, 3: 1.0}.get(green_count, 0)
+            else:
+                breadth_adj = {0: 1.0, 1: 0.5, 2: -0.5, 3: -1.0}.get(green_count, 0)
+            score += breadth_adj
+            components["breadth_green"] = green_count
+            components["breadth"] = f"{green_count}/3 indexes green"
+
+        # ── Sector component ──────────────────────────────────────────────────
+        sector_aligned = True
         if sectors:
-            sorted_sectors = sorted(sectors.items(), key=lambda x: abs(x[1]), reverse=True)[:4]
-            sector_lines = "\n".join(f"  {s}: {v:+.2f}%" for s, v in sorted_sectors)
+            # Find sector most likely relevant (we don't know the stock's sector here)
+            # Use simple majority: if more sectors are up than down, favor bulls
+            up_sectors   = sum(1 for v in sectors.values() if v > 0)
+            down_sectors = sum(1 for v in sectors.values() if v < 0)
+            total = up_sectors + down_sectors
+            if total > 0:
+                if direction == "bullish":
+                    if up_sectors / total >= 0.6:
+                        score += 1.5
+                        sector_aligned = True
+                        components["sector"] = f"{up_sectors}/{total} sectors up"
+                    elif down_sectors / total >= 0.6:
+                        score -= 1.0
+                        sector_aligned = False
+                        components["sector"] = f"{down_sectors}/{total} sectors down"
+                    else:
+                        components["sector"] = "mixed sectors"
+                else:  # bearish
+                    if down_sectors / total >= 0.6:
+                        score += 1.5
+                        sector_aligned = True
+                        components["sector"] = f"{down_sectors}/{total} sectors down"
+                    elif up_sectors / total >= 0.6:
+                        score -= 1.0
+                        sector_aligned = False
+                        components["sector"] = f"{up_sectors}/{total} sectors up"
+                    else:
+                        components["sector"] = "mixed sectors"
 
-        skew_val = pcr.get("iv_skew", 0)
-        skew_desc = ("Bearish skew (puts more expensive)" if skew_val > 0.03
-                     else "Bullish skew (calls more expensive)" if skew_val < -0.03
-                     else "Neutral skew")
-
-        return f"""Sentiment Analysis for {symbol} | Direction: {direction}
-
-═══ MACRO ═══
-VIX: {vix:.1f}  ({'Low fear' if vix < 15 else 'Normal' if vix < 20 else 'Elevated fear' if vix < 30 else 'HIGH FEAR'})
-SPY: ${macro.get('spy_price', 0):.2f}  ({macro.get('spy_change', 0):+.2f}%)
-QQQ: ${macro.get('qqq_price', 0):.2f}  ({macro.get('qqq_change', 0):+.2f}%)
-IWM: ${macro.get('iwm_price', 0):.2f}  ({macro.get('iwm_change', 0):+.2f}%)
-Market breadth: {breadth_str}
-
-═══ SECTOR ETF PERFORMANCE ═══
-{sector_lines if sector_lines else '  No sector data available'}
-
-═══ {symbol} OPTIONS FLOW ═══
-Put/Call Ratio (OI):  {pcr.get('pcr_oi', 'N/A')}
-Put/Call Ratio (Vol): {pcr.get('pcr_vol', 'N/A')}
-Call OI:  {pcr.get('call_oi', 0):,}  |  Put OI:  {pcr.get('put_oi', 0):,}
-Call Vol: {pcr.get('call_vol', 0):,}  |  Put Vol: {pcr.get('put_vol', 0):,}
-Avg Call IV: {pcr.get('avg_call_iv', 0):.1%}  |  Avg Put IV: {pcr.get('avg_put_iv', 0):.1%}
-IV Skew (Put IV - Call IV): {skew_val:.4f}  → {skew_desc}"""
+        components["sector_aligned"] = sector_aligned
+        score = round(max(1.0, min(10.0, score)), 1)
+        return score, components

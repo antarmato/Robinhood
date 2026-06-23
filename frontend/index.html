@@ -62,13 +62,7 @@
   .proposal-card .detail{color:var(--muted);font-size:11px;margin-top:3px}
   .proposal-card .conf{color:var(--text);font-size:11px;margin-top:4px}
 
-  #proposals-list{max-height:160px;overflow-y:auto}
-  .hist-sym{font-weight:700;font-size:12px;color:var(--accent);margin-bottom:4px}
-  .hist-row{display:grid;grid-template-columns:40px 55px 30px 30px 30px 1fr;gap:4px;font-size:10px;color:var(--muted);padding:2px 0;border-bottom:1px solid rgba(255,255,255,.04)}
-  .hist-row:last-child{border-bottom:none}
-  .hist-row .dec-t{color:#34d399}.hist-row .dec-p{color:var(--muted)}
-  .hist-block{margin-bottom:10px;padding:6px;background:rgba(255,255,255,.03);border-radius:4px}
-  .consist{color:#fbbf24;font-size:10px;margin-top:3px}
+  #proposals-list{max-height:200px;overflow-y:auto}
   .no-items{color:var(--muted);font-size:11px;padding:4px 0}
 
   ::-webkit-scrollbar{width:4px;height:4px}
@@ -81,7 +75,6 @@
   <span id="sys-badge" class="badge b-stop">STOPPED</span>
   <span id="cycle">Cycle: 0</span>
   <span id="mkt">Checking market...</span>
-  <span id="et-clock" style="font-size:11px;color:var(--muted);margin-left:12px">—</span>
 </div>
 
 <div id="main">
@@ -115,23 +108,13 @@
       </div>
     </div>
 
-    <div class="sec" style="overflow:hidden;display:flex;flex-direction:column">
+    <div class="sec" style="flex:1;overflow:hidden;display:flex;flex-direction:column">
       <h3>Pending Proposals</h3>
-      <div class="sec-body" style="overflow-y:auto">
+      <div class="sec-body" style="overflow-y:auto;flex:1">
         <div id="proposals-list"><span class="no-items">None — agents are deliberating</span></div>
         <p style="color:var(--muted);font-size:10px;margin-top:8px;line-height:1.5">
           Open the <strong style="color:var(--accent)">Cowork Artifact</strong> in your session to review and execute proposals.
         </p>
-      </div>
-    </div>
-
-    <div class="sec" style="flex:1;overflow:hidden;display:flex;flex-direction:column">
-      <h3 style="display:flex;justify-content:space-between;align-items:center">
-        Symbol History
-        <span style="font-size:10px;font-weight:400;color:var(--muted)">last 5 cycles per symbol</span>
-      </h3>
-      <div class="sec-body" style="overflow-y:auto;flex:1">
-        <div id="history-list"><span class="no-items">No history yet — starts accumulating after first scan</span></div>
       </div>
     </div>
   </div>
@@ -256,26 +239,6 @@ function showProposals(proposals) {
   document.getElementById('st-props').textContent = proposals.length;
 }
 
-function tickETClock() {
-  const et = new Date().toLocaleString('en-US', {timeZone:'America/New_York', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:true});
-  const h  = parseInt(new Date().toLocaleString('en-US', {timeZone:'America/New_York', hour:'numeric', hour12:false}));
-  const m  = parseInt(new Date().toLocaleString('en-US', {timeZone:'America/New_York', minute:'numeric'}));
-  const day= new Date().toLocaleString('en-US', {timeZone:'America/New_York', weekday:'short'});
-  const mins = h*60+m;
-  const isWeekend = day==='Sat'||day==='Sun';
-  let phase;
-  if (isWeekend)           phase = {label:'WEEKEND', color:'#6b7280'};
-  else if (mins < 9*60)    phase = {label:'PRE-MARKET', color:'#6b7280'};
-  else if (mins < 9*60+30) phase = {label:'PRE-OPEN WARM-UP', color:'#fbbf24'};
-  else if (mins < 16*60)   phase = {label:'MARKET OPEN', color:'#34d399'};
-  else                     phase = {label:'MARKET CLOSED', color:'#6b7280'};
-  document.getElementById('et-clock').textContent = `${et} ET`;
-  document.getElementById('mkt').textContent = phase.label;
-  document.getElementById('mkt').style.color = phase.color;
-}
-tickETClock();
-setInterval(tickETClock, 1000);
-
 async function refreshStatus() {
   try {
     const r = await fetch('/api/status');
@@ -287,41 +250,7 @@ async function refreshStatus() {
     const pr = await fetch('/api/proposals');
     const pd = await pr.json();
     showProposals(pd.pending||[]);
-    const hr = await fetch('/api/history');
-    const hd = await hr.json();
-    showHistory(hd);
   } catch(e){}
-}
-
-function showHistory(hist) {
-  const el = document.getElementById('history-list');
-  const syms = Object.keys(hist);
-  if (!syms.length) { el.innerHTML='<span class="no-items">No history yet</span>'; return; }
-  el.innerHTML = syms.sort().map(sym => {
-    const rows = hist[sym].slice(-5).reverse();
-    const recent = hist[sym].slice(-3);
-    const consistBull = recent.length===3 && recent.every(h=>h.tech_score>=6 && h.direction==='bullish');
-    const consistBear = recent.length===3 && recent.every(h=>h.tech_score>=6 && h.direction==='bearish');
-    const consistNote = consistBull ? '⚡ Consistent bullish 3+ cycles' : consistBear ? '⚡ Consistent bearish 3+ cycles' : '';
-    const rowsHtml = rows.map(h => {
-      const decCls = h.decision==='trade' ? 'dec-t' : 'dec-p';
-      const dir = h.direction==='bullish' ? '▲' : '▼';
-      return `<div class="hist-row">
-        <span>#${h.cycle}</span>
-        <span class="${decCls}">${h.decision?.toUpperCase()}</span>
-        <span>${dir}</span>
-        <span>T:${h.tech_score??'?'}</span>
-        <span>S:${h.sent_score??'?'}</span>
-        <span style="color:${h.score>=50?'#34d399':'#f87171'}">${h.score}</span>
-      </div>`;
-    }).join('');
-    return `<div class="hist-block">
-      <div class="hist-sym">${sym}</div>
-      <div style="font-size:9px;color:var(--muted);margin-bottom:3px">Cycle | Decision | Dir | Tech | Sent | Score</div>
-      ${rowsHtml}
-      ${consistNote ? `<div class="consist">${consistNote}</div>` : ''}
-    </div>`;
-  }).join('');
 }
 
 function apiKey() { return document.getElementById('api-key').value; }

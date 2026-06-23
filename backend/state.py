@@ -16,14 +16,13 @@ STATE_FILE = Path("/app/data/state.json")
 def _default() -> dict:
     return {
         "system_status": "stopped",
-        "active_trades":  [],
-        "proposals":      [],
-        "exit_signals":   [],
+        "active_trades":  [],       # trades confirmed and placed by Cowork artifact
+        "proposals":      [],       # pending/resolved/rejected proposals from agents
+        "exit_signals":   [],       # pending exit signals for Cowork to action
         "cycle_count":    0,
         "last_scan":      None,
         "last_monitor":   None,
         "event_log":      [],
-        "symbol_history": {},   # symbol -> list of last 10 analysis snapshots
     }
 
 
@@ -74,39 +73,6 @@ class StateManager:
     def update_last_monitor(self):
         self._s["last_monitor"] = datetime.now().isoformat()
         self.save()
-
-    def record_symbol_analysis(self, symbol: str, direction: str, analysis: dict, decision: str, score: float):
-        """Store per-symbol analysis snapshot so future cycles can see history."""
-        if "symbol_history" not in self._s:
-            self._s["symbol_history"] = {}
-        hist = self._s["symbol_history"].setdefault(symbol, [])
-        tech = analysis.get("technical", {})
-        sent = analysis.get("sentiment", {})
-        fund = analysis.get("fundamental", {})
-        snap = {
-            "cycle":       self._s["cycle_count"],
-            "timestamp":   datetime.now().isoformat(),
-            "direction":   direction,
-            "decision":    decision,
-            "score":       round(score, 1),
-            "tech_score":  tech.get("score"),
-            "tech_trend":  tech.get("trend"),
-            "sent_score":  sent.get("score"),
-            "fund_score":  fund.get("score"),
-            "vix_regime":  sent.get("vix_regime"),
-            "rsi":         tech.get("rsi_reading", "")[:20] if tech.get("rsi_reading") else None,
-            "macd":        tech.get("macd_reading"),
-            "adv_strength":analysis.get("advocate", {}).get("objection_strength"),
-        }
-        hist.append(snap)
-        self._s["symbol_history"][symbol] = hist[-10:]  # keep last 10 per symbol
-        self.save()
-
-    def get_symbol_history(self, symbol: str) -> list:
-        return self._s.get("symbol_history", {}).get(symbol, [])
-
-    def get_all_symbol_history(self) -> dict:
-        return self._s.get("symbol_history", {})
 
     def get_full_state(self) -> dict:
         return self._s.copy()

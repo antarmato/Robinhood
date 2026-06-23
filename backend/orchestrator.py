@@ -1,7 +1,12 @@
 """
 Orchestrator — analysis-only deliberation loop.
 Runs agents, stores trade proposals in state for Cowork to execute.
-No Robinhood credentials required here.
+
+Pipeline (v2):
+  Scanner (pure Python, IV-first) → candidates
+  For each: [Technical + Fundamental + Sentiment + Risk] in parallel (all pure Python)
+  Judge (single LLM call) → decision
+  OutcomeTracker.record_entry() on approved proposal
 """
 
 import asyncio
@@ -13,7 +18,7 @@ try:
     from zoneinfo import ZoneInfo
     _ET = ZoneInfo("America/New_York")
 except ImportError:
-    _ET = None  # falls back to system TZ — set TZ=America/New_York in Railway
+    _ET = None
 from typing import Any, Callable, Awaitable
 
 import anthropic
@@ -21,9 +26,10 @@ import anthropic
 from .agents import (
     ScannerAgent, TechnicalAgent,
     FundamentalAgent, SentimentAgent, RiskAgent,
-    DevilsAdvocateAgent, JudgeAgent, MonitorAgent,
+    JudgeAgent, MonitorAgent,
 )
 from .state import get_state
+from .outcome_tracker import get_outcome_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -37,17 +43,18 @@ class Orchestrator:
         self._task: asyncio.Task | None = None
         self._claude: anthropic.AsyncAnthropic | None = None
 
-        # SPY/QQQ removed — they're macro benchmarks that always score 5/10 technical
-        # Replaced with more directional names that actually trend
-        watchlist_raw = os.getenv("WATCHLIST", "NVDA,AAPL,MSFT,TSLA,AMZN,META,GOOGL,AMD,NFLX,CRM,COIN,MSTR,PLTR,SMCI,CRWD,HOOD,UBER,SOFI,RIVN,IONQ")
-        self.watchlist        = [s.strip() for s in watchlist_raw.split(",")]
-        self.max_loss         = float(os.getenv("MAX_LOSS_PER_TRADE", "200"))
-        self._scan_interval_market = int(os.getenv("SCAN_INTERVAL_MINUTES", "20")) * 60
-        self._scan_interval_after  = int(os.getenv("SCAN_INTERVAL_AFTER_HOURS_MINUTES", "120")) * 60
-        self.scan_interval = self._scan_interval_market  # updated dynamically
-        self.monitor_interval = int(os.getenv("MONITOR_INTERVAL_MINUTES", "15")) * 60
-        self.max_dte          = int(os.getenv("MAX_DTE", "45"))
-        self.min_dte          = int(os.getenv("MIN_DTE", "7"))
+        watchlist_raw = os.getenv(
+            "WATCHLIST",
+            "NVDA,AAPL,MSFT,TSLA,AMZN,META,GOOGL,AMD,NFLX,CRM,COIN,MSTR,PLTR,SMCI,CRWD,HOOD,UBER,SOFI,RIVN,IONQ"
+        )
+        self.watchlist              = [s.strip() for s in watchlist_raw.split(",")]
+        self.max_loss               = float(os.getenv("MAX_LOSS_PER_TRADE", "200"))
+        self._scan_interval_market  = int(os.getenv("SCAN_INTERVAL_MINUTES", "20")) * 60
+        self._scan_interval_after   = int(os.getenv("SCAN_INTERVAL_AFTER_HOURS_MINUTES", "120")) * 60
+        self.scan_interval          = self._scan_interval_market
+        self.monitor_interval       = int(os.getenv("MONITOR_INTERVAL_MINUTES", "15")) * 60
+        self.max_dte                = int(os.getenv("MAX_DTE", "45"))
+        self.min_dte                = int(os.getenv("MIN_DTE", "7"))
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -88,21 +95,19 @@ class Orchestrator:
 
         while True:
             try:
-                # Only scan during market hours (9:15am–4pm ET, Mon–Fri)
                 if not self._is_market_hours():
                     now_dt = datetime.now()
                     if not self._is_trading_day():
-                        wait_msg = f"Weekend — system idle until Monday 9:00am ET. (Now {self._now_et().strftime('%a %I:%M %p ET')})"
-                        sleep_s  = 3600  # check every hour on weekends
+                        wait_msg = f"Weekend — idle until Monday 9:00am ET. ({self._now_et().strftime('%a %I:%M %p ET')})"
+                        sleep_s  = 3600
                     else:
-                        # Weekday but outside hours
-                        market_open = now_dt.replace(hour=9, minute=0, second=0, microsecond=0)
-                        if now_dt < market_open:
-                            secs = (market_open - now_dt).total_seconds()
-                            wait_msg = f"Pre-market — warm-up scan at 9:00am ET ({int(secs/60)} min away). Now {self._now_et().strftime('%I:%M %p ET')}."
+                        market_open_dt = now_dt.replace(hour=9, minute=0, second=0, microsecond=0)
+                        if now_dt < market_open_dt:
+                            secs = (market_open_dt - now_dt).total_seconds()
+                            wait_msg = f"Pre-market — warm-up at 9:00am ET ({int(secs/60)} min). Now {self._now_et().strftime('%I:%M %p ET')}."
                             sleep_s  = min(secs, 1800)
                         else:
-                            wait_msg = "Market closed — system idle until 9:15am ET tomorrow."
+                            wait_msg = "Market closed — idle until 9:00am ET tomorrow."
                             sleep_s  = 3600
 
                     await self._emit("system", "info", {"message": wait_msg})
@@ -119,11 +124,19 @@ class Orchestrator:
 
                 if now - last_scan >= self.scan_interval:
                     last_scan = now
-                    if not self.state.has_pending_proposal():
-                        await self._run_scan_cycle()
-                    else:
-                        await self._emit("system", "info",
-                            {"message": "Pending proposal awaiting execution — skipping scan."})
+                    self._expire_stale_proposals()
+                    # Always scan — never block on pending proposals.
+                    # _store_proposal skips duplicates (same symbol+direction already pending).
+                    pending = self.state.get_pending_proposals()
+                    if pending:
+                        ages = ", ".join(
+                            f"{p.get('symbol')}({self._proposal_age_minutes(p):.0f}min)"
+                            for p in pending
+                        )
+                        await self._emit("system", "info", {
+                            "message": f"ℹ️ {len(pending)} proposal(s) still pending: {ages}. Scanning for better opportunities..."
+                        })
+                    await self._run_scan_cycle()
 
                 await asyncio.sleep(30)
 
@@ -135,7 +148,7 @@ class Orchestrator:
                 await self._emit("system", "error", {"message": err_str})
                 if "credit balance" in err_str.lower() or "billing" in err_str.lower():
                     await self._emit("system", "error",
-                        {"message": "⚠️ API credits exhausted — pausing 30 min. Add credits at console.anthropic.com/billing"})
+                        {"message": "⚠️ API credits exhausted — pausing 30 min."})
                     await asyncio.sleep(1800)
                 else:
                     await asyncio.sleep(60)
@@ -145,15 +158,17 @@ class Orchestrator:
     async def _run_scan_cycle(self):
         self.state.increment_cycle()
         cycle = self.state.cycle_count
-        market_open = self._is_market_hours()
         phase = self._session_phase()
-        session_label = {"pre_open": "PRE-OPEN WARM-UP", "market": "LIVE MARKET",
-                         "after_hours": "AFTER-HOURS", "closed": "CLOSED"}.get(phase, "LIVE")
+        session_label = {
+            "pre_open": "PRE-OPEN WARM-UP", "market": "LIVE MARKET",
+            "after_hours": "AFTER-HOURS", "closed": "CLOSED"
+        }.get(phase, "LIVE")
         await self._emit("system", "cycle_start", {"cycle": cycle, "session": session_label})
         logger.info(f"Starting cycle {cycle} [{session_label}]")
 
+        symbol_performance = get_outcome_tracker().get_all_symbol_stats()
         scanner    = ScannerAgent(self.claude, self.watchlist, self._make_broadcast())
-        candidates = await scanner.scan()
+        candidates = await scanner.scan(symbol_performance=symbol_performance)
 
         if not candidates:
             await self._emit("system", "info",
@@ -171,29 +186,31 @@ class Orchestrator:
             symbol    = candidate.get("symbol", "")
             direction = candidate.get("direction", "bullish")
             price     = candidate.get("current_price", 0)
+            iv_rank   = candidate.get("iv_rank", 50.0)
 
-            await self._emit("system", "analyzing",
-                {"symbol": symbol, "direction": direction, "priority": i + 1,
-                 "signal_strength": candidate.get("signal_strength", 0),
-                 "reason": candidate.get("key_reason", "")})
+            await self._emit("system", "analyzing", {
+                "symbol": symbol, "direction": direction, "priority": i + 1,
+                "signal_strength": candidate.get("signal_strength", 0),
+                "iv_rank": iv_rank,
+                "reason": candidate.get("key_reason", ""),
+            })
 
-            result = await self._analyze_candidate(symbol, direction, price)
+            result = await self._analyze_candidate(symbol, direction, price, iv_rank)
 
             if result is None:
                 rejection_log.append(f"{symbol}: analysis error")
                 continue
 
-            judge = result.get("judge", {})
+            judge    = result.get("judge", {})
             decision = judge.get("decision", "pass")
             reason   = judge.get("pass_reason") or judge.get("reasoning", "")
             score    = judge.get("weighted_score", 0)
             conf     = judge.get("confidence", 0)
 
-            # Persist analysis snapshot for future cycles to reference
             self.state.record_symbol_analysis(symbol, direction, result, decision, score)
 
             if decision == "trade":
-                logger.info(f"Cycle {cycle}: {symbol} APPROVED — score={score}, conf={conf}")
+                logger.info(f"Cycle {cycle}: {symbol} APPROVED — score={score}, conf={conf}, IV={iv_rank:.0f}")
                 if score > best_score:
                     best_score  = score
                     best_result = result
@@ -208,55 +225,65 @@ class Orchestrator:
         else:
             summary = " | ".join(rejection_log) if rejection_log else "All candidates failed deliberation"
             await self._emit("system", "info",
-                {"message": f"Cycle {cycle} complete — no trades. Rejections: {summary}"})
-            logger.info(f"Cycle {cycle} no trade. {summary}")
+                {"message": f"Cycle {cycle} complete — no trades. {summary}"})
 
     # ── Candidate analysis ─────────────────────────────────────────────────────
 
-    async def _analyze_candidate(self, symbol: str, direction: str, price: float) -> dict | None:
+    async def _analyze_candidate(
+        self, symbol: str, direction: str, price: float, iv_rank: float
+    ) -> dict | None:
         try:
             market_open = self._is_market_hours()
-            # Step 1: Technical, Fundamental, Sentiment — run in parallel (no options data needed)
+
+            # All pure Python agents run in parallel
             tech_agent  = TechnicalAgent(self.claude, self._make_broadcast())
             fund_agent  = FundamentalAgent(self.claude, self._make_broadcast())
             sent_agent  = SentimentAgent(self.claude, self._make_broadcast())
+            risk_agent  = RiskAgent(self.claude, self.max_loss, self._make_broadcast())
 
-            technical, fundamental, sentiment = await asyncio.gather(
+            technical, fundamental, sentiment, risk = await asyncio.gather(
                 tech_agent.analyze(symbol, direction),
-                fund_agent.analyze(symbol),          # uses 45-day window default
+                fund_agent.analyze(symbol),
                 sent_agent.analyze(symbol, direction),
+                risk_agent.evaluate(symbol, {}, self.state.active_trades),
             )
 
-            # Step 2: Risk sizing (budget-only, no premium required)
-            risk_agent = RiskAgent(self.claude, self.max_loss, self._make_broadcast())
-            risk = await risk_agent.evaluate(symbol, {}, self.state.active_trades)
+            # Short-circuit if risk hard-rejected
+            if not risk.get("approved", True):
+                return {
+                    "symbol": symbol, "direction": direction, "price": price,
+                    "technical": technical, "fundamental": fundamental,
+                    "sentiment": sentiment, "risk": risk,
+                    "judge": {
+                        "decision": "pass", "weighted_score": 0, "confidence": 0,
+                        "pass_reason": risk.get("rejection_reason", "Risk rejected"),
+                        "trade_proposal": None, "bull_case": "", "bear_case": "",
+                        "reasoning": risk.get("rejection_reason", ""),
+                    },
+                    "iv_rank": iv_rank,
+                }
 
-            # Step 3: Devil's Advocate
-            advocate_agent = DevilsAdvocateAgent(self.claude, self._make_broadcast())
-            advocate = await advocate_agent.challenge(
-                symbol, direction, technical, {}, fundamental, sentiment, risk
-            )
-
-            # Step 4: Judge — outputs option parameters as recommendation for Cowork
+            # Single LLM call: Judge
             symbol_history = self.state.get_symbol_history(symbol)
-            judge_agent = JudgeAgent(self.claude, self._make_broadcast())
+            judge_agent    = JudgeAgent(self.claude, self._make_broadcast())
             judge = await judge_agent.decide(
-                symbol, direction, technical, fundamental, sentiment,
-                risk, advocate, self.state.cycle_count,
+                symbol, direction, technical, fundamental, sentiment, risk,
+                self.state.cycle_count,
                 market_open=market_open,
                 symbol_history=symbol_history,
+                iv_rank=iv_rank,
             )
 
             return {
                 "symbol": symbol, "direction": direction, "price": price,
                 "technical": technical, "fundamental": fundamental,
-                "sentiment": sentiment, "risk": risk, "advocate": advocate, "judge": judge,
+                "sentiment": sentiment, "risk": risk, "judge": judge,
+                "iv_rank": iv_rank,
             }
 
         except Exception as e:
             logger.exception(f"Error analyzing {symbol}: {e}")
-            await self._emit("system", "error",
-                {"message": f"{symbol} analysis error: {e}"})
+            await self._emit("system", "error", {"message": f"{symbol} analysis error: {e}"})
             return None
 
     # ── Proposal storage ───────────────────────────────────────────────────────
@@ -268,34 +295,63 @@ class Orchestrator:
             logger.warning("Judge returned trade decision but no proposal")
             return
 
-        proposal["proposal_id"]  = str(uuid.uuid4())
-        proposal["proposed_at"]  = datetime.now().isoformat()
-        proposal["status"]       = "pending"
+        # Skip if this exact symbol+direction already has a pending proposal
+        # (avoids spamming Cowork with the same trade every 20 min)
+        pending = self.state.get_pending_proposals()
+        for p in pending:
+            if p.get("symbol") == proposal.get("symbol") and \
+               p.get("direction") == proposal.get("direction"):
+                age = self._proposal_age_minutes(p)
+                await self._emit("system", "info", {
+                    "message": (
+                        f"↩ {proposal['symbol']} {proposal['direction']} already pending "
+                        f"({age:.0f} min old) — keeping existing proposal."
+                    )
+                })
+                return
+
+        proposal["proposal_id"]   = str(uuid.uuid4())
+        proposal["proposed_at"]   = datetime.now().isoformat()
+        proposal["status"]        = "pending"
         proposal["current_price"] = analysis.get("price", 0)
         proposal["analysis_summary"] = {
             "direction":      analysis.get("direction"),
+            "iv_rank":        analysis.get("iv_rank"),
             "bull_case":      judge.get("bull_case", ""),
             "bear_case":      judge.get("bear_case", ""),
             "reasoning":      judge.get("reasoning", ""),
             "confidence":     judge.get("confidence"),
             "weighted_score": judge.get("weighted_score"),
+            "threshold":      judge.get("threshold"),
             "agent_scores": {
-                "technical":          analysis["technical"].get("score"),
-                "fundamental":        analysis["fundamental"].get("score"),
-                "sentiment":          analysis["sentiment"].get("score"),
-                "risk":               analysis["risk"].get("score"),
-                "objection_strength": analysis["advocate"].get("objection_strength"),
+                "technical":   analysis["technical"].get("score"),
+                "fundamental": analysis["fundamental"].get("score"),
+                "sentiment":   analysis["sentiment"].get("score"),
+                "risk":        analysis["risk"].get("score"),
             },
         }
 
         self.state.add_proposal(proposal)
+
+        # Record entry in outcome tracker so we can measure results later
+        tracker = get_outcome_tracker()
+        tracker.record_entry(proposal["proposal_id"], proposal, {
+            "iv_rank":        analysis.get("iv_rank"),
+            "tech_score":     analysis["technical"].get("score"),
+            "sent_score":     analysis["sentiment"].get("score"),
+            "fund_score":     analysis["fundamental"].get("score"),
+            "weighted_score": judge.get("weighted_score"),
+            "confidence":     judge.get("confidence"),
+        })
+
         await self._emit("system", "trade_proposal", proposal)
         await self._emit("system", "info", {
             "message": (
                 f"📋 PROPOSAL: {proposal['symbol']} {proposal.get('option_type','').upper()} "
                 f"| DTE {proposal.get('dte_min')}-{proposal.get('dte_max')} "
                 f"| Max ${proposal.get('max_premium', 0):.2f}/share "
-                f"| Conf={judge.get('confidence')}/10 Score={judge.get('weighted_score'):.0f} "
+                f"| IV rank {analysis.get('iv_rank', 50):.0f}/100 "
+                f"| Conf={judge.get('confidence')}/10 Score={judge.get('weighted_score'):.0f}/{judge.get('threshold'):.0f} "
                 f"| Open Cowork to approve."
             )
         })
@@ -306,15 +362,12 @@ class Orchestrator:
         active = self.state.active_trades
         if not active:
             return
-
         monitor = MonitorAgent(self.claude, self._make_broadcast())
         signals = await monitor.check_positions(active)
-
         for sig in signals:
             if sig.get("action") == "exit":
                 await self._emit("system", "exit_signal", sig)
                 self.state.add_exit_signal(sig)
-
         self.state.update_last_monitor()
 
     # ── Helpers ────────────────────────────────────────────────────────────────
@@ -332,16 +385,43 @@ class Orchestrator:
             except Exception as e:
                 logger.debug(f"Broadcast error: {e}")
 
+    PROPOSAL_TIMEOUT_MINUTES = 30
+
+    def _expire_stale_proposals(self):
+        """Auto-reject proposals that have been pending > PROPOSAL_TIMEOUT_MINUTES."""
+        pending = self.state.get_pending_proposals()
+        for p in pending:
+            age = self._proposal_age_minutes(p)
+            if age >= self.PROPOSAL_TIMEOUT_MINUTES:
+                pid = p.get("proposal_id", "")
+                self.state.resolve_proposal(pid, "rejected", {"auto_expired": True})
+                logger.info(f"Auto-expired proposal {pid} for {p.get('symbol')} after {age:.0f} min")
+                self.state.log_event("proposal_expired", {
+                    "proposal_id": pid,
+                    "symbol":      p.get("symbol"),
+                    "age_minutes": round(age, 1),
+                    "message": (
+                        f"Proposal {p.get('symbol')} expired after {age:.0f} min "
+                        f"— Cowork did not process it. Resuming scan."
+                    ),
+                })
+
+    @staticmethod
+    def _proposal_age_minutes(proposal: dict) -> float:
+        try:
+            proposed_at = datetime.fromisoformat(proposal.get("proposed_at", ""))
+            return (datetime.now() - proposed_at).total_seconds() / 60
+        except Exception:
+            return 0.0
+
     @staticmethod
     def _now_et() -> datetime:
-        """Current time in US/Eastern — works correctly regardless of Railway TZ setting."""
         if _ET:
             return datetime.now(_ET)
-        return datetime.now()  # fallback: set TZ=America/New_York in Railway Variables
+        return datetime.now()
 
     @classmethod
     def _is_market_hours(cls) -> bool:
-        """9:00am–4:00pm ET, Mon–Fri. 9:00 start gives a warm-up scan before the 9:30 open."""
         now = cls._now_et()
         if now.weekday() >= 5:
             return False
@@ -353,15 +433,11 @@ class Orchestrator:
 
     @classmethod
     def _session_phase(cls) -> str:
-        """Returns 'pre_open', 'market', 'after_hours', or 'closed'."""
         now = cls._now_et()
         t   = now.time()
-        if now.weekday() >= 5:
-            return "closed"
-        if t < dtime(9, 30):
-            return "pre_open"
-        if t <= dtime(16, 0):
-            return "market"
+        if now.weekday() >= 5:        return "closed"
+        if t < dtime(9, 30):          return "pre_open"
+        if t <= dtime(16, 0):         return "market"
         return "after_hours"
 
 
