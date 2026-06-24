@@ -49,13 +49,20 @@ class RiskAgent(BaseAgent):
                 "rejection_reason": f"Already have open position in {symbol}",
                 "summary": f"Rejected: duplicate position in {symbol}.",
             }
-        if len(current_positions) >= 3:
+        MAX_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", "4"))
+        if len(current_positions) >= MAX_POSITIONS:
             return {
                 "approved": False, "contracts": 0, "max_premium": 0,
                 "total_max_loss": 0, "limit_price": 0, "score": 1,
-                "rejection_reason": "Max 3 open positions reached",
-                "summary": "Rejected: max positions reached.",
+                "rejection_reason": f"Max {MAX_POSITIONS} open positions reached",
+                "summary": f"Rejected: max positions reached.",
             }
+
+        # Directional concentration (informational, not a hard block)
+        direction_counts = {"bullish": 0, "bearish": 0}
+        for p in current_positions:
+            d = p.get("direction", "bullish")
+            direction_counts[d] = direction_counts.get(d, 0) + 1
 
         # Budget: use Kelly if we have enough history, else flat budget
         budget = self._compute_budget()
@@ -69,13 +76,22 @@ class RiskAgent(BaseAgent):
         sizing_note = (
             f"Kelly {kelly:.1%} × budget = ${budget:.0f}"
             if kelly_ready and kelly > 0
-            else f"Flat budget ${budget:.0f} (need {10 - stats.get('total_trades', 0)} more closed trades for Kelly)"
+            else f"Flat budget ${budget:.0f} (need {max(0, 10 - stats.get('total_trades', 0))} more closed trades for Kelly)"
         )
+
+        bull_open = direction_counts.get("bullish", 0)
+        bear_open = direction_counts.get("bearish", 0)
+        concentration_note = ""
+        if bull_open >= 2 and bear_open == 0:
+            concentration_note = " ⚠️ All-bull portfolio — zero hedge."
+        elif bear_open >= 2 and bull_open == 0:
+            concentration_note = " ⚠️ All-bear portfolio — zero hedge."
 
         await self._emit("sizing", {
             "symbol": symbol, "contracts": 1,
             "max_premium": max_premium, "total_max_loss": budget,
             "kelly_ready": kelly_ready, "kelly": kelly,
+            "bull_open": bull_open, "bear_open": bear_open,
         })
 
         return {
@@ -85,10 +101,11 @@ class RiskAgent(BaseAgent):
             "limit_price":    max_premium,
             "total_max_loss": budget,
             "rejection_reason": None,
-            "score":          8,
+            "score":          8 if not concentration_note else 7,
             "summary": (
                 f"1 contract, max ${max_premium:.2f}/share (≤${budget:.0f} total). "
-                f"{len(current_positions)}/3 positions open. {sizing_note}"
+                f"{len(current_positions)}/{MAX_POSITIONS} positions open "
+                f"({bull_open}B/{bear_open}P).{concentration_note} {sizing_note}"
             ),
         }
 
