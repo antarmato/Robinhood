@@ -137,15 +137,55 @@ def get_intraday(symbol: str, period: str = "5d", interval: str = "1h") -> pd.Da
 
 
 # ── Quotes ────────────────────────────────────────────────────────────────────
+# Alpaca IEX feed = real-time prices (free tier).
+# Polygon snapshot = 15-min delayed on free tier → used as fallback only.
+
+_ALPACA_BASE = "https://data.alpaca.markets"
+
+
+def _alpaca_headers() -> dict:
+    return {
+        "APCA-API-KEY-ID":     os.getenv("ALPACA_API_KEY", ""),
+        "APCA-API-SECRET-KEY": os.getenv("ALPACA_API_SECRET", ""),
+        "Accept": "application/json",
+    }
+
+
+def _alpaca_available() -> bool:
+    return bool(os.getenv("ALPACA_API_KEY", ""))
+
 
 def get_batch_quotes(symbols: list) -> dict:
-    """Live prices for multiple symbols in one Polygon snapshot call. Returns {symbol: price}."""
+    """
+    Real-time prices via Alpaca IEX feed (free tier).
+    Falls back to Polygon snapshot if ALPACA_API_KEY not set.
+    Returns {symbol: price}.
+    """
+    if _alpaca_available():
+        try:
+            r = requests.get(
+                f"{_ALPACA_BASE}/v2/stocks/trades/latest",
+                params={"symbols": ",".join(symbols), "feed": "iex"},
+                headers=_alpaca_headers(),
+                timeout=_TIMEOUT,
+            )
+            if r.status_code == 200:
+                trades = r.json().get("trades", {})
+                result = {sym: float(t["p"]) for sym, t in trades.items() if t.get("p")}
+                if result:
+                    return result
+            else:
+                logger.warning(f"Alpaca batch quotes {r.status_code}: {r.text[:80]}")
+        except Exception as e:
+            logger.error(f"Alpaca batch quotes: {e}")
+
+    # Polygon fallback (delayed on free tier)
     tickers = ",".join(symbols)
     data = _get("/v2/snapshot/locale/us/markets/stocks/tickers", {"tickers": tickers})
     result = {}
     if data and data.get("tickers"):
         for t in data["tickers"]:
-            sym = t.get("ticker", "")
+            sym  = t.get("ticker", "")
             last = (t.get("lastTrade") or {}).get("p", 0)
             day  = t.get("day", {})
             prev = t.get("prevDay", {})
@@ -156,13 +196,35 @@ def get_batch_quotes(symbols: list) -> dict:
 
 
 def get_quote(symbol: str) -> dict:
-    """Current price via Polygon snapshot."""
+    """
+    Current price — Alpaca IEX (real-time) with Polygon fallback.
+    """
+    if _alpaca_available():
+        try:
+            r = requests.get(
+                f"{_ALPACA_BASE}/v2/stocks/{symbol}/trades/latest",
+                params={"feed": "iex"},
+                headers=_alpaca_headers(),
+                timeout=_TIMEOUT,
+            )
+            if r.status_code == 200:
+                trade = r.json().get("trade", {})
+                price = float(trade.get("p", 0))
+                if price:
+                    return {
+                        "symbol": symbol, "price": price,
+                        "prev_close": price, "pct_change": 0.0, "volume": 0,
+                    }
+        except Exception as e:
+            logger.error(f"Alpaca quote {symbol}: {e}")
+
+    # Polygon fallback
     data = _get(f"/v2/snapshot/locale/us/markets/stocks/tickers/{symbol}")
     if data and data.get("ticker"):
-        t = data["ticker"]
-        day = t.get("day", {})
+        t    = data["ticker"]
+        day  = t.get("day", {})
         prev = t.get("prevDay", {})
-        price = day.get("c") or prev.get("c") or 0
+        price      = day.get("c") or prev.get("c") or 0
         prev_close = prev.get("c") or price
         pct = round((price - prev_close) / prev_close * 100, 2) if prev_close else 0
         return {
