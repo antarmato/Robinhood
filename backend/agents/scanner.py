@@ -226,6 +226,11 @@ class ScannerAgent(BaseAgent):
         candidates = self._select_candidates(iv_passed)
         cand_list  = [f"{c['symbol']} {c['direction']}(IV={c.get('iv_rank','?')})" for c in candidates]
         await self._emit("status", f"Selected {len(candidates)} candidate(s): {cand_list}")
+        # Attach full scored dict to each scanner result for orchestrator use
+        for c in candidates:
+            c["_scanner_data"] = iv_passed.get(c["symbol"], {})
+        # Store all scored symbols so orchestrator can build a complete scan summary
+        self._all_scored = iv_passed
         return candidates
 
     # ── Data fetch ─────────────────────────────────────────────────────────────

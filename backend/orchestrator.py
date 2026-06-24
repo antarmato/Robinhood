@@ -275,6 +275,8 @@ class Orchestrator:
             market_regime=regime,
             premarket_context=premarket,
         )
+        # All 15 scanner scores (for complete scan board display)
+        all_scored  = getattr(scanner, "_all_scored", {})
 
         if not candidates:
             await self._emit("system", "info",
@@ -372,6 +374,27 @@ class Orchestrator:
                 "message": f"Cycle {cycle} done — no trades. "
                            + (" | ".join(rejections) or "All passed threshold")
             })
+
+        # Add remaining watchlist symbols (scorer-only, not fully analyzed) to scan board
+        analyzed_syms = {e["symbol"] for e in scan_summary}
+        for sym, d in all_scored.items():
+            if sym in analyzed_syms:
+                continue
+            direction = d.get("best_direction", "bullish")
+            scan_summary.append({
+                "symbol":    sym,
+                "direction": direction,
+                "price":     d.get("live_price") or d.get("price", 0),
+                "iv_rank":   d.get("iv_rank", 50),
+                "rsi":       d.get("rsi", 0),
+                "bull_score": d.get("bull_score", 0),
+                "bear_score": d.get("bear_score", 0),
+                "decision":  "pass",
+                "pass_reason": f"Not in top-5 (scanner bull={d.get('bull_score',0)} bear={d.get('bear_score',0)})",
+                "proposal_generated": False,
+                "_scanner_only": True,
+            })
+
         self.state.store_scan_results(scan_summary, cycle)
 
     # ── Candidate analysis ─────────────────────────────────────────────────────
