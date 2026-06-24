@@ -470,6 +470,20 @@ class Orchestrator:
         fundamental = analysis.get("fundamental", {})
         sentiment   = analysis.get("sentiment", {})
 
+        # Dynamic DTE: shorter in strong trends (higher leverage), longer in mixed conditions
+        # Bull/bear regime + high confidence → 28 days; neutral or low confidence → 42 days
+        regime     = analysis.get("market_regime", {})
+        reg_name   = regime.get("regime", "neutral") if regime else "neutral"
+        reg_str    = regime.get("strength", 5) if regime else 5
+        conf       = judge.get("confidence", 5)
+        wt_score   = judge.get("weighted_score", 0)
+        if (reg_name != "neutral") and reg_str >= 7 and conf >= 7 and wt_score >= 50:
+            entry_dte = 28   # high conviction, strong regime → shorter DTE for leverage
+        elif conf <= 5 or wt_score < 42:
+            entry_dte = 42   # marginal setup → more time to be right
+        else:
+            entry_dte = 35   # standard
+
         pos = {
             "position_id":       str(uuid.uuid4()),
             "symbol":            symbol,
@@ -479,7 +493,7 @@ class Orchestrator:
             "entry_option_price": 1.00,   # $1.00/share × 100 = $100 total
             "contracts":         1,
             "total_cost":        100.00,
-            "entry_dte":         35,
+            "entry_dte":         entry_dte,
             "delta":             0.25,
             "iv_rank":           iv_rank,
             "weighted_score":    judge.get("weighted_score", 0),
@@ -504,10 +518,11 @@ class Orchestrator:
             "symbol": symbol, "direction": direction, "option_type": opt_type,
             "entry_price": price, "score": judge.get("weighted_score"),
             "confidence": judge.get("confidence"),
+            "entry_dte": entry_dte,
             "message": (
                 f"SIM OPENED: {symbol} {opt_type.upper()} @ ${price:.2f} | "
                 f"Score {judge.get('weighted_score'):.0f} | Conf {judge.get('confidence')}/10 | "
-                f"$100 max loss"
+                f"DTE {entry_dte} | $100 max loss"
             ),
         })
         logger.info(
