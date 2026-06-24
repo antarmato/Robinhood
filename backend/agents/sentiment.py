@@ -2,6 +2,7 @@
 Sentiment Agent — pure Python scoring, no LLM.
 
 Scores 1-10 based on VIX level, sector ETF alignment, and market breadth.
+Uses symbol-specific sector ETF mapping for precise alignment scoring.
 """
 
 import logging
@@ -11,6 +12,21 @@ from .base import BaseAgent, BroadcastFn
 from .. import market_data as md
 
 logger = logging.getLogger(__name__)
+
+# Hard-coded sector ETF for each watchlist symbol (covers default + common additions)
+_SECTOR_ETF = {
+    # Tech
+    "NVDA": "XLK", "AMD": "XLK", "SMCI": "XLK", "PLTR": "XLK",
+    "IONQ": "XLK", "ROKU": "XLK", "CRM": "XLK",
+    # Crypto/Fintech adjacent (use XLK as best proxy)
+    "MSTR": "XLK", "COIN": "XLK",
+    # Financials
+    "SOFI": "XLF", "HOOD": "XLF", "SQ": "XLF", "PYPL": "XLF",
+    # Consumer Discretionary
+    "TSLA": "XLY", "RIVN": "XLY", "UBER": "XLY",
+    # Broad market (no sector tilt)
+    "SPY": "SPY", "QQQ": "XLK",
+}
 
 
 class SentimentAgent(BaseAgent):
@@ -24,12 +40,13 @@ class SentimentAgent(BaseAgent):
     ) -> dict:
         await self._emit("status", f"Sentiment: scoring macro for {symbol} ({direction})...")
 
-        vix       = md.get_vix()
-        macro     = self._get_macro_context()
-        sectors   = md.get_sector_etf_performance()
-        vix_trend = (market_regime or {}).get("vix_trend", "flat")
+        vix          = md.get_vix()
+        macro        = self._get_macro_context()
+        sectors      = md.get_sector_etf_performance()
+        vix_trend    = (market_regime or {}).get("vix_trend", "flat")
+        primary_etf  = _SECTOR_ETF.get(symbol)     # specific ETF for this symbol
 
-        score, components = self._score(direction, vix, macro, sectors, vix_trend)
+        score, components = self._score(direction, vix, macro, sectors, vix_trend, primary_etf)
 
         # Compute VIX regime (same logic as before — still used by Judge)
         if vix > 30:   vix_regime = "extreme"
@@ -76,7 +93,8 @@ class SentimentAgent(BaseAgent):
 
     # ── Pure Python scoring ───────────────────────────────────────────────────
 
-    def _score(self, direction: str, vix: float, macro: dict, sectors: dict, vix_trend: str = "flat") -> tuple[float, dict]:
+    def _score(self, direction: str, vix: float, macro: dict, sectors: dict,
+               vix_trend: str = "flat", primary_etf: str = None) -> tuple[float, dict]:
         score = 5.0
         components: dict = {}
 
@@ -110,34 +128,45 @@ class SentimentAgent(BaseAgent):
         # ── Sector component ──────────────────────────────────────────────────
         sector_aligned = True
         if sectors:
-            # Find sector most likely relevant (we don't know the stock's sector here)
-            # Use simple majority: if more sectors are up than down, favor bulls
-            up_sectors   = sum(1 for v in sectors.values() if v > 0)
-            down_sectors = sum(1 for v in sectors.values() if v < 0)
-            total = up_sectors + down_sectors
-            if total > 0:
+            # If we know the symbol's specific sector ETF, use it directly (±2.0 pts)
+            # Otherwise fall back to majority vote across all sectors (±1.5 pts)
+            primary_chg = sectors.get(primary_etf) if primary_etf else None
+            if primary_chg is not None:
                 if direction == "bullish":
-                    if up_sectors / total >= 0.6:
-                        score += 1.5
-                        sector_aligned = True
-                        components["sector"] = f"{up_sectors}/{total} sectors up"
-                    elif down_sectors / total >= 0.6:
-                        score -= 1.0
-                        sector_aligned = False
-                        components["sector"] = f"{down_sectors}/{total} sectors down"
-                    else:
-                        components["sector"] = "mixed sectors"
+                    if   primary_chg > 1.0:  score += 2.0; sector_aligned = True
+                    elif primary_chg > 0.0:  score += 1.0; sector_aligned = True
+                    elif primary_chg < -1.0: score -= 1.5; sector_aligned = False
+                    elif primary_chg < 0.0:  score -= 0.5; sector_aligned = False
                 else:  # bearish
-                    if down_sectors / total >= 0.6:
-                        score += 1.5
-                        sector_aligned = True
-                        components["sector"] = f"{down_sectors}/{total} sectors down"
-                    elif up_sectors / total >= 0.6:
-                        score -= 1.0
-                        sector_aligned = False
-                        components["sector"] = f"{up_sectors}/{total} sectors up"
-                    else:
-                        components["sector"] = "mixed sectors"
+                    if   primary_chg < -1.0: score += 2.0; sector_aligned = True
+                    elif primary_chg < 0.0:  score += 1.0; sector_aligned = True
+                    elif primary_chg > 1.0:  score -= 1.5; sector_aligned = False
+                    elif primary_chg > 0.0:  score -= 0.5; sector_aligned = False
+                components["sector"] = f"{primary_etf} {primary_chg:+.2f}%"
+            else:
+                # Fallback: majority of all sector ETFs
+                up_sectors   = sum(1 for v in sectors.values() if v > 0)
+                down_sectors = sum(1 for v in sectors.values() if v < 0)
+                total = up_sectors + down_sectors
+                if total > 0:
+                    if direction == "bullish":
+                        if up_sectors / total >= 0.6:
+                            score += 1.5; sector_aligned = True
+                            components["sector"] = f"{up_sectors}/{total} sectors up"
+                        elif down_sectors / total >= 0.6:
+                            score -= 1.0; sector_aligned = False
+                            components["sector"] = f"{down_sectors}/{total} sectors down"
+                        else:
+                            components["sector"] = "mixed sectors"
+                    else:  # bearish
+                        if down_sectors / total >= 0.6:
+                            score += 1.5; sector_aligned = True
+                            components["sector"] = f"{down_sectors}/{total} sectors down"
+                        elif up_sectors / total >= 0.6:
+                            score -= 1.0; sector_aligned = False
+                            components["sector"] = f"{up_sectors}/{total} sectors up"
+                        else:
+                            components["sector"] = "mixed sectors"
 
         components["sector_aligned"] = sector_aligned
 
