@@ -86,7 +86,20 @@ class JudgeAgent(BaseAgent):
         now_et = datetime.now(_ET) if _ET else datetime.now()
         tod    = now_et.time()
         weighted_score = _compute_score(technical, fundamental, sentiment, risk)
-        threshold      = score_threshold(iv_rank, market_open, time_of_day=tod)
+        # Regime alignment for threshold
+        _r_aligned = None
+        _r_strength = 0
+        if market_regime:
+            _reg = market_regime.get("regime", "neutral")
+            _r_strength = market_regime.get("strength", 0)
+            if _reg == "bull" and direction == "bullish":
+                _r_aligned = True
+            elif _reg == "bear" and direction == "bearish":
+                _r_aligned = True
+            elif _reg in ("bull", "bear"):
+                _r_aligned = False   # counter-trend
+        threshold = score_threshold(iv_rank, market_open, time_of_day=tod,
+                                    regime_aligned=_r_aligned, regime_strength=_r_strength)
         score_failed   = weighted_score < threshold
 
         # ── Strategy / HV context ─────────────────────────────────────────────

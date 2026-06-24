@@ -25,7 +25,8 @@ PROFIT_TARGET_PCT = 50 # close at 50% gain
 STOP_LOSS_PCT     = 50 # close at 50% loss
 
 
-def score_threshold(iv_rank: float, market_open: bool, time_of_day=None) -> float:
+def score_threshold(iv_rank: float, market_open: bool, time_of_day=None,
+                    regime_aligned: bool = None, regime_strength: int = 0) -> float:
     """
     Return the weighted_score threshold for this IV environment + time of day.
 
@@ -39,6 +40,11 @@ def score_threshold(iv_rank: float, market_open: bool, time_of_day=None) -> floa
       12:00-2:00pm  +2  midday lull — low conviction
       10:30-12:00pm -1  best morning window
       2:30-4:00pm   -1  power hour — institutional follow-through
+
+    Regime:
+      Aligned + strength ≥ 7 → -2 (strong regime tailwind)
+      Aligned + strength ≥ 5 → -1
+      Misaligned             → +3 (counter-trend = much harder bar)
 
     Adaptive: self-adjusts ±5 based on rolling sim win rate
       < 35% → +5 (losing badly — raise bar)
@@ -61,6 +67,15 @@ def score_threshold(iv_rank: float, market_open: bool, time_of_day=None) -> floa
         elif dtime(12, 0)  <= tod < dtime(14, 0):  base += 2
         elif dtime(10, 30) <= tod < dtime(12, 0):  base -= 1
         elif dtime(14, 30) <= tod <= dtime(16, 0): base -= 1
+
+    # ── Regime alignment adjustment ───────────────────────────────────────────
+    if regime_aligned is True:
+        if regime_strength >= 7:
+            base -= 2   # strong tailwind — lower bar
+        elif regime_strength >= 5:
+            base -= 1   # moderate tailwind
+    elif regime_aligned is False:
+        base += 3   # counter-trend is much harder — only exceptional setups qualify
 
     # ── Adaptive adjustment from rolling sim win rate ─────────────────────────
     try:
