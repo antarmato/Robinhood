@@ -440,16 +440,38 @@ async def diagnostics():
         except Exception as e:
             return {"ok": False, "detail": str(e)[:150], "latency_ms": round((time.time()-t0)*1000)}
 
-    hist_r, quotes_r, macro_r, ant_r = await _aio.gather(
+    async def _test_alpaca_news():
+        t0 = time.time()
+        try:
+            news = await loop.run_in_executor(
+                None, lambda: mdata.get_news_sentiment("NVDA", limit=5))
+            ms = round((time.time() - t0) * 1000)
+            if not news.get("available"):
+                return {"ok": False, "detail": "Alpaca news unavailable or key not set", "latency_ms": ms}
+            return {
+                "ok": True,
+                "detail": (
+                    f"NVDA: {news.get('total', 0)} articles | "
+                    f"score {news.get('score', 0):+.2f} "
+                    f"({news.get('positive', 0)}+ / {news.get('negative', 0)}-)"
+                ),
+                "latency_ms": ms,
+            }
+        except Exception as e:
+            return {"ok": False, "detail": str(e)[:150], "latency_ms": round((time.time()-t0)*1000)}
+
+    hist_r, quotes_r, macro_r, ant_r, news_r = await _aio.gather(
         _test_alpaca_history(),
         _test_alpaca_quotes(),
         _test_alpaca_macro(),
         _test_anthropic(),
+        _test_alpaca_news(),
     )
     results["alpaca_history"]   = hist_r
     results["alpaca_quotes"]    = quotes_r
     results["alpaca_macro"]     = macro_r
     results["anthropic"]        = ant_r
+    results["alpaca_news"]      = news_r
     results["all_ok"] = all(
         v.get("ok", False)
         for v in results.values()

@@ -740,15 +740,25 @@ function renderClosedTrades(trades) {
   // Show most recent first
   const sorted = [...trades].reverse();
   el.innerHTML = sorted.map(t => {
-    const pnl  = t.pnl_dollars ?? 0;
-    const pnlC = pnl > 0 ? 'var(--green)' : 'var(--red)';
-    const pnlStr = `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`;
-    const reason = (t.exit_reason || '').slice(0, 40);
+    const pnl    = t.pnl_dollars ?? 0;
+    const pnlPct = t.pnl_pct ?? 0;
+    const pnlC   = pnl > 0 ? 'var(--green)' : 'var(--red)';
+    const pnlStr = `${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}% ($${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)})`;
+    const reason  = (t.exit_reason || '').slice(0, 50);
     const typeStr = t.option_type?.toUpperCase() || '?';
-    return `<div class="ct-row">
+    const days    = t.days_held != null ? `${t.days_held}d` : '';
+    const score   = t.weighted_score != null ? `sc${t.weighted_score.toFixed(0)}` : '';
+    const meta    = [days, score, t.entry_dte ? `dte${t.entry_dte}` : ''].filter(Boolean).join(' ');
+    const tooltip = [
+      `Score: ${t.weighted_score?.toFixed(1) ?? '—'} | Conf: ${t.confidence ?? '—'}/10`,
+      `Tech: ${t.tech_score ?? '—'} | Fund: ${t.fund_score ?? '—'} | Sent: ${t.sent_score ?? '—'}`,
+      `Exit: ${t.exit_reason || '—'}`,
+      `Days held: ${t.days_held ?? '—'}`,
+    ].join('\n');
+    return `<div class="ct-row" title="${esc(tooltip)}">
       <span class="ct-sym">${esc(t.symbol)}</span>
       <span class="ct-type" style="color:${t.direction==='bullish'?'var(--green)':'var(--red)'}">${typeStr}</span>
-      <span class="ct-reason">${esc(reason)}</span>
+      <span class="ct-reason" style="font-size:10px;color:var(--muted)">${esc(reason)}</span>
       <span class="ct-pnl" style="color:${pnlC}">${pnlStr}</span>
     </div>`;
   }).join('');
