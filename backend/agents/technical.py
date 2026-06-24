@@ -68,7 +68,11 @@ class TechnicalAgent(BaseAgent):
             "ema20_slope":    round(ind["ema20_slope"], 3),
             "rs_5d":          round(ind.get("rs_5d", 0), 2),
             "momentum_5d":    round(ind.get("momentum_5d", 0), 2),
+            "momentum_60d":   round(ind.get("momentum_60d", 0), 2),
             "w52_pct":        round(ind.get("w52_pct", 50), 1),
+            "avg_vol_20d":    round(ind.get("avg_vol_20d", 0)),
+            "stoch_k":        round(ind.get("stoch_k", 50), 1),
+            "stoch_d":        round(ind.get("stoch_d", 50), 1),
         }
         await self._emit("score", {"symbol": symbol, "score": score, "trend": trend,
                                     "signals": signals, "fatal_flaw": fatal_flaw})
@@ -159,7 +163,8 @@ class TechnicalAgent(BaseAgent):
         ind["w52_pct"] = (price - ind["low_52w"]) / rng * 100 if rng > 0 else 50.0
 
         vol_avg20 = float(volume.iloc[-21:-1].mean()) if len(volume) >= 21 else float(volume.mean())
-        ind["vol_ratio"] = float(volume.iloc[-1]) / vol_avg20 if vol_avg20 > 0 else 1.0
+        ind["vol_ratio"]   = float(volume.iloc[-1]) / vol_avg20 if vol_avg20 > 0 else 1.0
+        ind["avg_vol_20d"] = vol_avg20  # absolute avg daily volume (shares)
 
         # ── Momentum (5d, 20d, 60d returns) ──────────────────────────────────
         ind["momentum_5d"]  = (float(close.iloc[-1]) - float(close.iloc[-5]))  / float(close.iloc[-5])  * 100 if len(close) >= 5  else 0.0
@@ -241,6 +246,13 @@ class TechnicalAgent(BaseAgent):
 
         above_ema20 = price > i["ema20"]
         above_ema50 = price > i["ema50"]
+
+        # ── Liquidity check (both directions) ────────────────────────────────
+        avg_vol = i.get("avg_vol_20d", 1_000_000)
+        if avg_vol < 500_000:
+            score -= 1.5; signals.append(f"thin volume {avg_vol/1e6:.1f}M avg — wide option spreads")
+        elif avg_vol < 1_000_000:
+            score -= 0.5; signals.append(f"moderate volume {avg_vol/1e6:.1f}M avg")
 
         if direction == "bullish":
             # ── EMA alignment (max +1.5, not +2.0) ───────────────────────────
