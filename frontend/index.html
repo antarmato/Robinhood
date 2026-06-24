@@ -716,8 +716,15 @@ function renderScan(data) {
     const scoreBreak = (r.tech_score != null)
       ? `Tech:${r.tech_score?.toFixed(1)} Fund:${r.fund_score?.toFixed(1)} Sent:${r.sent_score?.toFixed(1)}`
       : '';
+    const vwapStr = r.vwap20_pct != null
+      ? `VWAP20:${r.vwap20_pct >= 0 ? '+' : ''}${r.vwap20_pct?.toFixed(1)}%` : '';
+    const stochStr = r.stoch_k != null ? `Stoch:${r.stoch_k?.toFixed(0)}` : '';
+    const mtfStr   = r.momentum_60d != null
+      ? `MTF60d:${r.momentum_60d >= 0 ? '+' : ''}${r.momentum_60d?.toFixed(1)}%` : '';
+    const indicStr = [vwapStr, stochStr, mtfStr].filter(Boolean).join(' | ');
     const tooltipLines = [
       scoreBreak,
+      indicStr,
       r.pass_reason  ? `Reason: ${r.pass_reason}` : '',
       r.reasoning    ? `Judge: ${r.reasoning}` : '',
       r.bull_case    ? `Bull: ${r.bull_case}` : '',

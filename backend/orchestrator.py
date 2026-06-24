@@ -320,6 +320,7 @@ class Orchestrator:
             self.state.record_symbol_analysis(symbol, direction, result, decision, score)
             news_data = result["sentiment"].get("news", {})
             news_headline = (news_data.get("headlines") or [None])[0] if news_data else None
+            tech = result["technical"]
             scan_summary.append({
                 "symbol":          symbol,
                 "direction":       direction,
@@ -328,19 +329,22 @@ class Orchestrator:
                 "rsi":             candidate.get("rsi", 0),
                 "bull_score":      candidate.get("bull_score", 0),
                 "bear_score":      candidate.get("bear_score", 0),
-                "tech_score":      result["technical"].get("score"),
+                "tech_score":      tech.get("score"),
                 "fund_score":      result["fundamental"].get("score"),
                 "sent_score":      result["sentiment"].get("score"),
                 "weighted_score":  score,
                 "confidence":      conf,
                 "decision":        decision,
                 "pass_reason":     (reason or "")[:120],
-                "tech_fatal_flaw": result["technical"].get("fatal_flaw"),
+                "tech_fatal_flaw": tech.get("fatal_flaw"),
                 "news_score":      news_data.get("score") if news_data and news_data.get("available") else None,
                 "news_headline":   news_headline,
                 "bull_case":       judge.get("bull_case", ""),
                 "bear_case":       judge.get("bear_case", ""),
                 "reasoning":       judge.get("reasoning", ""),
+                "vwap20_pct":      tech.get("vwap20_pct"),
+                "stoch_k":         tech.get("stoch_k"),
+                "momentum_60d":    tech.get("momentum_60d"),
                 "proposal_generated": False,
             })
 
