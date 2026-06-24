@@ -51,11 +51,11 @@ class Orchestrator:
 
         watchlist_raw = os.getenv(
             "WATCHLIST",
-            "NVDA,AAPL,MSFT,TSLA,AMZN,META,GOOGL,AMD,NFLX,CRM,COIN,MSTR,PLTR,SMCI,CRWD,HOOD,UBER,SOFI,RIVN,IONQ"
+            "PLTR,HOOD,SOFI,RIVN,IONQ,AMD,SMCI,MSTR"
         )
         self.watchlist         = [s.strip() for s in watchlist_raw.split(",")]
         self.max_loss          = float(os.getenv("MAX_LOSS_PER_TRADE", "100"))
-        self.scan_interval     = int(os.getenv("SCAN_INTERVAL_MINUTES", "20")) * 60
+        self.scan_interval     = int(os.getenv("SCAN_INTERVAL_MINUTES", "30")) * 60
         self.monitor_interval  = int(os.getenv("MONITOR_INTERVAL_MINUTES", "15")) * 60
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────

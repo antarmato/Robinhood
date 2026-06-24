@@ -20,7 +20,7 @@ THRESHOLD_CONF       = 5   # minimum confidence (1-10)
 # Trade parameters
 DTE_MIN = 21
 DTE_MAX = 45
-DELTA_TARGET = 0.40    # buy ~40-delta option
+DELTA_TARGET = 0.25    # buy ~25-delta option (achievable at $1/share on $25-100 stocks)
 PROFIT_TARGET_PCT = 50 # close at 50% gain
 STOP_LOSS_PCT     = 50 # close at 50% loss
 
