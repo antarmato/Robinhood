@@ -159,6 +159,14 @@ async def debug_network():
 @app.get("/api/status")
 async def status():
     s = get_state()
+    from .orchestrator import Orchestrator
+    session = Orchestrator._session_phase()
+    session_label = {
+        "pre_open": "PRE-MKT",
+        "market": "OPEN",
+        "after_hours": "AH",
+        "closed": "CLOSED",
+    }.get(session, "CLOSED")
     return {
         "system_status":  s.system_status,
         "cycle_count":    s.cycle_count,
@@ -167,6 +175,8 @@ async def status():
         "active_trades":  len(s.active_trades),
         "pending_proposals": len(s.get_pending_proposals()),
         "pending_exits":  len(s.get_pending_exit_signals()),
+        "session":        session_label,
+        "market_open":    Orchestrator._is_market_hours(),
     }
 
 # ── Proposal API (polled by Cowork artifact) ───────────────────────────────────

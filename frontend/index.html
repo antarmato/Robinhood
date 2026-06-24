@@ -180,6 +180,7 @@ canvas{display:block}
 
 <!-- Info bar -->
 <div id="info-bar">
+  <div class="ib"><span class="ib-l">Session</span><span id="ib-session" class="ib-v" style="font-size:10px">—</span></div>
   <div class="ib"><span class="ib-l">Regime</span><span id="ib-regime" class="ib-v">—</span></div>
   <div class="ib"><span class="ib-l">VIX</span><span id="ib-vix" class="ib-v">—</span></div>
   <div class="ib"><span class="ib-l">Breadth</span><span id="ib-breadth" class="ib-v" title="# of SPY/QQQ/IWM above EMA20">—/3</span></div>
@@ -592,6 +593,12 @@ async function refreshAll() {
     if (status.last_scan) {
       lastScan = new Date(status.last_scan);
       scanNextAt = lastScan.getTime() + SCAN_INTERVAL * 1000;
+    }
+    // Update session badge
+    const sessEl = document.getElementById('ib-session');
+    if (sessEl && status.session) {
+      sessEl.textContent = status.session;
+      sessEl.style.color = status.market_open ? 'var(--green)' : 'var(--muted)';
     }
 
     renderScan(scan);
