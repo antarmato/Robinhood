@@ -75,6 +75,8 @@ class TechnicalAgent(BaseAgent):
             "stoch_d":        round(ind.get("stoch_d", 50), 1),
             "vwap20":         round(ind.get("vwap20", 0), 2),
             "vwap20_pct":     round(ind.get("vwap20_pct", 0), 2),
+            "ema200":         round(ind.get("ema200", 0), 2),
+            "above_ema200":   ind.get("price", 0) > ind.get("ema200", 0),
         }
         await self._emit("score", {"symbol": symbol, "score": score, "trend": trend,
                                     "signals": signals, "fatal_flaw": fatal_flaw})
@@ -255,8 +257,21 @@ class TechnicalAgent(BaseAgent):
         elif direction == "bearish" and rsi < 22:
             fatal_flaw = f"RSI {rsi:.0f} — severely oversold, put buying squeeze risk"
 
-        above_ema20 = price > i["ema20"]
-        above_ema50 = price > i["ema50"]
+        above_ema20  = price > i["ema20"]
+        above_ema50  = price > i["ema50"]
+        above_ema200 = price > i.get("ema200", price * 0.8)  # default to always true if missing
+
+        # ── EMA200 (long-term trend, both directions) ─────────────────────────
+        if direction == "bullish":
+            if above_ema200:
+                score += 0.5; signals.append("above EMA200 — long-term bull structure")
+            else:
+                score -= 1.0; signals.append("below EMA200 — long-term bear structure")
+        else:
+            if not above_ema200:
+                score += 0.5; signals.append("below EMA200 — long-term bear structure")
+            else:
+                score -= 1.0; signals.append("above EMA200 — long-term bull structure headwind")
 
         # ── Liquidity check (both directions) ────────────────────────────────
         avg_vol = i.get("avg_vol_20d", 1_000_000)
