@@ -300,6 +300,8 @@ class Orchestrator:
             reason   = judge.get("pass_reason") or judge.get("reasoning", "")
 
             self.state.record_symbol_analysis(symbol, direction, result, decision, score)
+            news_data = result["sentiment"].get("news", {})
+            news_headline = (news_data.get("headlines") or [None])[0] if news_data else None
             scan_summary.append({
                 "symbol":          symbol,
                 "direction":       direction,
@@ -316,6 +318,11 @@ class Orchestrator:
                 "decision":        decision,
                 "pass_reason":     (reason or "")[:120],
                 "tech_fatal_flaw": result["technical"].get("fatal_flaw"),
+                "news_score":      news_data.get("score") if news_data and news_data.get("available") else None,
+                "news_headline":   news_headline,
+                "bull_case":       judge.get("bull_case", ""),
+                "bear_case":       judge.get("bear_case", ""),
+                "reasoning":       judge.get("reasoning", ""),
                 "proposal_generated": False,
             })
 

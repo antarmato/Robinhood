@@ -653,8 +653,19 @@ function renderScan(data) {
       ? `<span class="${r.weighted_score > 50 ? 'score-hi' : ''}">${r.weighted_score.toFixed(1)}</span>`
       : '—';
 
-    return `<tr class="${rowCls}">
-      <td><strong>${esc(r.symbol)}</strong></td>
+    const newsIcon = r.news_score != null
+      ? (r.news_score > 0.1 ? ' <span style="color:var(--green);font-size:10px">▲</span>'
+       : r.news_score < -0.1 ? ' <span style="color:var(--red);font-size:10px">▼</span>' : '')
+      : '';
+    const tooltipLines = [
+      r.pass_reason  ? `Reason: ${r.pass_reason}` : '',
+      r.reasoning    ? `Judge: ${r.reasoning}` : '',
+      r.bull_case    ? `Bull: ${r.bull_case}` : '',
+      r.bear_case    ? `Bear: ${r.bear_case}` : '',
+      r.news_headline ? `News: ${r.news_headline}` : '',
+    ].filter(Boolean).join('\n');
+    return `<tr class="${rowCls}" title="${esc(tooltipLines)}">
+      <td><strong>${esc(r.symbol)}</strong>${newsIcon}</td>
       <td>${dirHtml}</td>
       <td>$${r.price ? r.price.toFixed(2) : '—'}</td>
       <td>${r.iv_rank != null ? Math.round(r.iv_rank) : '—'}</td>
