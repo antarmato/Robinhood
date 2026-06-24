@@ -715,17 +715,28 @@ function renderPositions(positions) {
     const pnl     = p.last_pnl_pct ?? 0;
     const pnl$    = p.last_pnl_dollars ?? 0;
     const days    = p.days_held ?? 0;
-    const dte     = p.dte_left ?? (35 - days);
+    const dte     = p.dte_left ?? (p.entry_dte ? p.entry_dte - days : 35 - days);
     const typeStr = p.option_type?.toUpperCase() || '—';
     const pnlCls  = pnl > 0 ? 'pnl-pos' : pnl < 0 ? 'pnl-neg' : 'pnl-zero';
     const pnlStr  = `${pnl >= 0 ? '+' : ''}${pnl.toFixed(1)}% ($${pnl$ >= 0 ? '+' : ''}${pnl$.toFixed(0)})`;
-    return `<tr>
+    const hwm     = p.high_water_pnl_pct ?? 0;
+    const hwmStr  = hwm > 0 ? ` ↑${hwm.toFixed(0)}%pk` : '';
+    const conf    = p.confidence;
+    const score   = p.weighted_score;
+    const tooltip = [
+      `Score: ${score?.toFixed(1) ?? '—'} | Conf: ${conf ?? '—'}/10`,
+      `Tech: ${p.tech_score ?? '—'} | Fund: ${p.fund_score ?? '—'} | Sent: ${p.sent_score ?? '—'}`,
+      `Bull case: ${p.bull_case || '—'}`,
+      `Bear case: ${p.bear_case || '—'}`,
+      `Entry DTE: ${p.entry_dte ?? 35} | Days held: ${days}`,
+    ].join('\n');
+    return `<tr title="${esc(tooltip)}">
       <td><strong>${esc(p.symbol)}</strong></td>
       <td style="color:${p.direction==='bullish'?'var(--green)':'var(--red)'}">${typeStr}</td>
       <td>$${p.entry_stock_price?.toFixed(2) ?? '—'}</td>
       <td>$${p.last_stock_price?.toFixed(2) ?? '—'}</td>
-      <td class="${pnlCls}">${pnlStr}</td>
-      <td style="color:var(--muted)">D${days} / ${dte}DTE</td>
+      <td class="${pnlCls}">${pnlStr}${hwmStr}</td>
+      <td style="color:var(--muted)">D${days}/${dte}dte${conf ? ` c${conf}` : ''}</td>
     </tr>`;
   }).join('');
 }

@@ -159,10 +159,21 @@ class JudgeAgent(BaseAgent):
             pass  # clean — no flag needed
         if technical.get("vol_ratio", 1.0) < 0.7:
             risk_flags.append("Low volume — weak conviction")
-        if technical.get("bb_pct", 0.5) > 0.88 and direction == "bullish":
-            risk_flags.append("Price near upper Bollinger Band — limited upside room")
-        if technical.get("bb_pct", 0.5) < 0.12 and direction == "bearish":
-            risk_flags.append("Price near lower Bollinger Band — limited downside room")
+        bb_pct = technical.get("bb_pct", 0.5)
+        if direction == "bullish":
+            if bb_pct > 1.0:
+                pass   # BB breakout — positive signal, no flag
+            elif 0.85 < bb_pct <= 1.0:
+                risk_flags.append(f"Price extended near upper BB ({bb_pct:.2f}) — possible pullback")
+            elif bb_pct < 0:
+                risk_flags.append("Price below lower BB — momentum breakdown, consider put")
+        elif direction == "bearish":
+            if bb_pct < 0:
+                pass   # BB breakdown — positive bear signal, no flag
+            elif 0 <= bb_pct < 0.15:
+                risk_flags.append(f"Price extended near lower BB ({bb_pct:.2f}) — bounce risk")
+            elif bb_pct > 1.0:
+                risk_flags.append("Price above upper BB — overbought, could aid put play")
 
         # ── Time of day ───────────────────────────────────────────────────────
         if   tod < dtime(9, 30):  tod_note = "Pre-open warm-up."
