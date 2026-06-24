@@ -100,7 +100,27 @@ async def root():
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok"}
+    """Diagnostic: check env vars and Alpaca/Polygon connectivity."""
+    import os
+    from . import market_data as mdata
+    poly_key    = os.getenv("POLYGON_API_KEY", "")
+    alpaca_key  = os.getenv("ALPACA_API_KEY", "")
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+    result = {
+        "status": "ok",
+        "alpaca_key_set":    bool(alpaca_key),
+        "alpaca_key_prefix": alpaca_key[:6] + "..." if alpaca_key else "NOT SET",
+        "polygon_key_set":   bool(poly_key),
+        "anthropic_key_set": bool(anthropic_key),
+        "tz": os.getenv("TZ", "NOT SET"),
+        "tradier_set": bool(os.getenv("TRADIER_TOKEN", "")),
+    }
+    try:
+        df = mdata.get_historicals("SPY", period="3mo")
+        result["data_test"] = f"OK — {len(df)} bars for SPY, last ${df['close'].iloc[-1]:.2f}" if not df.empty else "FAIL — empty"
+    except Exception as e:
+        result["data_test"] = f"ERROR — {e}"
+    return result
 
 @app.get("/api/debug/network")
 async def debug_network():
@@ -151,26 +171,6 @@ async def status():
 
 # ── Proposal API (polled by Cowork artifact) ───────────────────────────────────
 
-@app.get("/api/health")
-async def health_check():
-    """Quick diagnostic — check Polygon connectivity and env vars."""
-    import os
-    from . import market_data as md
-    poly_key = os.getenv("POLYGON_API_KEY", "")
-    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
-    result = {
-        "polygon_key_set": bool(poly_key),
-        "polygon_key_prefix": poly_key[:6] + "..." if poly_key else "NOT SET",
-        "anthropic_key_set": bool(anthropic_key),
-        "tz": os.getenv("TZ", "NOT SET — set to America/New_York"),
-    }
-    if poly_key:
-        try:
-            df = md.get_historicals("SPY", period="3mo")
-            result["polygon_test"] = f"OK — {len(df)} rows for SPY" if not df.empty else "FAIL — empty response"
-        except Exception as e:
-            result["polygon_test"] = f"ERROR — {e}"
-    return result
 
 @app.get("/api/history")
 async def get_history(api_key: str = ""):

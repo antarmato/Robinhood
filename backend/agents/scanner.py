@@ -13,6 +13,7 @@ Pipeline:
 
 import asyncio
 import logging
+import os
 from typing import Optional
 
 import numpy as np
@@ -99,21 +100,26 @@ class ScannerAgent(BaseAgent):
             return []
 
         # ── IV rank filter ─────────────────────────────────────────────────────
+        # Hard-skip (IV > 60) only applies when TRADIER_TOKEN is set and we have
+        # real options IV data. Without Tradier, get_iv_rank_best() returns HV rank
+        # (historical vol proxy) — high HV ≠ expensive options, so don't filter on it.
+        tradier_available = bool(os.getenv("TRADIER_TOKEN", ""))
+
         iv_passed = {}
         iv_skipped = []
         for sym, d in scored.items():
             iv_rank = md.get_iv_rank_best(sym)
             d["iv_rank"] = round(iv_rank, 1)
-            if iv_rank > IV_RANK_HARD_SKIP:
+            if tradier_available and iv_rank > IV_RANK_HARD_SKIP:
                 iv_skipped.append(f"{sym}({iv_rank:.0f})")
             else:
-                # IV edge bonus: up to +3 pts when iv_rank is very cheap (<20)
                 d["iv_bonus"] = round(max(0.0, (40.0 - iv_rank) / 40.0 * 3.0), 2)
                 iv_passed[sym] = d
 
+        source = "real IV" if tradier_available else "HV proxy (no Tradier)"
         await self._emit("status",
-            f"IV filter: {len(iv_passed)}/{len(scored)} passed "
-            f"(skipped high-IV: {', '.join(iv_skipped) if iv_skipped else 'none'})")
+            f"IV filter ({source}): {len(iv_passed)}/{len(scored)} passed "
+            f"(skipped: {', '.join(iv_skipped) if iv_skipped else 'none'})")
 
         if not iv_passed:
             await self._emit("status",
