@@ -113,12 +113,16 @@ def get_historicals(symbol: str, period: str = "1y") -> pd.DataFrame:
                     }, index=pd.to_datetime([b["t"] for b in bars], utc=True).tz_convert(None))
                     df = df.dropna(subset=["close"])
                     _HIST_CACHE[cache_key] = (_time.time(), df)
-                    logger.debug(f"get_historicals({symbol}): Alpaca OK {len(df)} bars")
+                    logger.info(f"Alpaca OK: {symbol} {len(df)} bars, last close ${df['close'].iloc[-1]:.2f}")
                     return df.copy()
+                else:
+                    logger.warning(f"Alpaca {symbol}: returned {len(bars)} bars (need ≥20) — falling back to Polygon")
             else:
-                logger.warning(f"Alpaca historicals {symbol} {r.status_code}: {r.text[:80]}")
+                logger.warning(f"Alpaca {symbol} HTTP {r.status_code}: {r.text[:120]}")
         except Exception as e:
-            logger.error(f"Alpaca historicals {symbol}: {e}")
+            logger.error(f"Alpaca {symbol} exception: {e}")
+    else:
+        logger.warning(f"Alpaca skipped ({symbol}): ALPACA_API_KEY not set in environment")
 
     # ── Polygon fallback ───────────────────────────────────────────────────
     days = {"3mo": 95, "6mo": 185, "1y": 370, "2y": 740}.get(period, 370)
