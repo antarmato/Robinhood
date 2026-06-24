@@ -47,7 +47,9 @@ class SentimentAgent(BaseAgent):
         primary_etf  = _SECTOR_ETF.get(symbol)     # specific ETF for this symbol
         news         = md.get_news_sentiment(symbol)
 
-        score, components = self._score(direction, vix, macro, sectors, vix_trend, primary_etf, news)
+        regime_breadth = (market_regime or {}).get("breadth")   # 0-3, EMA20-based
+        score, components = self._score(direction, vix, macro, sectors, vix_trend,
+                                        primary_etf, news, regime_breadth=regime_breadth)
 
         # Compute VIX regime (same logic as before — still used by Judge)
         if vix > 30:   vix_regime = "extreme"
@@ -102,7 +104,7 @@ class SentimentAgent(BaseAgent):
 
     def _score(self, direction: str, vix: float, macro: dict, sectors: dict,
                vix_trend: str = "flat", primary_etf: str = None,
-               news: dict = None) -> tuple[float, dict]:
+               news: dict = None, regime_breadth: int = None) -> tuple[float, dict]:
         score = 5.0
         components: dict = {}
 
@@ -207,6 +209,27 @@ class SentimentAgent(BaseAgent):
             else:
                 score -= 0.5
                 components["vix_trend"] = "falling — fear contracting, headwind for puts"
+
+        # ── EMA-based market breadth (regime, longer-term signal) ─────────────
+        if regime_breadth is not None:
+            if direction == "bullish":
+                if regime_breadth == 3:
+                    score += 0.75; components["regime_breadth"] = "all 3 indexes above EMA20 — structural bull"
+                elif regime_breadth == 2:
+                    score += 0.25; components["regime_breadth"] = "2/3 indexes above EMA20"
+                elif regime_breadth == 0:
+                    score -= 0.75; components["regime_breadth"] = "no indexes above EMA20 — structural bear"
+                else:
+                    score -= 0.25; components["regime_breadth"] = "1/3 indexes above EMA20 — weak market"
+            else:  # bearish
+                if regime_breadth == 0:
+                    score += 0.75; components["regime_breadth"] = "no indexes above EMA20 — structural bear"
+                elif regime_breadth == 1:
+                    score += 0.25; components["regime_breadth"] = "1/3 indexes above EMA20 — weak market"
+                elif regime_breadth == 3:
+                    score -= 0.75; components["regime_breadth"] = "all 3 indexes above EMA20 — structural bull headwind"
+                else:
+                    score -= 0.25; components["regime_breadth"] = "2/3 indexes above EMA20"
 
         score = round(max(1.0, min(10.0, score)), 1)
         return score, components

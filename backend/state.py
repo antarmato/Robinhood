@@ -105,7 +105,6 @@ class StateManager:
             "vix_regime":  sent.get("vix_regime"),
             "rsi":         tech.get("rsi_reading", "")[:20] if tech.get("rsi_reading") else None,
             "macd":        tech.get("macd_reading"),
-            "adv_strength":analysis.get("advocate", {}).get("objection_strength"),
         }
         hist.append(snap)
         self._s["symbol_history"][symbol] = hist[-10:]  # keep last 10 per symbol
