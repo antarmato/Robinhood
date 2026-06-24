@@ -45,8 +45,9 @@ class SentimentAgent(BaseAgent):
         sectors      = md.get_sector_etf_performance()
         vix_trend    = (market_regime or {}).get("vix_trend", "flat")
         primary_etf  = _SECTOR_ETF.get(symbol)     # specific ETF for this symbol
+        news         = md.get_news_sentiment(symbol)
 
-        score, components = self._score(direction, vix, macro, sectors, vix_trend, primary_etf)
+        score, components = self._score(direction, vix, macro, sectors, vix_trend, primary_etf, news)
 
         # Compute VIX regime (same logic as before — still used by Judge)
         if vix > 30:   vix_regime = "extreme"
@@ -56,6 +57,10 @@ class SentimentAgent(BaseAgent):
 
         sector_aligned = components.get("sector_aligned", True)
 
+        news_note = ""
+        if news and news.get("available") and components.get("news"):
+            news_note = f", news {components['news']}"
+
         result = {
             "score":          score,
             "skew":           "bullish" if score >= 6 else ("bearish" if score <= 4 else "neutral"),
@@ -64,10 +69,12 @@ class SentimentAgent(BaseAgent):
             "macro_sentiment": "risk_on" if score >= 6 else ("risk_off" if score <= 4 else "neutral"),
             "sector_aligned": sector_aligned,
             "components":     components,
+            "news":           news,
             "summary": (
                 f"VIX {vix:.1f} ({vix_regime}) {vix_trend if vix_trend != 'flat' else ''}, "
                 f"breadth {components.get('breadth_green', 0)}/3 green, "
-                f"sector {'aligned' if sector_aligned else 'misaligned'} — score {score}/10"
+                f"sector {'aligned' if sector_aligned else 'misaligned'}"
+                f"{news_note} — score {score}/10"
             ),
         }
         await self._emit("score", {"symbol": symbol, "score": score, "vix": vix,
@@ -94,7 +101,8 @@ class SentimentAgent(BaseAgent):
     # ── Pure Python scoring ───────────────────────────────────────────────────
 
     def _score(self, direction: str, vix: float, macro: dict, sectors: dict,
-               vix_trend: str = "flat", primary_etf: str = None) -> tuple[float, dict]:
+               vix_trend: str = "flat", primary_etf: str = None,
+               news: dict = None) -> tuple[float, dict]:
         score = 5.0
         components: dict = {}
 
@@ -169,6 +177,20 @@ class SentimentAgent(BaseAgent):
                             components["sector"] = "mixed sectors"
 
         components["sector_aligned"] = sector_aligned
+
+        # ── News sentiment ────────────────────────────────────────────────────
+        if news and news.get("available") and news.get("total", 0) >= 3:
+            ns = news["score"]   # -1.0 (fully negative) to +1.0 (fully positive)
+            if direction == "bullish":
+                if   ns > 0.5:  score += 1.5; components["news"] = f"positive ({news['positive']}/{news['total']} articles)"
+                elif ns > 0.1:  score += 0.5; components["news"] = f"slightly positive"
+                elif ns < -0.5: score -= 1.5; components["news"] = f"negative ({news['negative']}/{news['total']} articles)"
+                elif ns < -0.1: score -= 0.5; components["news"] = f"slightly negative"
+            else:  # bearish
+                if   ns < -0.5: score += 1.5; components["news"] = f"negative ({news['negative']}/{news['total']} articles)"
+                elif ns < -0.1: score += 0.5; components["news"] = f"slightly negative"
+                elif ns > 0.5:  score -= 1.5; components["news"] = f"positive ({news['positive']}/{news['total']} articles)"
+                elif ns > 0.1:  score -= 0.5; components["news"] = f"slightly positive"
 
         # ── VIX trend ─────────────────────────────────────────────────────────
         if vix_trend == "rising":

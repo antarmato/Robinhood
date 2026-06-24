@@ -330,6 +330,69 @@ def get_sector_etf_performance() -> dict:
     return result
 
 
+def get_news_sentiment(symbol: str, limit: int = 10) -> dict:
+    """
+    Fetch recent news headlines for a symbol from Alpaca News API and return
+    a simple sentiment summary.
+
+    Alpaca News articles include a sentiment field when available: positive/negative/neutral.
+    Falls back to keyword scanning on the headline if sentiment is absent.
+    """
+    if not _alpaca_available():
+        return {"available": False, "score": 0.0, "headlines": [], "positive": 0, "negative": 0}
+
+    try:
+        r = requests.get(
+            f"{_ALPACA_BASE}/v1beta1/news",
+            headers=_alpaca_headers(),
+            params={"symbols": symbol, "limit": limit, "sort": "desc"},
+            timeout=8,
+        )
+        if r.status_code != 200:
+            logger.debug(f"Alpaca news {symbol}: HTTP {r.status_code}")
+            return {"available": False, "score": 0.0, "headlines": [], "positive": 0, "negative": 0}
+
+        articles = r.json().get("news", [])
+        if not articles:
+            return {"available": True, "score": 0.0, "headlines": [], "positive": 0, "negative": 0}
+
+        pos_words = {"beat", "surge", "rally", "strong", "upgrade", "buy", "bullish", "record", "high", "growth"}
+        neg_words = {"miss", "fall", "drop", "cut", "downgrade", "sell", "bearish", "loss", "decline", "weak"}
+
+        positive, negative = 0, 0
+        headlines = []
+        for a in articles[:10]:
+            title = (a.get("headline") or a.get("summary") or "")[:120]
+            # Use Alpaca's own sentiment if present
+            sentiment = a.get("sentiment", "")
+            if sentiment == "positive":
+                positive += 1
+            elif sentiment == "negative":
+                negative += 1
+            else:
+                # Simple keyword fallback
+                words = set(title.lower().split())
+                if words & pos_words:   positive += 1
+                elif words & neg_words: negative += 1
+            if title:
+                headlines.append(title)
+
+        total = positive + negative or 1
+        # score: +1 = all positive, -1 = all negative, 0 = balanced
+        score = (positive - negative) / total
+        return {
+            "available":  True,
+            "score":      round(score, 2),
+            "positive":   positive,
+            "negative":   negative,
+            "total":      len(articles),
+            "headlines":  headlines[:5],
+        }
+    except Exception as e:
+        logger.debug(f"News sentiment {symbol}: {e}")
+        return {"available": False, "score": 0.0, "headlines": [], "positive": 0, "negative": 0}
+
+
 # ── Fundamentals ──────────────────────────────────────────────────────────────
 
 def get_fundamentals(symbol: str) -> dict:
