@@ -138,6 +138,23 @@ def get_intraday(symbol: str, period: str = "5d", interval: str = "1h") -> pd.Da
 
 # ── Quotes ────────────────────────────────────────────────────────────────────
 
+def get_batch_quotes(symbols: list) -> dict:
+    """Live prices for multiple symbols in one Polygon snapshot call. Returns {symbol: price}."""
+    tickers = ",".join(symbols)
+    data = _get("/v2/snapshot/locale/us/markets/stocks/tickers", {"tickers": tickers})
+    result = {}
+    if data and data.get("tickers"):
+        for t in data["tickers"]:
+            sym = t.get("ticker", "")
+            last = (t.get("lastTrade") or {}).get("p", 0)
+            day  = t.get("day", {})
+            prev = t.get("prevDay", {})
+            price = last or day.get("c") or prev.get("c") or 0
+            if sym and price:
+                result[sym] = float(price)
+    return result
+
+
 def get_quote(symbol: str) -> dict:
     """Current price via Polygon snapshot."""
     data = _get(f"/v2/snapshot/locale/us/markets/stocks/tickers/{symbol}")

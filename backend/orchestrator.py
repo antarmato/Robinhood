@@ -260,7 +260,7 @@ class Orchestrator:
         for i, candidate in enumerate(candidates[:5]):
             symbol    = candidate.get("symbol", "")
             direction = candidate.get("direction", "bullish")
-            price     = candidate.get("current_price", 0)
+            price     = candidate.get("live_price") or candidate.get("current_price", 0)
             iv_rank   = candidate.get("iv_rank", 50.0)
 
             await self._emit("system", "analyzing", {

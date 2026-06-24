@@ -195,6 +195,12 @@ class ScannerAgent(BaseAgent):
             for d in iv_passed.values():
                 d["rs_vs_group"] = 0.0
 
+        # ── Live prices (snapshot) — one batch call replaces yesterday's close ──
+        live_prices = md.get_batch_quotes(list(iv_passed.keys()))
+        for sym, d in iv_passed.items():
+            if sym in live_prices and live_prices[sym] > 0:
+                d["live_price"] = live_prices[sym]
+
         # ── Select top 5 by (best_score + iv_bonus) ───────────────────────────
         candidates = self._select_candidates(iv_passed)
         cand_list  = [f"{c['symbol']} {c['direction']}(IV={c.get('iv_rank','?')})" for c in candidates]
