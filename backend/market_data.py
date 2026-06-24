@@ -94,10 +94,11 @@ def get_historicals(symbol: str, period: str = "1y") -> pd.DataFrame:
     if _alpaca_available():
         days = {"3mo": 95, "6mo": 185, "1y": 370, "2y": 740}.get(period, 370)
         try:
+            start_dt = (date.today() - timedelta(days=days)).strftime("%Y-%m-%d")
             r = requests.get(
                 f"{_ALPACA_BASE}/v2/stocks/{symbol}/bars",
-                params={"timeframe": "1Day", "limit": min(days, 1000),
-                        "feed": "iex", "adjustment": "all", "sort": "asc"},
+                params={"timeframe": "1Day", "start": start_dt,
+                        "limit": min(days, 1000), "adjustment": "split", "sort": "asc"},
                 headers=_alpaca_headers(),
                 timeout=_TIMEOUT,
             )
