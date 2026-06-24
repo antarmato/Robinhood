@@ -228,7 +228,22 @@ class Orchestrator:
                    }.get(self._session_phase(), "LIVE")
         await self._emit("system", "cycle_start", {"cycle": cycle, "session": session})
 
-        regime    = self.state.market_regime
+        # Classify regime on-demand if it's empty (system started after pre-market)
+        regime = self.state.market_regime
+        if not regime:
+            loop = asyncio.get_event_loop()
+            try:
+                regime = await loop.run_in_executor(None, classify_regime)
+                self.state.market_regime = regime
+                await self._emit("system", "info", {
+                    "message": (
+                        f"Regime (on-demand): {regime['regime'].upper()} "
+                        f"(strength {regime['strength']}/10) | {regime.get('summary', '')}"
+                    )
+                })
+            except Exception as e:
+                logger.warning(f"On-demand regime classification failed: {e}")
+
         premarket = self.state.premarket_context
         sym_perf  = get_outcome_tracker().get_all_symbol_stats()
 

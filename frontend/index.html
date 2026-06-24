@@ -457,6 +457,14 @@ function handleWS(msg) {
   if (type === 'init') {
     setStatus(data.status);
     setCycle(data.cycle_count || 0);
+    if (data.regime && Object.keys(data.regime).length) renderRegime(data.regime);
+    if (data.total_pnl != null) {
+      const pnlEl = document.getElementById('ib-pnl');
+      const pnl = data.total_pnl;
+      pnlEl.textContent = `${pnl >= 0 ? '+' : ''}$${Math.abs(pnl).toFixed(2)}`;
+      pnlEl.style.color = pnl > 0 ? 'var(--green)' : pnl < 0 ? 'var(--red)' : 'var(--text)';
+    }
+    if (data.open_count != null) document.getElementById('ib-open').textContent = data.open_count;
     return;
   }
   if (type === 'status' && data?.status) { setStatus(data.status); return; }

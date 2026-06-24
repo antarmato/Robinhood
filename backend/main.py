@@ -492,14 +492,19 @@ async def websocket_endpoint(ws: WebSocket):
     await manager.connect(ws)
     s = get_state()
     import datetime
+    open_positions = s.get_sim_positions(status="open")
+    closed_positions = [p for p in s.get_sim_positions() if p.get("status") == "closed"]
+    total_pnl = s.cumulative_sim_pnl()
     await ws.send_json({
         "agent": "system", "type": "init",
         "data": {
-            "status":           s.system_status,
-            "cycle_count":      s.cycle_count,
-            "active_trades":    s.active_trades,
-            "pending_proposals": s.get_pending_proposals(),
-            "recent_events":    s.get_full_state().get("event_log", [])[-20:],
+            "status":        s.system_status,
+            "cycle_count":   s.cycle_count,
+            "regime":        s.market_regime,
+            "open_count":    len(open_positions),
+            "total_pnl":     total_pnl,
+            "closed_count":  len(closed_positions),
+            "recent_events": s.get_full_state().get("event_log", [])[-20:],
         },
         "timestamp": datetime.datetime.now().isoformat(),
     })
