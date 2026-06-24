@@ -39,8 +39,9 @@ logger = logging.getLogger(__name__)
 
 BroadcastFn = Callable[[str, str, Any], Awaitable[None]]
 
-_TECH   = {"NVDA", "AAPL", "MSFT", "META", "GOOGL", "AMD", "CRM", "PLTR", "SMCI"}
+_TECH   = {"NVDA", "AAPL", "MSFT", "META", "GOOGL", "AMD", "CRM", "PLTR", "SMCI", "IONQ", "ROKU"}
 _CRYPTO = {"COIN", "MSTR", "HOOD"}
+_FINTECH = {"SOFI", "SQ", "PYPL", "HOOD"}
 
 
 class Orchestrator:
@@ -52,7 +53,7 @@ class Orchestrator:
 
         watchlist_raw = os.getenv(
             "WATCHLIST",
-            "PLTR,HOOD,SOFI,RIVN,IONQ,AMD,SMCI,MSTR"
+            "PLTR,HOOD,SOFI,RIVN,IONQ,AMD,SMCI,MSTR,TSLA,NVDA,COIN,UBER,SQ,PYPL,ROKU"
         )
         self.watchlist         = [s.strip() for s in watchlist_raw.split(",")]
         self.max_loss          = float(os.getenv("MAX_LOSS_PER_TRADE", "100"))

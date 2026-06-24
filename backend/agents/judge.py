@@ -227,22 +227,42 @@ RISK FLAGS:
 {similar_block}
 {hist_block}"""
 
+        regime_mismatch = False
+        regime_aligned  = False
+        if market_regime:
+            r = market_regime.get("regime", "neutral")
+            regime_mismatch = (r == "bear" and direction == "bullish") or \
+                              (r == "bull" and direction == "bearish")
+            regime_aligned  = (r == "bull" and direction == "bullish") or \
+                              (r == "bear" and direction == "bearish")
+        regime_cap_note = (
+            "\n⚠️ REGIME MISMATCH: Market regime opposes this trade. "
+            "Cap your confidence at 7 maximum — only exceptional setups trade against regime."
+            if regime_mismatch else
+            "\n✅ REGIME ALIGNED: This trade aligns with overall market regime. "
+            "Can go up to 10 if all other signals confirm."
+            if regime_aligned else ""
+        )
+
         system = f"""You are the final judge for a Robinhood options trading system.
 The Python score is {weighted_score} (threshold {threshold}).
 
 {"SCORE PASSES. Give confidence 1-10. If you have genuine reservations, reflect in confidence. Trade happens only if confidence >= " + str(THRESHOLD_CONF) + "." if not score_failed else "SCORE FAILS. Confirm pass with a clear one-line reason."}
+{regime_cap_note}
 
 Confidence calibration:
   1-4: real reservations (bad timing, headwinds overwhelming the setup)
   5-6: reasonable setup, normal uncertainty
   7-8: clear directional setup, good risk/reward
-  9-10: multiple strong signals confirming, IV environment ideal
+  9-10: multiple strong signals confirming, IV environment ideal (only when regime aligned)
 
 Rules:
   - Do NOT penalize for missing options data (IV, OI, bid-ask) — handled at execution
   - RSI alone in a ranging market is NOT a confidence killer if technical score reflects it
   - Low IV rank is a POSITIVE for confidence — cheaper premium means better risk/reward
   - Consider the risk flags but don't double-count what's already in the scores
+  - Regime mismatch: cap at 7 — if you'd give 8+ you must justify why this stock bucks the trend
+  - Regime aligned: strong setups can reach 9-10
 
 Respond ONLY with JSON:
 {{

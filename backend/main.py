@@ -485,6 +485,29 @@ async def stats():
         "kelly_fraction": tracker.get_kelly_fraction(),
     }
 
+@app.get("/api/sim/reset")
+async def sim_reset(api_key: str = ""):
+    """
+    Clear all sim positions and P&L history. Useful for starting a fresh sim.
+    Requires API key (or open if no DASHBOARD_KEY set).
+    Does NOT clear the outcome tracker — historical win rate is preserved.
+    """
+    _check_key(api_key)
+    s = get_state()
+    d = s.get_full_state()
+    cleared_open   = len([p for p in d.get("sim_positions", []) if p.get("status") == "open"])
+    cleared_closed = len([p for p in d.get("sim_positions", []) if p.get("status") == "closed"])
+    d["sim_positions"] = []
+    d["pnl_history"]   = []
+    await _broadcast("system", "sim_reset", {
+        "message": f"Sim reset: cleared {cleared_open} open + {cleared_closed} closed positions"
+    })
+    return {
+        "status": "reset",
+        "cleared_open":   cleared_open,
+        "cleared_closed": cleared_closed,
+    }
+
 # ── WebSocket ──────────────────────────────────────────────────────────────────
 
 @app.websocket("/ws")
