@@ -388,10 +388,18 @@ class ScannerAgent(BaseAgent):
     def _select_candidates(self, scored: dict) -> list[dict]:
         """
         Select top 5 candidates by (best_score + iv_bonus).
+        Tiebreaker (same combined score):
+          1. Lower IV rank preferred (cheaper premium)
+          2. Better RS vs group (stronger relative momentum)
         Enforce diversity: at least one bull and one bear if scores support it.
         """
         def combined(d):
-            return d["best_score"] + d.get("iv_bonus", 0.0)
+            primary = d["best_score"] + d.get("iv_bonus", 0.0)
+            # Tiebreaker: lower IV rank = cheaper premium = preferred
+            iv_tiebreak = -d.get("iv_rank", 50.0) / 1000.0
+            # Secondary: relative strength vs group
+            rs_tiebreak = d.get("rs_vs_group", 0.0) / 10000.0
+            return primary + iv_tiebreak + rs_tiebreak
 
         ranked = sorted(scored.values(), key=combined, reverse=True)
 

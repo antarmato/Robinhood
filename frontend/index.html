@@ -615,13 +615,16 @@ function renderScan(data) {
 
     let statusHtml = '', rowCls = '';
     if (r.proposal_generated) {
-      statusHtml = '<span class="tag tag-sim">SIM</span>';
+      statusHtml = '<span class="tag tag-sim">ENTERED</span>';
       rowCls = 'row-sim-open';
     } else if (r.tech_fatal_flaw) {
       statusHtml = `<span class="tag tag-flaw" title="${esc(r.tech_fatal_flaw)}">FLAW</span>`;
       rowCls = 'row-flaw';
     } else if (r.decision === 'trade') {
-      statusHtml = '<span class="tag tag-approved">APPROVED</span>';
+      statusHtml = `<span class="tag tag-approved" title="Score passed threshold — not selected (lower than best)">QUAL</span>`;
+    } else if (r.decision === 'error') {
+      statusHtml = '<span class="tag tag-flaw">ERR</span>';
+      rowCls = 'row-flaw';
     } else {
       statusHtml = `<span class="tag tag-pass" title="${esc(r.pass_reason||'')}">PASS</span>`;
     }

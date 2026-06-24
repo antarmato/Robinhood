@@ -34,11 +34,17 @@ def score_threshold(iv_rank: float, market_open: bool, time_of_day=None) -> floa
       40-60 → 43 (elevated premium, harder bar)
       else  → 38 base
 
-    Time of day adjustments (ET):
-      9:30-10:30am  +3  opening chaos — prices whip, fakeouts common
-      12:00-2:00pm  +2  midday lull — low conviction moves
-      10:30-12:00pm -1  best morning window — momentum clear
-      2:30-4:00pm   -1  power hour — institutional trend follow-through
+    Time of day (ET):
+      9:30-10:30am  +3  opening — prices whip, fakeouts common
+      12:00-2:00pm  +2  midday lull — low conviction
+      10:30-12:00pm -1  best morning window
+      2:30-4:00pm   -1  power hour — institutional follow-through
+
+    Adaptive: self-adjusts ±5 based on rolling sim win rate
+      < 35% → +5 (losing badly — raise bar)
+      < 45% → +2 (underperforming — tighten)
+      > 65% → -2 (winning well — can open up slightly)
+      > 75% → -3 (strong edge — loosen further)
     """
     from datetime import time as dtime
 
@@ -55,6 +61,20 @@ def score_threshold(iv_rank: float, market_open: bool, time_of_day=None) -> floa
         elif dtime(12, 0)  <= tod < dtime(14, 0):  base += 2
         elif dtime(10, 30) <= tod < dtime(12, 0):  base -= 1
         elif dtime(14, 30) <= tod <= dtime(16, 0): base -= 1
+
+    # ── Adaptive adjustment from rolling sim win rate ─────────────────────────
+    try:
+        from .outcome_tracker import get_outcome_tracker
+        stats = get_outcome_tracker().get_stats()
+        n = stats.get("total_trades", 0)
+        if n >= 15:                     # need enough data before adapting
+            wr = stats.get("win_rate", 0.5)
+            if   wr < 0.35: base += 5  # losing badly — raise bar hard
+            elif wr < 0.45: base += 2  # underperforming — tighten
+            elif wr > 0.75: base -= 3  # strong edge — open up
+            elif wr > 0.65: base -= 2  # winning well — loosen slightly
+    except Exception:
+        pass
 
     return float(base)
 
