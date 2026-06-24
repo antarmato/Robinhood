@@ -19,6 +19,26 @@ _HIGH_RISK = {"MSTR", "IONQ", "RIVN", "SMCI", "HOOD", "COIN", "AMC", "GME", "BBB
 # Known mega/large cap with good liquidity — bonus
 _QUALITY_CAP = {"AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "AMD", "SPY", "QQQ"}
 
+# Polygon free tier doesn't return beta — use hard-coded estimates for our watchlist
+# Updated periodically; these are 1Y beta vs SPY (rough market consensus)
+_BETA_MAP: dict[str, float] = {
+    "MSTR":  3.5,  # near-pure Bitcoin proxy
+    "COIN":  3.0,  # crypto exchange
+    "IONQ":  2.5,  # small-cap quantum, highly speculative
+    "RIVN":  2.2,  # pre-profit EV startup
+    "SMCI":  2.2,  # high growth hardware, volatile
+    "HOOD":  1.9,  # retail fintech, high correlation to sentiment
+    "ROKU":  1.8,  # streaming growth stock
+    "TSLA":  2.0,  # megacap but highly volatile
+    "AMD":   1.7,  # semiconductor cycle amp
+    "NVDA":  1.6,  # AI darling, above-market but liquid
+    "PLTR":  1.5,  # data/gov tech
+    "SOFI":  1.5,  # fintech small-mid cap
+    "SQ":    1.6,  # fintech mid-cap
+    "UBER":  1.3,  # gig economy, moderate beta
+    "PYPL":  1.2,  # mature fintech, lower vol
+}
+
 
 class FundamentalAgent(BaseAgent):
     def __init__(self, client, broadcast: Optional[BroadcastFn] = None):
@@ -104,11 +124,16 @@ class FundamentalAgent(BaseAgent):
                 score -= 1.5; notes.append(f"micro-cap ${mcap/1e6:.0f}M")
 
         # ── Beta — directional option risk ────────────────────────────────────
-        beta = fund.get("beta") or 1.0
-        try:
-            beta = float(beta)
-        except (TypeError, ValueError):
-            beta = 1.0
+        # Polygon free tier doesn't return beta; use our hard-coded table, then
+        # fall back to 1.0 (neutral) if symbol is unknown.
+        beta_raw = fund.get("beta")
+        if beta_raw is not None:
+            try:
+                beta = float(beta_raw)
+            except (TypeError, ValueError):
+                beta = _BETA_MAP.get(symbol, 1.0)
+        else:
+            beta = _BETA_MAP.get(symbol, 1.0)
 
         if beta > 3.0:
             score -= 1.5; notes.append(f"beta {beta:.1f} — extreme vol, wide stops needed")
