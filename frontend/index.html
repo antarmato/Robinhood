@@ -326,6 +326,12 @@ canvas{display:block}
       </div>
     </div>
 
+    <!-- Per-symbol stats (shown only once we have data) -->
+    <div class="card" id="sym-stats-card" style="display:none">
+      <div class="card-title">SYMBOL EDGE</div>
+      <div id="sym-stats-list"></div>
+    </div>
+
     <!-- Recent closed trades -->
     <div class="card">
       <div class="card-title">CLOSED TRADES</div>
@@ -591,6 +597,7 @@ async function refreshAll() {
     renderScan(scan);
     renderRegime(scan.regime || {});
     await refreshSim();
+    await refreshSymbolStats();
   } catch (e) { console.error(e); }
 }
 
@@ -829,6 +836,30 @@ function renderStats(s) {
   }
 }
 
+async function refreshSymbolStats() {
+  try {
+    const r = await fetch('/api/symbol-stats');
+    const d = await r.json();
+    const stats = d.symbol_stats || {};
+    const entries = Object.entries(stats).sort((a, b) => b[1].win_rate - a[1].win_rate);
+    const card = document.getElementById('sym-stats-card');
+    const el   = document.getElementById('sym-stats-list');
+    if (!entries.length) { card.style.display = 'none'; return; }
+    card.style.display = '';
+    el.innerHTML = entries.map(([sym, s]) => {
+      const wr  = (s.win_rate * 100).toFixed(0);
+      const avg = s.avg_pnl >= 0 ? `+${s.avg_pnl.toFixed(1)}%` : `${s.avg_pnl.toFixed(1)}%`;
+      const wrC = s.win_rate >= 0.5 ? 'var(--green)' : 'var(--red)';
+      return `<div class="ct-row" title="${s.trade_count} closed trades">
+        <span class="ct-sym">${esc(sym)}</span>
+        <span style="color:${wrC}">${wr}% WR</span>
+        <span style="color:var(--muted);font-size:10px">${s.trade_count}T</span>
+        <span style="color:${s.avg_pnl >= 0 ? 'var(--green)' : 'var(--red)'}">${avg}</span>
+      </div>`;
+    }).join('');
+  } catch(e) { /* ignore */ }
+}
+
 function renderClosedTrades(trades) {
   const el = document.getElementById('closed-list');
   if (!trades.length) {
@@ -946,6 +977,7 @@ connect();
 refreshAll();
 setInterval(refreshAll, 30000);
 setInterval(refreshSim, 15000);
+setInterval(refreshSymbolStats, 60000);  // symbol edge table, less frequent
 </script>
 </body>
 </html>

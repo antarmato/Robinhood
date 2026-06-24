@@ -373,6 +373,14 @@ async def get_sim():
     }
 
 
+@app.get("/api/symbol-stats")
+async def symbol_stats():
+    """Per-symbol win rate and avg P&L from the OutcomeTracker."""
+    from .outcome_tracker import get_outcome_tracker
+    stats = get_outcome_tracker().get_all_symbol_stats()
+    return {"symbol_stats": stats}
+
+
 @app.get("/api/diagnostics")
 async def diagnostics():
     """Run all API connectivity tests — Alpaca, Anthropic, market status, env vars."""
