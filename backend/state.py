@@ -23,13 +23,16 @@ def _default() -> dict:
         "last_scan":               None,
         "last_monitor":            None,
         "event_log":               [],
-        "symbol_history":          {},  # symbol -> list of last 10 analysis snapshots
-        "market_regime":           {},  # latest classify_regime() result
-        "premarket_context":       {},  # symbol -> premarket snapshot, reset each morning
+        "symbol_history":          {},
+        "market_regime":           {},
+        "premarket_context":       {},
         "last_premarket_prep":     None,
         "last_afterhours_capture": None,
         "last_scan_results":       [],
         "last_scan_cycle":         0,
+        # ── Sim mode ────────────────────────────────────────────────────────────
+        "sim_positions":           [],   # all sim positions (open + closed)
+        "pnl_history":             [],   # equity curve data points
     }
 
 
@@ -254,6 +257,59 @@ class StateManager:
         if len(self._s["event_log"]) > 200:
             self._s["event_log"] = self._s["event_log"][-200:]
         self.save()
+
+
+    # ── Sim positions ───────────────────────────────────────────────────────────
+
+    def add_sim_position(self, pos: dict):
+        pos.setdefault("position_id", str(uuid.uuid4()))
+        pos["status"] = "open"
+        self._s.setdefault("sim_positions", []).append(pos)
+        if len(self._s["sim_positions"]) > 200:
+            self._s["sim_positions"] = self._s["sim_positions"][-200:]
+        self.save()
+
+    def get_sim_positions(self, status: str = None) -> list:
+        positions = self._s.get("sim_positions", [])
+        if status:
+            return [p for p in positions if p.get("status") == status]
+        return list(positions)
+
+    def update_sim_position(self, pos_id: str, updates: dict):
+        for p in self._s.get("sim_positions", []):
+            if p.get("position_id") == pos_id:
+                p.update(updates)
+                break
+        self.save()
+
+    def close_sim_position(self, pos_id: str, exit_data: dict):
+        """Mark position closed, append PnL history point."""
+        pnl_dollars = exit_data.get("pnl_dollars", 0.0)
+        for p in self._s.get("sim_positions", []):
+            if p.get("position_id") == pos_id:
+                p.update(exit_data)
+                p["status"]    = "closed"
+                p["closed_at"] = datetime.now().isoformat()
+                break
+
+        cumulative = self.cumulative_sim_pnl()
+        self._s.setdefault("pnl_history", []).append({
+            "timestamp":      datetime.now().isoformat(),
+            "cumulative_pnl": round(cumulative, 2),
+            "trade_pnl":      round(pnl_dollars, 2),
+            "outcome":        "win" if pnl_dollars > 0 else "loss",
+            "position_id":    pos_id,
+        })
+        if len(self._s["pnl_history"]) > 500:
+            self._s["pnl_history"] = self._s["pnl_history"][-500:]
+        self.save()
+
+    def cumulative_sim_pnl(self) -> float:
+        closed = [p for p in self._s.get("sim_positions", []) if p.get("status") == "closed"]
+        return round(sum(float(p.get("pnl_dollars", 0)) for p in closed), 2)
+
+    def get_pnl_history(self) -> list:
+        return list(self._s.get("pnl_history", []))
 
 
 _state = StateManager()

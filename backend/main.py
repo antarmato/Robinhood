@@ -317,6 +317,36 @@ async def stop(req: StartRequest):
 async def events():
     return {"events": get_state().get_full_state().get("event_log", [])[-50:]}
 
+@app.get("/api/sim")
+async def get_sim():
+    """Sim mode: all positions, P&L history, and stats."""
+    s = get_state()
+    positions = s.get_sim_positions()
+    history   = s.get_pnl_history()
+
+    closed = [p for p in positions if p.get("status") == "closed"]
+    open_  = [p for p in positions if p.get("status") == "open"]
+    wins   = [p for p in closed if float(p.get("pnl_dollars", 0)) > 0]
+    losses = [p for p in closed if float(p.get("pnl_dollars", 0)) <= 0]
+
+    total_pnl = s.cumulative_sim_pnl()
+    return {
+        "open_positions":  open_,
+        "closed_positions": closed[-20:],  # last 20
+        "pnl_history":     history,
+        "stats": {
+            "total_pnl":    total_pnl,
+            "total_trades": len(closed),
+            "open_count":   len(open_),
+            "win_rate":     round(len(wins) / len(closed) * 100, 1) if closed else 0,
+            "avg_win":      round(sum(float(p.get("pnl_dollars", 0)) for p in wins)  / len(wins),   2) if wins   else 0,
+            "avg_loss":     round(sum(float(p.get("pnl_dollars", 0)) for p in losses) / len(losses), 2) if losses else 0,
+            "best_trade":   round(max((float(p.get("pnl_dollars", 0)) for p in closed), default=0), 2),
+            "worst_trade":  round(min((float(p.get("pnl_dollars", 0)) for p in closed), default=0), 2),
+        },
+    }
+
+
 @app.get("/api/scan-results")
 async def get_scan_results():
     s = get_state()

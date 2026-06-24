@@ -140,18 +140,13 @@ class Orchestrator:
                 # ── Expire stale proposals ────────────────────────────────────
                 self._expire_stale_proposals()
 
-                # ── Scan (always runs — proposals never block scanning) ───────
+                # ── Scan ─────────────────────────────────────────────────────
                 if now - last_scan >= self.scan_interval:
                     last_scan = now
-                    pending = self.state.get_pending_proposals()
-                    if pending:
-                        ages = ", ".join(
-                            f"{p.get('symbol')}({self._proposal_age_minutes(p):.0f}min)"
-                            for p in pending
-                        )
-                        await self._emit("system", "info", {
-                            "message": f"ℹ️ {len(pending)} proposal(s) pending: {ages}. Scanning for better opportunities..."
-                        })
+                    open_count = len(self.state.get_sim_positions(status="open"))
+                    if open_count:
+                        await self._emit("system", "info",
+                            {"message": f"📊 {open_count} position(s) open — scanning for new entries..."})
                     await self._run_scan_cycle()
 
                 await asyncio.sleep(30)
@@ -386,128 +381,200 @@ class Orchestrator:
     # ── Portfolio filters ──────────────────────────────────────────────────────
 
     def _apply_portfolio_filters(self, candidates: list[dict]) -> list[dict]:
-        active      = self.state.active_trades
-        tech_open   = sum(1 for t in active if t.get("symbol") in _TECH)
-        crypto_open = sum(1 for t in active if t.get("symbol") in _CRYPTO)
-        bull_open   = sum(1 for t in active if t.get("option_type") == "call")
-        bear_open   = sum(1 for t in active if t.get("option_type") == "put")
+        # Use sim positions as the portfolio reference
+        open_sims   = self.state.get_sim_positions(status="open")
+        tech_open   = sum(1 for p in open_sims if p.get("symbol") in _TECH)
+        crypto_open = sum(1 for p in open_sims if p.get("symbol") in _CRYPTO)
+        bull_open   = sum(1 for p in open_sims if p.get("option_type") == "call")
+        bear_open   = sum(1 for p in open_sims if p.get("option_type") == "put")
+        open_syms   = {p["symbol"] for p in open_sims}
 
         filtered = []
         for c in candidates:
             sym  = c["symbol"]
             dirn = c["direction"]
+            # Skip if already holding this symbol
+            if sym in open_syms:
+                self.state.log_event("info", {"message": f"Portfolio filter: {sym} already open — skipping"})
+                continue
             if sym in _TECH and tech_open >= 2:
-                self.state.log_event("info", {"message": f"Sector filter: {sym} skipped (2 tech positions open)"})
+                self.state.log_event("info", {"message": f"Sector filter: {sym} skipped (2 tech open)"})
                 continue
             if sym in _CRYPTO and crypto_open >= 2:
-                self.state.log_event("info", {"message": f"Sector filter: {sym} skipped (2 crypto positions open)"})
+                self.state.log_event("info", {"message": f"Sector filter: {sym} skipped (2 crypto open)"})
                 continue
             if dirn == "bullish" and bull_open >= 2 and bear_open == 0:
-                c["caution"] = f"All {bull_open} open positions are long — check net exposure"
+                c["caution"] = f"{bull_open} long positions open — net long exposure"
             elif dirn == "bearish" and bear_open >= 2 and bull_open == 0:
-                c["caution"] = f"All {bear_open} open positions are short — check net exposure"
+                c["caution"] = f"{bear_open} short positions open — net short exposure"
             filtered.append(c)
         return filtered if filtered else candidates
 
-    # ── Proposal storage ───────────────────────────────────────────────────────
+    # ── Sim auto-execution ─────────────────────────────────────────────────────
 
     async def _store_proposal(self, analysis: dict):
+        """In sim mode: auto-execute the best trade as a simulated position."""
         judge    = analysis["judge"]
         proposal = judge.get("trade_proposal")
         if not proposal:
             return
 
-        # Skip exact duplicate symbol+direction
-        for p in self.state.get_pending_proposals():
-            if p.get("symbol") == proposal.get("symbol") and \
-               p.get("direction") == proposal.get("direction"):
-                age = self._proposal_age_minutes(p)
-                await self._emit("system", "info", {
-                    "message": f"{proposal['symbol']} {proposal['direction']} already pending ({age:.0f}min) — keeping."
-                })
-                return
+        symbol    = analysis.get("symbol", proposal.get("symbol", ""))
+        direction = analysis.get("direction", "bullish")
+        price     = float(analysis.get("price", 0))
+        iv_rank   = float(analysis.get("iv_rank", 50.0))
+        opt_type  = "call" if direction == "bullish" else "put"
 
-        proposal["proposal_id"]   = str(uuid.uuid4())
-        proposal["proposed_at"]   = datetime.now().isoformat()
-        proposal["status"]        = "pending"
-        proposal["current_price"] = analysis.get("price", 0)
-        regime = analysis.get("market_regime") or self.state.market_regime
-        proposal["analysis_summary"] = {
-            "direction":      analysis.get("direction"),
-            "iv_rank":        analysis.get("iv_rank"),
-            "regime":         (regime or {}).get("regime", "neutral"),
-            "bull_case":      judge.get("bull_case", ""),
-            "bear_case":      judge.get("bear_case", ""),
-            "reasoning":      judge.get("reasoning", ""),
-            "confidence":     judge.get("confidence"),
-            "weighted_score": judge.get("weighted_score"),
-            "threshold":      judge.get("threshold"),
-            "agent_scores": {
-                "technical":   analysis["technical"].get("score"),
-                "fundamental": analysis["fundamental"].get("score"),
-                "sentiment":   analysis["sentiment"].get("score"),
-                "risk":        analysis["risk"].get("score"),
-            },
+        # Don't open a second position in the same symbol
+        open_syms = {p["symbol"] for p in self.state.get_sim_positions(status="open")}
+        if symbol in open_syms:
+            await self._emit("system", "info",
+                {"message": f"SIM: {symbol} already open — skipping duplicate."})
+            return
+
+        pos = {
+            "position_id":       str(uuid.uuid4()),
+            "symbol":            symbol,
+            "direction":         direction,
+            "option_type":       opt_type,
+            "entry_stock_price": round(price, 2),
+            "entry_option_price": 1.00,   # $1.00/share × 100 = $100 total
+            "contracts":         1,
+            "total_cost":        100.00,
+            "entry_dte":         35,
+            "delta":             0.25,
+            "iv_rank":           iv_rank,
+            "score":             judge.get("weighted_score", 0),
+            "confidence":        judge.get("confidence", 0),
+            "bull_case":         judge.get("bull_case", ""),
+            "bear_case":         judge.get("bear_case", ""),
+            "opened_at":         datetime.now().isoformat(),
+            "cycle":             self.state.cycle_count,
+            "status":            "open",
+            "high_water_pnl_pct": 0.0,
+            "last_stock_price":  round(price, 2),
+            "last_option_price": 1.00,
+            "last_pnl_pct":      0.0,
+            "last_pnl_dollars":  0.0,
         }
+        self.state.add_sim_position(pos)
 
-        self.state.add_proposal(proposal)
-        get_outcome_tracker().record_entry(proposal["proposal_id"], proposal, {
-            "iv_rank":        analysis.get("iv_rank"),
-            "tech_score":     analysis["technical"].get("score"),
-            "sent_score":     analysis["sentiment"].get("score"),
-            "fund_score":     analysis["fundamental"].get("score"),
-            "weighted_score": judge.get("weighted_score"),
-            "confidence":     judge.get("confidence"),
-        })
-
-        regime_label = f" | Regime {regime.get('regime','?').upper()}" if regime else ""
-        await self._emit("system", "trade_proposal", proposal)
-        await self._emit("system", "info", {
+        await self._emit("system", "sim_opened", {
+            "symbol": symbol, "direction": direction, "option_type": opt_type,
+            "entry_price": price, "score": judge.get("weighted_score"),
+            "confidence": judge.get("confidence"),
             "message": (
-                f"PROPOSAL: {proposal['symbol']} {proposal.get('option_type','').upper()} "
-                f"| IV {analysis.get('iv_rank', 50):.0f}/100{regime_label} "
-                f"| Score {judge.get('weighted_score'):.0f}/{judge.get('threshold'):.0f} "
-                f"| Conf {judge.get('confidence')}/10 "
-                f"| Max ${proposal.get('max_premium', 0):.2f}/share"
-                f" — Open Cowork to approve."
-            )
+                f"SIM OPENED: {symbol} {opt_type.upper()} @ ${price:.2f} | "
+                f"Score {judge.get('weighted_score'):.0f} | Conf {judge.get('confidence')}/10 | "
+                f"$100 max loss"
+            ),
         })
+        logger.info(
+            f"SIM: Opened {symbol} {opt_type.upper()} @ ${price:.2f} "
+            f"score={judge.get('weighted_score')} conf={judge.get('confidence')}"
+        )
 
     # ── Monitor ────────────────────────────────────────────────────────────────
 
     async def _run_monitor(self):
-        active = self.state.active_trades
-        if not active:
-            return
-        signals = await MonitorAgent(self.claude, self._make_broadcast()).check_positions(active)
-        for sig in signals:
-            new_hw = sig.get("new_high_water")
-            if new_hw is not None:
-                tid = sig.get("trade_id")
-                current_hw = next(
-                    (float(t.get("high_water_pct", 0)) for t in active if t.get("trade_id") == tid), 0.0
-                )
-                if new_hw > current_hw:
-                    self.state.update_trade(tid, {"high_water_pct": new_hw})
-            if sig.get("action") == "exit":
-                await self._emit("system", "exit_signal", sig)
-                self.state.add_exit_signal(sig)
+        await self._monitor_sim_positions()
         self.state.update_last_monitor()
 
-    # ── Proposal expiry ────────────────────────────────────────────────────────
+    async def _monitor_sim_positions(self):
+        open_positions = self.state.get_sim_positions(status="open")
+        if not open_positions:
+            return
 
-    PROPOSAL_TIMEOUT_MINUTES = 30
+        loop = asyncio.get_event_loop()
+
+        for pos in open_positions:
+            symbol      = pos["symbol"]
+            direction   = pos["direction"]
+            entry_stock = float(pos["entry_stock_price"])
+            entry_opt   = float(pos["entry_option_price"])
+            contracts   = int(pos.get("contracts", 1))
+            delta       = float(pos.get("delta", 0.25))
+            entry_dte   = int(pos.get("entry_dte", 35))
+            high_water  = float(pos.get("high_water_pnl_pct", 0.0))
+            pos_id      = pos["position_id"]
+
+            opened_at  = datetime.fromisoformat(pos["opened_at"])
+            days_held  = max(0, (datetime.now() - opened_at).days)
+            dte_left   = max(0, entry_dte - days_held)
+
+            # Live stock price
+            try:
+                quote = await loop.run_in_executor(None, lambda s=symbol: md.get_quote(s))
+                current_stock = float(quote.get("price", 0))
+            except Exception:
+                current_stock = 0.0
+            if not current_stock:
+                continue
+
+            # Delta-theta option pricing
+            stock_move      = (current_stock - entry_stock) if direction == "bullish" else (entry_stock - current_stock)
+            directional_pnl = stock_move * delta
+            theta_cost      = (entry_opt / max(entry_dte, 1)) * days_held
+            current_opt     = round(max(0.01, entry_opt + directional_pnl - theta_cost), 4)
+
+            pnl_pct     = round((current_opt - entry_opt) / entry_opt * 100, 2)
+            pnl_dollars = round((current_opt - entry_opt) * contracts * 100, 2)
+            new_high    = max(high_water, pnl_pct)
+
+            updates = {
+                "high_water_pnl_pct": new_high,
+                "last_stock_price":   round(current_stock, 2),
+                "last_option_price":  current_opt,
+                "last_pnl_pct":       pnl_pct,
+                "last_pnl_dollars":   pnl_dollars,
+                "days_held":          days_held,
+                "dte_left":           dte_left,
+            }
+
+            # Exit logic (matches MonitorAgent rules)
+            exit_reason = None
+            if pnl_pct >= 50.0:
+                exit_reason = f"Profit target +{pnl_pct:.1f}%"
+            elif new_high >= 40.0 and pnl_pct <= new_high - 20.0:
+                exit_reason = f"Trailing stop (peak {new_high:.0f}% → {pnl_pct:.1f}%)"
+            elif new_high >= 25.0 and pnl_pct <= 0.0:
+                exit_reason = f"Trailing stop (peak {new_high:.0f}% → fell to breakeven)"
+            elif pnl_pct <= -50.0:
+                exit_reason = f"Stop loss {pnl_pct:.1f}%"
+            elif dte_left <= 14 and pnl_pct < -10.0:
+                exit_reason = f"Theta exit: {dte_left} DTE & {pnl_pct:.1f}%"
+            elif dte_left <= 2:
+                exit_reason = f"Expiry: {dte_left} DTE — closing"
+
+            if exit_reason:
+                self.state.close_sim_position(pos_id, {
+                    "exit_stock_price":  round(current_stock, 2),
+                    "exit_option_price": current_opt,
+                    "pnl_dollars":       pnl_dollars,
+                    "pnl_pct":           pnl_pct,
+                    "exit_reason":       exit_reason,
+                    "days_held":         days_held,
+                })
+                cumulative = self.state.cumulative_sim_pnl()
+                await self._emit("system", "sim_closed", {
+                    "symbol": symbol, "direction": direction,
+                    "pnl_pct": pnl_pct, "pnl_dollars": pnl_dollars,
+                    "exit_reason": exit_reason, "cumulative_pnl": cumulative,
+                    "message": (
+                        f"SIM CLOSED: {symbol} {pos['option_type'].upper()} | "
+                        f"{exit_reason} | P&L: ${pnl_dollars:+.2f} ({pnl_pct:+.1f}%) | "
+                        f"Running total: ${cumulative:+.2f}"
+                    ),
+                })
+                logger.info(
+                    f"SIM EXIT: {symbol} | {exit_reason} | "
+                    f"P&L ${pnl_dollars:+.2f} ({pnl_pct:+.1f}%) | Total ${cumulative:+.2f}"
+                )
+            else:
+                self.state.update_sim_position(pos_id, updates)
 
     def _expire_stale_proposals(self):
-        for p in self.state.get_pending_proposals():
-            age = self._proposal_age_minutes(p)
-            if age >= self.PROPOSAL_TIMEOUT_MINUTES:
-                pid = p.get("proposal_id", "")
-                self.state.resolve_proposal(pid, "rejected", {"auto_expired": True})
-                self.state.log_event("proposal_expired", {
-                    "symbol": p.get("symbol"), "age_minutes": round(age, 1),
-                    "message": f"{p.get('symbol')} proposal expired after {age:.0f}min — resuming scan.",
-                })
+        pass  # No manual proposals in sim mode
 
     @staticmethod
     def _proposal_age_minutes(p: dict) -> float:
