@@ -661,7 +661,11 @@ function renderScan(data) {
   const cycle   = data.cycle || 0;
   const at      = data.scanned_at ? new Date(data.scanned_at) : null;
 
-  document.getElementById('ib-cands').textContent = results.length ? `${results.length} symbols` : '—';
+  const analyzed = results.filter(r => !r._scanner_only).length;
+  const total    = results.length;
+  document.getElementById('ib-cands').textContent = total
+    ? `${analyzed} analyzed / ${total} scanned`
+    : '—';
   if (at) {
     document.getElementById('scan-time-lbl').textContent =
       `Cycle #${cycle} · ${at.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}`;
@@ -673,10 +677,14 @@ function renderScan(data) {
     return;
   }
 
-  // Sort: entered/qualified first (highest score), then passes, then flaws/errors
+  // Sort: ENTERED first, then analyzed (by score), then scanner-only (by bull/bear score)
   const sorted = [...results].sort((a, b) => {
-    const aWt = a.proposal_generated ? 9999 : (a.weighted_score ?? 0);
-    const bWt = b.proposal_generated ? 9999 : (b.weighted_score ?? 0);
+    // Tier: entered=3, analyzed=2, scanner-only=1
+    const tier = r => r.proposal_generated ? 3 : (r._scanner_only ? 1 : 2);
+    if (tier(a) !== tier(b)) return tier(b) - tier(a);
+    // Within same tier, sort by best score
+    const aWt = a.weighted_score ?? Math.max(a.bull_score ?? 0, a.bear_score ?? 0);
+    const bWt = b.weighted_score ?? Math.max(b.bull_score ?? 0, b.bear_score ?? 0);
     if (aWt !== bWt) return bWt - aWt;
     return (b.tech_score ?? 0) - (a.tech_score ?? 0);
   });
@@ -707,7 +715,9 @@ function renderScan(data) {
 
     const scoreHtml = r.weighted_score != null
       ? `<span class="${r.weighted_score > 50 ? 'score-hi' : ''}">${r.weighted_score.toFixed(1)}</span>`
-      : '—';
+      : (r.bull_score != null
+          ? `<span style="color:var(--muted);font-size:10px">b${r.bull_score}/a${r.bear_score}</span>`
+          : '—');
 
     const newsIcon = r.news_score != null
       ? (r.news_score > 0.1 ? ' <span style="color:var(--green);font-size:10px">▲</span>'
