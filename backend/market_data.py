@@ -193,17 +193,22 @@ def get_intraday(symbol: str, period: str = "5d", interval: str = "1h") -> pd.Da
 # Alpaca snapshot endpoint: returns dailyBar + prevDailyBar — works on free tier,
 # gives real pct_change without specifying a feed (no IEX restriction for snapshots).
 
-def _alpaca_snapshots(symbols: list) -> dict:
+def _alpaca_snapshots(symbols: list, feed: str = None) -> dict:
     """
     Batch Alpaca snapshot — returns {symbol: {price, prev_close, pct_change, volume}}.
-    Uses the snapshot endpoint (no feed restriction) so ETFs like SPY/QQQ/IWM work.
+    Pass feed='iex' for real-time stock prices (free tier).
+    Without feed, uses SIP data (15-min delayed on free tier) — fine for ETFs/macro.
+    Price priority: latestTrade.p (most recent tick) → dailyBar.c → dailyBar.vw.
     """
     if not _alpaca_available() or not symbols:
         return {}
     try:
+        params = {"symbols": ",".join(symbols)}
+        if feed:
+            params["feed"] = feed
         r = requests.get(
             f"{_ALPACA_BASE}/v2/stocks/snapshots",
-            params={"symbols": ",".join(symbols)},
+            params=params,
             headers=_alpaca_headers(),
             timeout=_TIMEOUT,
         )
@@ -212,12 +217,11 @@ def _alpaca_snapshots(symbols: list) -> dict:
             return {}
         result = {}
         for sym, data in r.json().items():
-            daily = data.get("dailyBar") or {}
-            prev  = data.get("prevDailyBar") or {}
-            price = float(daily.get("c") or daily.get("vw") or 0)
-            if not price:
-                trade = data.get("latestTrade") or {}
-                price = float(trade.get("p") or 0)
+            # latestTrade is the most recent tick — always prefer it over the daily bar close
+            trade      = data.get("latestTrade") or {}
+            daily      = data.get("dailyBar") or {}
+            prev       = data.get("prevDailyBar") or {}
+            price = float(trade.get("p") or daily.get("c") or daily.get("vw") or 0)
             prev_close = float(prev.get("c") or 0)
             pct = round((price - prev_close) / prev_close * 100, 2) if prev_close and price else 0.0
             if price:
@@ -232,8 +236,8 @@ def _alpaca_snapshots(symbols: list) -> dict:
 
 
 def get_batch_quotes(symbols: list) -> dict:
-    """Real-time prices via Alpaca snapshot. Returns {symbol: price}."""
-    snaps = _alpaca_snapshots(symbols)
+    """Real-time prices via Alpaca IEX feed. Returns {symbol: price}."""
+    snaps = _alpaca_snapshots(symbols, feed="iex")
     if snaps:
         return {sym: d["price"] for sym, d in snaps.items()}
     # Polygon fallback (403 on free tier — only reached if Alpaca not configured)
@@ -252,8 +256,8 @@ def get_batch_quotes(symbols: list) -> dict:
 
 
 def get_quote(symbol: str) -> dict:
-    """Current price + pct_change via Alpaca snapshot (real pct_change, no feed restriction)."""
-    snaps = _alpaca_snapshots([symbol])
+    """Current price via Alpaca IEX feed (real-time on free tier). Includes pct_change."""
+    snaps = _alpaca_snapshots([symbol], feed="iex")
     if snaps and symbol in snaps:
         d = snaps[symbol]
         return {"symbol": symbol, **d}
