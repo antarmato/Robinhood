@@ -73,6 +73,8 @@ class TechnicalAgent(BaseAgent):
             "avg_vol_20d":    round(ind.get("avg_vol_20d", 0)),
             "stoch_k":        round(ind.get("stoch_k", 50), 1),
             "stoch_d":        round(ind.get("stoch_d", 50), 1),
+            "vwap20":         round(ind.get("vwap20", 0), 2),
+            "vwap20_pct":     round(ind.get("vwap20_pct", 0), 2),
         }
         await self._emit("score", {"symbol": symbol, "score": score, "trend": trend,
                                     "signals": signals, "fatal_flaw": fatal_flaw})
@@ -166,6 +168,15 @@ class TechnicalAgent(BaseAgent):
         ind["vol_ratio"]   = float(volume.iloc[-1]) / vol_avg20 if vol_avg20 > 0 else 1.0
         ind["avg_vol_20d"] = vol_avg20  # absolute avg daily volume (shares)
 
+        # 20-day VWAP proxy: (H+L+C)/3 × volume, cumulated over 20 days
+        typical = (high + low + close) / 3
+        recent20 = df.tail(20)
+        tp20   = (recent20["high"] + recent20["low"] + recent20["close"]) / 3
+        vol20  = recent20["volume"]
+        total_vol = float(vol20.sum())
+        ind["vwap20"] = float((tp20 * vol20).sum() / total_vol) if total_vol > 0 else float(close.iloc[-1])
+        ind["vwap20_pct"] = (price - ind["vwap20"]) / ind["vwap20"] * 100  # % above/below VWAP
+
         # ── Momentum (5d, 20d, 60d returns) ──────────────────────────────────
         ind["momentum_5d"]  = (float(close.iloc[-1]) - float(close.iloc[-5]))  / float(close.iloc[-5])  * 100 if len(close) >= 5  else 0.0
         ind["momentum_20d"] = (float(close.iloc[-1]) - float(close.iloc[-20])) / float(close.iloc[-20]) * 100 if len(close) >= 20 else 0.0
@@ -254,7 +265,20 @@ class TechnicalAgent(BaseAgent):
         elif avg_vol < 1_000_000:
             score -= 0.5; signals.append(f"moderate volume {avg_vol/1e6:.1f}M avg")
 
+        # ── 20-day VWAP (both directions) ─────────────────────────────────────
+        vwap_pct = i.get("vwap20_pct", 0)  # % above (positive) or below (negative) 20d VWAP
+
         if direction == "bullish":
+            # ── VWAP position (20d proxy) ─────────────────────────────────────
+            if vwap_pct > 3.0:
+                score += 0.75; signals.append(f"above 20d VWAP +{vwap_pct:.1f}% — buyers in control")
+            elif vwap_pct > 0.5:
+                score += 0.25
+            elif vwap_pct < -3.0:
+                score -= 0.75; signals.append(f"below 20d VWAP {vwap_pct:.1f}% — sellers in control")
+            elif vwap_pct < -0.5:
+                score -= 0.25
+
             # ── EMA alignment (max +1.5, not +2.0) ───────────────────────────
             if above_ema20 and above_ema50:
                 score += 1.5;  signals.append("above both EMAs")
@@ -356,6 +380,16 @@ class TechnicalAgent(BaseAgent):
             )
 
         else:  # bearish
+            # ── VWAP position ─────────────────────────────────────────────────
+            if vwap_pct < -3.0:
+                score += 0.75; signals.append(f"below 20d VWAP {vwap_pct:.1f}% — sellers in control")
+            elif vwap_pct < -0.5:
+                score += 0.25
+            elif vwap_pct > 3.0:
+                score -= 0.75; signals.append(f"above 20d VWAP +{vwap_pct:.1f}% — bull momentum headwind")
+            elif vwap_pct > 0.5:
+                score -= 0.25
+
             # ── EMA alignment ─────────────────────────────────────────────────
             if not above_ema20 and not above_ema50:
                 score += 1.5;  signals.append("below both EMAs")
