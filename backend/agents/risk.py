@@ -18,7 +18,7 @@ from .base import BaseAgent, BroadcastFn
 from ..outcome_tracker import get_outcome_tracker
 
 logger = logging.getLogger(__name__)
-MAX_LOSS_DEFAULT = 200.0  # fallback if env var not set
+MAX_LOSS_DEFAULT = 100.0  # fallback if env var not set
 KELLY_CAP_MULTIPLIER = 2  # Kelly budget ≤ MAX_LOSS * 2
 
 

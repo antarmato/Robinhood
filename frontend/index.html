@@ -3,277 +3,678 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Alpha System — Agent Monitor</title>
+<title>Alpha System</title>
 <style>
-  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-  :root{
-    --bg:#0a0a0f;--bg2:#111118;--bg3:#1a1a24;--border:#2a2a3a;
-    --text:#e0e0f0;--muted:#666680;--accent:#6060ff;
-    --green:#22c55e;--red:#ef4444;--yellow:#f59e0b;--blue:#38bdf8;
-  }
-  body{background:var(--bg);color:var(--text);font-family:'SF Mono','Fira Code',monospace;font-size:12px;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#080810;--bg2:#0f0f1a;--bg3:#181828;--border:#222235;
+  --text:#dde0f0;--muted:#4a4a6a;--accent:#6366ff;
+  --green:#22c55e;--red:#ef4444;--yellow:#f59e0b;--blue:#38bdf8;--purple:#c084fc;
+}
+body{background:var(--bg);color:var(--text);font-family:'SF Mono','Fira Code',monospace;font-size:12px;height:100vh;display:flex;flex-direction:column;overflow:hidden}
 
-  #header{display:flex;align-items:center;gap:12px;padding:8px 16px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0}
-  #header h1{font-size:13px;font-weight:700;color:var(--accent);letter-spacing:2px}
-  .badge{padding:3px 8px;border-radius:4px;font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase}
-  .b-run{background:rgba(34,197,94,.15);color:var(--green);border:1px solid rgba(34,197,94,.3)}
-  .b-stop{background:rgba(239,68,68,.15);color:var(--red);border:1px solid rgba(239,68,68,.3)}
-  #mkt{margin-left:auto;color:var(--muted);font-size:11px}
-  #cycle{color:var(--muted);font-size:11px}
+/* ── Header ─────────────────────────────────────────────────────────────── */
+#hdr{
+  display:flex;align-items:center;gap:10px;padding:0 14px;
+  height:38px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0
+}
+.logo{font-size:13px;font-weight:700;color:var(--accent);letter-spacing:2px;margin-right:2px}
+.badge{padding:2px 7px;border-radius:3px;font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase}
+.b-run{background:rgba(34,197,94,.12);color:var(--green);border:1px solid rgba(34,197,94,.25)}
+.b-stop{background:rgba(239,68,68,.10);color:var(--red);border:1px solid rgba(239,68,68,.20)}
+.hdr-sep{color:var(--muted);font-size:11px}
+.hdr-dim{color:var(--muted);font-size:11px}
+.hdr-r{margin-left:auto;display:flex;align-items:center;gap:10px}
+#phase-lbl{font-size:11px;font-weight:700}
+#et-clock{font-size:11px;color:var(--muted)}
 
-  #main{display:grid;grid-template-columns:1fr 300px;flex:1;overflow:hidden}
+/* ── Regime bar ─────────────────────────────────────────────────────────── */
+#regime-bar{
+  display:flex;align-items:center;gap:0;
+  height:26px;background:var(--bg2);border-bottom:1px solid var(--border);
+  flex-shrink:0;font-size:11px;overflow:hidden
+}
+.rb-seg{display:flex;align-items:center;gap:5px;padding:0 14px;border-right:1px solid var(--border);height:100%}
+.rb-seg:last-child{border-right:none;margin-left:auto}
+.rb-lbl{color:var(--muted)}
+.rb-val{font-weight:700;color:var(--text)}
 
-  #feed{display:flex;flex-direction:column;overflow:hidden;border-right:1px solid var(--border)}
-  #feed-label{padding:8px 12px;font-size:10px;font-weight:700;letter-spacing:1.5px;color:var(--muted);background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0}
-  #feed-body{flex:1;overflow-y:auto;padding:8px}
-  #thinking{padding:6px 12px;background:var(--bg2);border-top:1px solid var(--border);font-size:11px;color:var(--muted);flex-shrink:0;min-height:32px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+/* ── Main wrap ───────────────────────────────────────────────────────────── */
+#wrap{flex:1;display:flex;overflow:hidden}
 
-  .msg{margin:2px 0;padding:5px 10px;border-radius:4px;border-left:3px solid transparent;line-height:1.5}
-  .msg .meta{font-size:10px;color:var(--muted);margin-bottom:2px;display:flex;gap:8px}
-  .msg .body{color:var(--text);white-space:pre-wrap;word-break:break-word}
-  .t-status{border-left-color:var(--blue);background:rgba(56,189,248,.04)}
-  .t-system{border-left-color:var(--accent);background:rgba(96,96,255,.04)}
-  .t-proposal{border-left-color:var(--yellow);background:rgba(245,158,11,.08)}
-  .t-pass{border-left-color:var(--muted)}
-  .t-error{border-left-color:var(--red);background:rgba(239,68,68,.06)}
-  .t-thinking{border-left-color:var(--muted);background:rgba(255,255,255,.02)}
+/* ── Left pane ───────────────────────────────────────────────────────────── */
+#left{flex:1;display:flex;flex-direction:column;overflow:hidden;border-right:1px solid var(--border)}
 
-  #sidebar{background:var(--bg2);display:flex;flex-direction:column;overflow:hidden}
-  .sec{border-bottom:1px solid var(--border);flex-shrink:0}
-  .sec h3{padding:8px 12px;font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted)}
-  .sec-body{padding:4px 12px 12px}
+/* scan section */
+#scan-section{flex-shrink:0;border-bottom:1px solid var(--border);max-height:240px;display:flex;flex-direction:column}
+.sec-hdr{
+  display:flex;align-items:center;gap:8px;padding:5px 12px;
+  font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;
+  color:var(--muted);background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0
+}
+.sec-hdr .scanning{color:var(--yellow);animation:blink 1s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
 
-  .kv{display:flex;justify-content:space-between;padding:4px 0;font-size:11px}
-  .kv .k{color:var(--muted)}.kv .v{font-weight:600}
-  .v-green{color:var(--green)}.v-yellow{color:var(--yellow)}
+#scan-table-wrap{overflow:auto;flex:1}
+table{width:100%;border-collapse:collapse;table-layout:fixed}
+colgroup col:nth-child(1){width:90px}
+colgroup col:nth-child(2){width:36px}
+colgroup col:nth-child(3){width:72px}
+colgroup col:nth-child(4){width:36px}
+colgroup col:nth-child(5){width:36px}
+colgroup col:nth-child(6){width:48px}
+colgroup col:nth-child(7){width:56px}
+colgroup col:nth-child(8){width:auto}
+thead tr{background:var(--bg2);position:sticky;top:0;z-index:1}
+th{
+  padding:4px 10px;text-align:left;font-size:10px;font-weight:700;
+  letter-spacing:1px;text-transform:uppercase;color:var(--muted);
+  border-bottom:1px solid var(--border);white-space:nowrap;overflow:hidden
+}
+td{
+  padding:5px 10px;font-size:11px;border-bottom:1px solid rgba(255,255,255,.03);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis
+}
+tr:hover td{background:rgba(255,255,255,.02)}
+tr:last-child td{border-bottom:none}
+.row-proposal td:first-child{box-shadow:inset 2px 0 0 var(--yellow)}
+.row-proposal{background:rgba(245,158,11,.05)}
+.row-flaw td{opacity:.6}
+.row-error{opacity:.4}
 
-  .btn{padding:6px 14px;border-radius:4px;font-size:11px;font-weight:700;cursor:pointer;border:none;font-family:inherit;transition:opacity .15s}
-  .btn:hover{opacity:.85}.btn:disabled{opacity:.4;cursor:not-allowed}
-  .btn-green{background:var(--green);color:#000}.btn-red{background:var(--red);color:#fff}
-  .btn-ghost{background:var(--bg3);color:var(--text);border:1px solid var(--border)}
-  .btn-row{display:flex;gap:8px;margin-top:8px}
+.tag{display:inline-block;padding:1px 5px;border-radius:2px;font-size:10px;font-weight:700}
+.tag-proposal{background:rgba(245,158,11,.18);color:var(--yellow)}
+.tag-pass{background:rgba(255,255,255,.05);color:var(--muted)}
+.tag-approved{background:rgba(34,197,94,.12);color:var(--green)}
+.tag-flaw{background:rgba(239,68,68,.12);color:var(--red)}
+.tag-error{color:var(--red);opacity:.7}
+.dir-b{color:var(--green)}
+.dir-s{color:var(--red)}
+.score-hi{color:var(--green)}
 
-  .ctrl-row{display:flex;gap:8px;padding:0 12px 12px;flex-wrap:wrap}
-  .inp{background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:inherit;font-size:11px;padding:5px 8px;width:100%}
-  .inp:focus{outline:none;border-color:var(--accent)}
+/* feed section */
+#feed-section{flex:1;display:flex;flex-direction:column;overflow:hidden}
+#feed-body{flex:1;overflow-y:auto;padding:4px 6px}
+.msg{padding:3px 8px;border-radius:3px;border-left:2px solid transparent;margin:1px 0;line-height:1.45}
+.msg .meta{display:flex;gap:6px;font-size:10px;color:var(--muted);margin-bottom:1px}
+.msg .body{font-size:11px;color:var(--text);white-space:pre-wrap;word-break:break-word}
+.t-cycle{border-left-color:var(--blue);background:rgba(56,189,248,.04)}
+.t-proposal{border-left-color:var(--yellow);background:rgba(245,158,11,.05)}
+.t-trade{border-left-color:var(--green);background:rgba(34,197,94,.04)}
+.t-pass{border-left-color:var(--muted)}
+.t-score{border-left-color:var(--purple);background:rgba(192,132,252,.03)}
+.t-info{border-left-color:var(--accent);background:rgba(99,102,241,.03)}
+.t-error{border-left-color:var(--red);background:rgba(239,68,68,.05)}
+#thinking-bar{
+  padding:4px 12px;background:var(--bg2);border-top:1px solid var(--border);
+  font-size:11px;display:flex;gap:6px;align-items:center;flex-shrink:0;
+  min-height:26px;overflow:hidden
+}
+#t-agent{font-weight:700;flex-shrink:0}
+#t-text{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
 
-  .proposal-card{background:var(--bg3);border:1px solid var(--yellow);border-radius:6px;padding:10px;margin:6px 0}
-  .proposal-card .sym{font-weight:700;font-size:13px;color:var(--yellow)}
-  .proposal-card .detail{color:var(--muted);font-size:11px;margin-top:3px}
-  .proposal-card .conf{color:var(--text);font-size:11px;margin-top:4px}
+/* ── Sidebar ─────────────────────────────────────────────────────────────── */
+#sidebar{width:272px;flex-shrink:0;overflow-y:auto;background:var(--bg2);display:flex;flex-direction:column}
+.card{border-bottom:1px solid var(--border);padding:10px 12px}
+.card:last-child{border-bottom:none}
+.card-title{
+  font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;
+  color:var(--muted);margin-bottom:8px;display:flex;align-items:center;gap:6px
+}
+.cnt-badge{
+  background:var(--yellow);color:#000;border-radius:2px;
+  padding:1px 5px;font-size:10px;font-weight:700
+}
 
-  #proposals-list{max-height:200px;overflow-y:auto}
-  .no-items{color:var(--muted);font-size:11px;padding:4px 0}
+.inp{
+  width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:3px;
+  color:var(--text);font-family:inherit;font-size:11px;padding:5px 8px;margin-bottom:6px
+}
+.inp:focus{outline:none;border-color:var(--accent)}
+.btn-row{display:flex;gap:6px}
+.btn{
+  flex:1;padding:5px 8px;border-radius:3px;font-size:11px;font-weight:700;
+  cursor:pointer;border:none;font-family:inherit;transition:opacity .15s
+}
+.btn:hover{opacity:.8}
+.btn:disabled{opacity:.3;cursor:not-allowed}
+.btn-g{background:var(--green);color:#000}
+.btn-r{background:var(--red);color:#fff}
 
-  ::-webkit-scrollbar{width:4px;height:4px}
-  ::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+.kv{display:flex;justify-content:space-between;align-items:baseline;padding:2px 0;font-size:11px}
+.kv .k{color:var(--muted)}
+.kv .v{font-weight:600}
+.v-g{color:var(--green)}.v-y{color:var(--yellow)}.v-r{color:var(--red)}
+
+.proposal-card{
+  background:var(--bg3);border:1px solid rgba(245,158,11,.25);border-radius:4px;
+  padding:8px;margin:4px 0
+}
+.p-head{font-weight:700;color:var(--yellow);font-size:12px;margin-bottom:3px}
+.p-meta{color:var(--muted);font-size:10px;margin-bottom:3px}
+.p-score{font-size:11px;margin-bottom:5px}
+.p-case{font-size:10px;color:var(--muted);line-height:1.4;border-top:1px solid var(--border);padding-top:4px;margin-top:4px}
+.p-case .label{font-weight:700;margin-right:3px}
+
+.trade-card{
+  background:var(--bg3);border:1px solid var(--border);border-radius:4px;
+  padding:7px 8px;margin:4px 0;font-size:11px
+}
+.trade-sym{font-weight:700;color:var(--blue);margin-bottom:2px}
+
+.progress-wrap{height:3px;background:var(--bg3);border-radius:2px;margin:6px 0 3px;overflow:hidden}
+.progress-bar{height:100%;background:var(--accent);border-radius:2px;transition:width .4s}
+.small-dim{font-size:10px;color:var(--muted);line-height:1.4}
+
+.empty-state{color:var(--muted);font-size:11px;padding:2px 0}
 </style>
 </head>
 <body>
-<div id="header">
-  <h1>⬡ ALPHA SYSTEM</h1>
-  <span id="sys-badge" class="badge b-stop">STOPPED</span>
-  <span id="cycle">Cycle: 0</span>
-  <span id="mkt">Checking market...</span>
+
+<!-- Header -->
+<div id="hdr">
+  <span class="logo">⬡ ALPHA</span>
+  <span id="status-badge" class="badge b-stop">STOPPED</span>
+  <span class="hdr-sep">·</span>
+  <span id="cycle-lbl" class="hdr-dim">Cycle 0</span>
+  <span class="hdr-sep">·</span>
+  <span class="hdr-dim">Budget <strong style="color:var(--text)">$100</strong></span>
+  <div class="hdr-r">
+    <span id="phase-lbl"></span>
+    <span id="et-clock"></span>
+  </div>
 </div>
 
-<div id="main">
-  <div id="feed">
-    <div id="feed-label">AGENT ACTIVITY</div>
-    <div id="feed-body"></div>
-    <div id="thinking"><span id="t-agent" style="color:var(--accent);font-weight:700">—</span>&nbsp;<span id="t-text">Waiting for agents...</span></div>
+<!-- Regime bar -->
+<div id="regime-bar">
+  <div class="rb-seg"><span class="rb-lbl">Regime</span><span id="rb-regime" class="rb-val">—</span></div>
+  <div class="rb-seg"><span class="rb-lbl">VIX</span><span id="rb-vix" class="rb-val">—</span></div>
+  <div class="rb-seg"><span class="rb-lbl">Scanned</span><span id="rb-cands" class="rb-val">—</span></div>
+  <div class="rb-seg"><span class="rb-lbl">Next scan</span><span id="rb-next" class="rb-val">—</span></div>
+</div>
+
+<!-- Main -->
+<div id="wrap">
+
+  <!-- Left -->
+  <div id="left">
+
+    <!-- Scan board -->
+    <div id="scan-section">
+      <div class="sec-hdr">
+        SCAN BOARD
+        <span id="scan-time-lbl" class="hdr-dim" style="font-weight:400;font-size:10px"></span>
+        <span id="scan-spinner" class="scanning" style="display:none">⟳ SCANNING</span>
+      </div>
+      <div id="scan-table-wrap">
+        <table>
+          <colgroup>
+            <col><col><col><col><col><col><col><col>
+          </colgroup>
+          <thead><tr>
+            <th>Symbol</th><th>Dir</th><th>Price</th>
+            <th>IV</th><th>RSI</th><th>Tech</th><th>Score</th><th>Status</th>
+          </tr></thead>
+          <tbody id="scan-body">
+            <tr><td colspan="8" style="color:var(--muted);padding:10px 12px">Waiting for first scan cycle...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Agent feed -->
+    <div id="feed-section">
+      <div class="sec-hdr">AGENT ACTIVITY</div>
+      <div id="feed-body"></div>
+      <div id="thinking-bar">
+        <span id="t-agent" style="color:var(--accent)">—</span>
+        <span id="t-text">Waiting...</span>
+      </div>
+    </div>
+
   </div>
 
+  <!-- Sidebar -->
   <div id="sidebar">
-    <div class="sec">
-      <h3>Control</h3>
-      <div class="sec-body">
-        <div class="kv"><span class="k">API Key (optional)</span></div>
-        <input class="inp" id="api-key" type="password" placeholder="Set in Railway env as API_KEY" style="margin-bottom:8px">
-        <div class="btn-row">
-          <button class="btn btn-green" id="btn-start" onclick="startSystem()">▶ Start</button>
-          <button class="btn btn-red"   id="btn-stop"  onclick="stopSystem()" disabled>■ Stop</button>
-        </div>
+
+    <!-- Controls -->
+    <div class="card">
+      <div class="card-title">CONTROL</div>
+      <input id="api-key" type="password" class="inp" placeholder="API_KEY (optional)">
+      <div class="btn-row">
+        <button id="btn-start" class="btn btn-g" onclick="startSystem()">▶ Start</button>
+        <button id="btn-stop" class="btn btn-r" onclick="stopSystem()" disabled>■ Stop</button>
       </div>
     </div>
 
-    <div class="sec">
-      <h3>Status</h3>
-      <div class="sec-body">
-        <div class="kv"><span class="k">System</span><span class="v" id="st-sys">Stopped</span></div>
-        <div class="kv"><span class="k">Last Scan</span><span class="v" id="st-scan">—</span></div>
-        <div class="kv"><span class="k">Last Monitor</span><span class="v" id="st-mon">—</span></div>
-        <div class="kv"><span class="k">Active Trades</span><span class="v" id="st-trades">0</span></div>
-        <div class="kv"><span class="k">Pending Proposals</span><span class="v v-yellow" id="st-props">0</span></div>
+    <!-- Proposals -->
+    <div class="card">
+      <div class="card-title">
+        PROPOSALS
+        <span id="prop-cnt-badge" class="cnt-badge" style="display:none">0</span>
       </div>
+      <div id="proposals-list"><span class="empty-state">None pending</span></div>
     </div>
 
-    <div class="sec" style="flex:1;overflow:hidden;display:flex;flex-direction:column">
-      <h3>Pending Proposals</h3>
-      <div class="sec-body" style="overflow-y:auto;flex:1">
-        <div id="proposals-list"><span class="no-items">None — agents are deliberating</span></div>
-        <p style="color:var(--muted);font-size:10px;margin-top:8px;line-height:1.5">
-          Open the <strong style="color:var(--accent)">Cowork Artifact</strong> in your session to review and execute proposals.
-        </p>
-      </div>
+    <!-- Active Trades -->
+    <div class="card">
+      <div class="card-title">ACTIVE TRADES</div>
+      <div id="trades-list"><span class="empty-state">No open positions</span></div>
     </div>
+
+    <!-- Performance -->
+    <div class="card">
+      <div class="card-title">PERFORMANCE</div>
+      <div class="kv"><span class="k">Closed Trades</span><span class="v" id="p-total">0</span></div>
+      <div class="kv"><span class="k">Win Rate</span><span class="v" id="p-wr">—</span></div>
+      <div class="kv"><span class="k">Expectancy</span><span class="v" id="p-exp">—</span></div>
+      <div class="kv"><span class="k">Kelly</span><span class="v" id="p-kelly">Not ready</span></div>
+      <div class="progress-wrap"><div id="kelly-bar" class="progress-bar" style="width:0%"></div></div>
+      <div id="kelly-label" class="small-dim">Close 10 trades to unlock Kelly position sizing</div>
+    </div>
+
   </div>
 </div>
 
 <script>
-const AGENT_COLORS = {
-  Scanner:'#60a5fa',Technical:'#34d399',Options:'#c084fc',
-  Fundamental:'#fbbf24',Sentiment:'#38bdf8',Risk:'#f87171',
-  DevilsAdvocate:'#fb923c',Judge:'#facc15',Monitor:'#a3e635',system:'#6060ff'
+const COLORS = {
+  Scanner:'#60a5fa', Technical:'#34d399', Fundamental:'#fbbf24',
+  Sentiment:'#38bdf8', Risk:'#f87171', Judge:'#facc15',
+  Monitor:'#a3e635', Advocate:'#fb923c', system:'#6366ff'
 };
 
 let ws = null;
+let lastScanTime = null;
+let isScanning = false;
+let scanClearTimer = null;
+
+// ── WebSocket ─────────────────────────────────────────────────────────────
+
 function connect() {
-  const proto = location.protocol==='https:'?'wss':'ws';
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(`${proto}://${location.host}/ws`);
-  ws.onmessage = e => handle(JSON.parse(e.data));
+  ws.onmessage = e => handleWS(JSON.parse(e.data));
   ws.onclose = () => setTimeout(connect, 3000);
 }
 
-function handle(msg) {
-  const {agent, type, data, timestamp} = msg;
-  if (type==='init') { applyInit(data); return; }
-  if (type==='status') { updateStatus(data.status); return; }
-  if (type==='cycle_start') {
-    document.getElementById('cycle').textContent = `Cycle: ${data.cycle}`;
-    addMsg('system','🔄 CYCLE START',`Scanning... cycle #${data.cycle}`,timestamp,'t-system');
-    return;
-  }
-  if (type==='thinking_start') {
-    document.getElementById('t-agent').textContent = agent;
-    document.getElementById('t-agent').style.color = AGENT_COLORS[agent]||'#fff';
-    document.getElementById('t-text').textContent = '';
-    return;
-  }
-  if (type==='thinking_chunk') {
-    document.getElementById('t-text').textContent += data;
-    return;
-  }
-  if (type==='trade_proposal') {
-    addMsg('Judge','📋 PROPOSAL STORED',
-      `${data.symbol} ${data.option_type?.toUpperCase()} $${data.strike} | Exp ${data.expiration_date} | ${data.contracts}x | Cost $${data.total_max_loss?.toFixed(0)}`,
-      timestamp,'t-proposal');
-    refreshStatus();
-    return;
-  }
-  if (type==='decision') {
-    const cls = data.decision==='trade'?'t-proposal':'t-pass';
-    addMsg('Judge',data.decision==='trade'?'✅ GO':'⏭ PASS',
-      `${data.symbol} | Confidence ${data.confidence}/10\n${data.reasoning}`,timestamp,cls);
-    return;
-  }
-  if (type==='proposal_resolved') {
-    addMsg('system',data.action==='executed'?'✅ EXECUTED':'✗ REJECTED',
-      `Proposal ${data.proposal_id} — ${data.action}`,timestamp,'t-system');
-    refreshStatus();
-    return;
-  }
-  if (type==='error') {
-    addMsg(agent||'system','⚠ ERROR',data.message||JSON.stringify(data),timestamp,'t-error');
-    return;
-  }
-  if (type==='info') {
-    addMsg('system','ℹ',data.message||JSON.stringify(data),timestamp,'t-system');
-    return;
-  }
-  if (type==='analyzing') {
-    addMsg('system','📊',`Analyzing ${data.symbol} (${data.direction})`,timestamp,'t-status');
-    return;
-  }
-  if (type==='status') {
-    addMsg(agent,type,typeof data==='string'?data:JSON.stringify(data),timestamp,'t-status');
-    return;
-  }
-}
+function handleWS(msg) {
+  const { agent, type, data, timestamp } = msg;
 
-function applyInit(data) {
-  updateStatus(data.status);
-  document.getElementById('cycle').textContent = `Cycle: ${data.cycle_count||0}`;
-  if (data.pending_proposals?.length) showProposals(data.pending_proposals);
-  (data.recent_events||[]).forEach(ev => {
-    if (ev.type==='info' && ev.data?.data?.message) {
-      addMsg('system','ℹ',ev.data.data.message,ev.timestamp,'t-system');
+  if (type === 'init') {
+    setStatus(data.status);
+    setCycle(data.cycle_count || 0);
+    if (data.pending_proposals?.length) renderProposals(data.pending_proposals);
+    return;
+  }
+  if (type === 'status' && data?.status) { setStatus(data.status); return; }
+
+  if (type === 'cycle_start') {
+    setCycle(data.cycle || 0);
+    setScanning(true);
+    feedAdd(agent, `🔄 CYCLE #${data.cycle}`, data.session || 'LIVE', timestamp, 't-cycle');
+    return;
+  }
+
+  if (type === 'thinking_start') {
+    const el = document.getElementById('t-agent');
+    el.textContent = agent;
+    el.style.color = COLORS[agent] || '#fff';
+    document.getElementById('t-text').textContent = '...';
+    return;
+  }
+  if (type === 'thinking_chunk') {
+    const el = document.getElementById('t-text');
+    el.textContent += data;
+    if (el.textContent.length > 150) el.textContent = '…' + el.textContent.slice(-120);
+    return;
+  }
+  if (type === 'thinking_done') {
+    document.getElementById('t-text').textContent = 'reasoning complete';
+    return;
+  }
+
+  if (type === 'decision') {
+    const isTrade = data.decision === 'trade';
+    const reason = (data.pass_reason || data.reasoning || '').slice(0, 250);
+    feedAdd('Judge',
+      `${isTrade ? '✅' : '⏭'} ${data.symbol} ${(data.decision || '').toUpperCase()} ${data.weighted_score != null ? data.weighted_score.toFixed(1) : ''}`,
+      reason, timestamp, isTrade ? 't-trade' : 't-pass');
+    if (isTrade) setScanning(false);
+    refreshAll();
+    return;
+  }
+
+  if (type === 'trade_proposal') {
+    const s = data.analysis_summary || {};
+    feedAdd('system', '📋 PROPOSAL',
+      `${data.symbol} ${(data.option_type || '').toUpperCase()} | Score ${s.weighted_score?.toFixed(1) || '?'} | Conf ${s.confidence || '?'}/10 | Max $${data.total_max_loss?.toFixed(0) || '?'}`,
+      timestamp, 't-proposal');
+    refreshAll();
+    return;
+  }
+
+  if (type === 'proposal_resolved') {
+    feedAdd('system', data.action === 'executed' ? '✅ EXECUTED' : '✗ EXPIRED',
+      `${data.proposal_id?.slice(0, 8)}…`, timestamp,
+      data.action === 'executed' ? 't-trade' : 't-pass');
+    refreshAll();
+    return;
+  }
+
+  if (type === 'score') {
+    const d2 = data.data || data;
+    if (d2.symbol && d2.score != null) {
+      feedAdd(agent, `${d2.symbol} score`,
+        `${d2.score}/10${d2.trend ? ' · ' + d2.trend : ''}${d2.fatal_flaw ? ' ⚠ FLAW: ' + d2.fatal_flaw : ''}`,
+        timestamp, 't-score');
     }
-  });
+    return;
+  }
+
+  if (type === 'info') {
+    const msg2 = (data?.message || data?.data?.message || '');
+    if (msg2 && msg2.length > 3) feedAdd(agent || 'system', 'ℹ', msg2.slice(0, 220), timestamp, 't-info');
+    return;
+  }
+
+  if (type === 'error') {
+    feedAdd(agent || 'system', '⚠ ERROR',
+      (data?.message || JSON.stringify(data)).slice(0, 200), timestamp, 't-error');
+    return;
+  }
 }
 
-function updateStatus(st) {
-  const b = document.getElementById('sys-badge');
+// ── API ───────────────────────────────────────────────────────────────────
+
+async function refreshAll() {
+  try {
+    const [sR, pR, stR, scR] = await Promise.all([
+      fetch('/api/status'),
+      fetch('/api/proposals'),
+      fetch('/api/stats'),
+      fetch('/api/scan-results'),
+    ]);
+    const [status, props, stats, scan] = await Promise.all([
+      sR.json(), pR.json(), stR.json(), scR.json()
+    ]);
+
+    setStatus(status.system_status);
+    setCycle(status.cycle_count || 0);
+    lastScanTime = status.last_scan ? new Date(status.last_scan) : null;
+
+    renderProposals(props.pending || []);
+    renderTrades(props.active_trades || []);
+    renderStats(stats);
+    renderScan(scan);
+    renderRegime(scan.regime || {});
+  } catch (e) { console.error(e); }
+}
+
+// ── Renderers ─────────────────────────────────────────────────────────────
+
+function setStatus(st) {
+  const b = document.getElementById('status-badge');
   b.textContent = st.toUpperCase();
-  b.className = `badge ${st==='running'?'b-run':'b-stop'}`;
-  document.getElementById('st-sys').textContent = st.charAt(0).toUpperCase()+st.slice(1);
-  document.getElementById('btn-start').disabled = st==='running';
-  document.getElementById('btn-stop').disabled  = st==='stopped';
+  b.className = `badge ${st === 'running' ? 'b-run' : 'b-stop'}`;
+  document.getElementById('btn-start').disabled = st === 'running';
+  document.getElementById('btn-stop').disabled  = st !== 'running';
 }
 
-function addMsg(agent, type, content, ts, cls='') {
+function setCycle(n) {
+  document.getElementById('cycle-lbl').textContent = `Cycle ${n}`;
+}
+
+function setScanning(v) {
+  isScanning = v;
+  document.getElementById('scan-spinner').style.display = v ? 'inline' : 'none';
+  clearTimeout(scanClearTimer);
+  if (v) scanClearTimer = setTimeout(() => setScanning(false), 180000);
+}
+
+function renderRegime(r) {
+  const reg = (r.regime || '—').toUpperCase();
+  const str = r.strength != null ? ` (${r.strength}/10)` : '';
+  const rColor = r.regime === 'bull' ? '#22c55e' : r.regime === 'bear' ? '#ef4444' : '#dde0f0';
+  const re = document.getElementById('rb-regime');
+  re.textContent = reg + str;
+  re.style.color = rColor;
+
+  const vix = r.vix != null ? r.vix.toFixed(1) : '—';
+  const vixR = r.vix_regime || '';
+  const vColor = vixR === 'elevated' ? '#f59e0b' : vixR === 'extreme' ? '#ef4444' : '#dde0f0';
+  const ve = document.getElementById('rb-vix');
+  ve.textContent = vix + (vixR && vixR !== 'normal' ? ` (${vixR})` : '');
+  ve.style.color = vColor;
+}
+
+function renderScan(data) {
+  const results = data.results || [];
+  const cycle   = data.cycle || 0;
+  const at      = data.scanned_at ? new Date(data.scanned_at) : null;
+
+  document.getElementById('rb-cands').textContent =
+    results.length ? `${results.length} symbols` : '—';
+
+  if (at) {
+    document.getElementById('scan-time-lbl').textContent =
+      `Cycle #${cycle} · ${at.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}`;
+  }
+
+  const tbody = document.getElementById('scan-body');
+  if (!results.length) {
+    tbody.innerHTML = '<tr><td colspan="8" style="color:var(--muted);padding:10px 12px">No scan data yet</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = results.map(r => {
+    const isBull = r.direction === 'bullish';
+    const dirHtml = isBull
+      ? `<span class="dir-b">▲</span>`
+      : `<span class="dir-s">▼</span>`;
+
+    let statusHtml, rowCls = '';
+    if (r.proposal_generated) {
+      statusHtml = '<span class="tag tag-proposal">PROPOSAL</span>';
+      rowCls = 'row-proposal';
+    } else if (r.tech_fatal_flaw) {
+      statusHtml = `<span class="tag tag-flaw" title="${esc(r.tech_fatal_flaw)}">FLAW</span>`;
+      rowCls = 'row-flaw';
+    } else if (r.decision === 'trade') {
+      statusHtml = '<span class="tag tag-approved">APPROVED</span>';
+    } else if (r.decision === 'error') {
+      statusHtml = '<span class="tag tag-error">ERROR</span>';
+      rowCls = 'row-error';
+    } else {
+      statusHtml = `<span class="tag tag-pass" title="${esc(r.pass_reason || '')}">PASS</span>`;
+    }
+
+    const techHtml = r.tech_fatal_flaw
+      ? `<span style="color:var(--red)" title="${esc(r.tech_fatal_flaw)}">FLAW</span>`
+      : (r.tech_score != null ? r.tech_score.toFixed(1) : '—');
+
+    const scoreHtml = r.weighted_score != null
+      ? `<span class="${r.weighted_score > 50 ? 'score-hi' : ''}">${r.weighted_score.toFixed(1)}</span>`
+      : '—';
+
+    const perf = r.sym_perf;
+    const perfHtml = perf
+      ? ` <span style="color:var(--muted);font-size:10px" title="${perf.trade_count} trades">(${Math.round(perf.win_rate*100)}%W)</span>`
+      : '';
+
+    return `<tr class="${rowCls}">
+      <td><strong>${esc(r.symbol)}</strong>${perfHtml}</td>
+      <td>${dirHtml}</td>
+      <td>$${r.price ? r.price.toFixed(2) : '—'}</td>
+      <td>${r.iv_rank != null ? Math.round(r.iv_rank) : '—'}</td>
+      <td>${r.rsi != null ? r.rsi.toFixed(0) : '—'}</td>
+      <td>${techHtml}</td>
+      <td>${scoreHtml}</td>
+      <td>${statusHtml}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderProposals(proposals) {
+  const el    = document.getElementById('proposals-list');
+  const badge = document.getElementById('prop-cnt-badge');
+
+  if (!proposals.length) {
+    el.innerHTML = '<span class="empty-state">None pending</span>';
+    badge.style.display = 'none';
+    return;
+  }
+
+  badge.textContent = proposals.length;
+  badge.style.display = 'inline-block';
+
+  el.innerHTML = proposals.map(p => {
+    const s = p.analysis_summary || {};
+    const score = s.weighted_score?.toFixed(1) || '?';
+    const thresh = s.threshold?.toFixed(0) || '42';
+    const conf  = s.confidence || '?';
+    const age   = ageMin(p.proposed_at);
+    const ageStr = age < 60 ? `${Math.round(age)}m ago` : 'old';
+    const bull  = (s.bull_case || '').slice(0, 130);
+    const bear  = (s.bear_case || '').slice(0, 130);
+    return `<div class="proposal-card">
+      <div class="p-head">${esc(p.symbol)} ${(p.option_type||'').toUpperCase()} · ${ageStr}</div>
+      <div class="p-meta">DTE ${p.dte_min||'?'}-${p.dte_max||'?'} · δ${p.delta_target||'?'} · IV ${p.iv_rank?.toFixed(0)||'?'}</div>
+      <div class="p-score">
+        Score <strong style="color:var(--yellow)">${score}</strong><span style="color:var(--muted)">/${thresh}</span>
+        · Conf <strong>${conf}</strong>/10
+        · Max <strong>$${p.total_max_loss?.toFixed(0)||'?'}</strong>
+      </div>
+      ${bull ? `<div class="p-case"><span class="label" style="color:var(--green)">FOR:</span>${esc(bull)}${bull.length===130?'…':''}</div>` : ''}
+      ${bear ? `<div class="p-case"><span class="label" style="color:var(--red)">RISK:</span>${esc(bear)}${bear.length===130?'…':''}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+function renderTrades(trades) {
+  const el = document.getElementById('trades-list');
+  if (!trades.length) {
+    el.innerHTML = '<span class="empty-state">No open positions</span>';
+    return;
+  }
+  el.innerHTML = trades.map(t => `
+    <div class="trade-card">
+      <div class="trade-sym">${esc(t.symbol)} ${(t.option_type||'').toUpperCase()}</div>
+      <div style="color:var(--muted);font-size:10px">$${t.strike} · ${t.expiration_date} · ${t.contracts}x @ $${t.limit_price}</div>
+    </div>`).join('');
+}
+
+function renderStats(data) {
+  const p = data.performance || {};
+  const total   = p.total_trades || 0;
+  const kr      = data.kelly_ready || false;
+  const kf      = data.kelly_fraction || 0;
+
+  document.getElementById('p-total').textContent = total;
+
+  const wrEl = document.getElementById('p-wr');
+  if (p.win_rate != null) {
+    const pct = Math.round(p.win_rate * 100);
+    wrEl.textContent = `${pct}%`;
+    wrEl.className = `v ${pct >= 50 ? 'v-g' : 'v-r'}`;
+  } else { wrEl.textContent = '—'; wrEl.className = 'v'; }
+
+  const expEl = document.getElementById('p-exp');
+  if (p.expectancy != null) {
+    expEl.textContent = `${p.expectancy > 0 ? '+' : ''}${p.expectancy.toFixed(1)}%`;
+    expEl.className = `v ${p.expectancy > 0 ? 'v-g' : 'v-r'}`;
+  } else { expEl.textContent = '—'; expEl.className = 'v'; }
+
+  const kEl = document.getElementById('p-kelly');
+  if (kr) {
+    kEl.textContent = `${(kf * 100).toFixed(1)}% active`;
+    kEl.className = 'v v-g';
+  } else {
+    kEl.textContent = 'Not ready';
+    kEl.className = 'v';
+  }
+
+  document.getElementById('kelly-bar').style.width = `${Math.min(100, total / 10 * 100)}%`;
+  const need = Math.max(0, 10 - total);
+  document.getElementById('kelly-label').textContent = kr
+    ? `Kelly active · sizing ${(kf*100).toFixed(1)}% of budget per trade`
+    : `${need} more closed trade${need !== 1 ? 's' : ''} needed to unlock Kelly sizing`;
+}
+
+// ── Feed ──────────────────────────────────────────────────────────────────
+
+function feedAdd(agent, type, body, ts, cls) {
   const feed = document.getElementById('feed-body');
   const el = document.createElement('div');
-  el.className = `msg ${cls}`;
-  const color = AGENT_COLORS[agent]||'#999';
-  const time = ts ? new Date(ts).toLocaleTimeString() : '';
-  el.innerHTML = `<div class="meta"><span style="color:${color};font-weight:700">${agent}</span><span>${esc(type)}</span><span style="margin-left:auto">${time}</span></div><div class="body">${esc(content||'')}</div>`;
+  el.className = `msg ${cls || ''}`;
+  const color = COLORS[agent] || '#888';
+  const time = ts ? new Date(ts).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '';
+  el.innerHTML = `<div class="meta"><span style="color:${color};font-weight:700">${esc(agent)}</span><span>${esc(type)}</span><span style="margin-left:auto">${time}</span></div><div class="body">${esc(body || '')}</div>`;
   feed.appendChild(el);
   feed.scrollTop = feed.scrollHeight;
-  while(feed.children.length>300) feed.removeChild(feed.firstChild);
+  while (feed.children.length > 200) feed.removeChild(feed.firstChild);
 }
 
-function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+// ── Clock ─────────────────────────────────────────────────────────────────
 
-function showProposals(proposals) {
-  const el = document.getElementById('proposals-list');
-  if (!proposals.length) { el.innerHTML='<span class="no-items">None</span>'; return; }
-  el.innerHTML = proposals.map(p => `
-    <div class="proposal-card">
-      <div class="sym">${p.symbol} ${p.option_type?.toUpperCase()} $${p.strike}</div>
-      <div class="detail">Exp: ${p.expiration_date} | ${p.contracts}x contracts</div>
-      <div class="detail">Max loss: $${Number(p.total_max_loss||0).toFixed(0)} | Limit: $${Number(p.limit_price||0).toFixed(2)}/share</div>
-      <div class="conf">Confidence: ${p.analysis_summary?.confidence||'?'}/10</div>
-    </div>
-  `).join('');
-  document.getElementById('st-props').textContent = proposals.length;
+function tickClock() {
+  const now = new Date();
+  const et  = now.toLocaleString('en-US', {timeZone:'America/New_York', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:true});
+  const h   = parseInt(now.toLocaleString('en-US', {timeZone:'America/New_York', hour:'numeric', hour12:false}));
+  const m   = parseInt(now.toLocaleString('en-US', {timeZone:'America/New_York', minute:'numeric'}));
+  const day = now.toLocaleString('en-US', {timeZone:'America/New_York', weekday:'short'});
+  const mins = h * 60 + m;
+  const wknd = day === 'Sat' || day === 'Sun';
+
+  let phase, pColor;
+  if (wknd)            { phase = 'WEEKEND';       pColor = '#4a4a6a'; }
+  else if (mins < 540) { phase = 'PRE-MARKET';    pColor = '#4a4a6a'; }
+  else if (mins < 570) { phase = 'PRE-OPEN';      pColor = '#f59e0b'; }
+  else if (mins < 960) { phase = 'MARKET OPEN';   pColor = '#22c55e'; }
+  else                 { phase = 'MARKET CLOSED';  pColor = '#4a4a6a'; }
+
+  const ph = document.getElementById('phase-lbl');
+  ph.textContent = phase;
+  ph.style.color = pColor;
+  document.getElementById('et-clock').textContent = et + ' ET';
+
+  // Next scan countdown (20 min interval)
+  const nb = document.getElementById('rb-next');
+  if (lastScanTime) {
+    const diff = Math.max(0, Math.round((lastScanTime.getTime() + 1200000 - now.getTime()) / 1000));
+    if (diff === 0) { nb.textContent = 'due now'; nb.style.color = '#f59e0b'; }
+    else { nb.textContent = `${Math.floor(diff/60)}:${String(diff%60).padStart(2,'0')}`; nb.style.color = '#dde0f0'; }
+  } else { nb.textContent = '—'; }
 }
 
-async function refreshStatus() {
-  try {
-    const r = await fetch('/api/status');
-    const d = await r.json();
-    document.getElementById('st-scan').textContent  = d.last_scan ? new Date(d.last_scan).toLocaleTimeString()  : '—';
-    document.getElementById('st-mon').textContent   = d.last_monitor ? new Date(d.last_monitor).toLocaleTimeString() : '—';
-    document.getElementById('st-trades').textContent = d.active_trades;
-    document.getElementById('st-props').textContent  = d.pending_proposals;
-    const pr = await fetch('/api/proposals');
-    const pd = await pr.json();
-    showProposals(pd.pending||[]);
-  } catch(e){}
-}
+// ── Controls ──────────────────────────────────────────────────────────────
 
 function apiKey() { return document.getElementById('api-key').value; }
 
 async function startSystem() {
-  const r = await fetch('/api/system/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({api_key:apiKey()})});
-  if(r.ok) updateStatus('running');
+  const r = await fetch('/api/system/start', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({api_key: apiKey()})});
+  if (r.ok) { setStatus('running'); refreshAll(); }
 }
 async function stopSystem() {
-  const r = await fetch('/api/system/stop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({api_key:apiKey()})});
-  if(r.ok) updateStatus('stopped');
+  const r = await fetch('/api/system/stop', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({api_key: apiKey()})});
+  if (r.ok) setStatus('stopped');
 }
 
-function updateMarket() {
-  const now=new Date();
-  const u=now.getUTCHours()*60+now.getUTCMinutes(), d=now.getUTCDay();
-  const open = d>0&&d<6&&u>=810&&u<=1200;
-  document.getElementById('mkt').textContent = open?'🟢 Market Open':'🔴 Market Closed';
-}
-setInterval(updateMarket,60000); updateMarket();
-setInterval(refreshStatus,60000);
+// ── Helpers ───────────────────────────────────────────────────────────────
 
-connect(); refreshStatus();
+function esc(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function ageMin(ts) {
+  try { return (Date.now() - new Date(ts)) / 60000; }
+  catch { return 0; }
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────
+connect();
+refreshAll();
+setInterval(refreshAll, 30000);
+tickClock();
+setInterval(tickClock, 1000);
 </script>
 </body>
 </html>

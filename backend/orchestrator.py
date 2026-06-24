@@ -54,7 +54,7 @@ class Orchestrator:
             "NVDA,AAPL,MSFT,TSLA,AMZN,META,GOOGL,AMD,NFLX,CRM,COIN,MSTR,PLTR,SMCI,CRWD,HOOD,UBER,SOFI,RIVN,IONQ"
         )
         self.watchlist         = [s.strip() for s in watchlist_raw.split(",")]
-        self.max_loss          = float(os.getenv("MAX_LOSS_PER_TRADE", "200"))
+        self.max_loss          = float(os.getenv("MAX_LOSS_PER_TRADE", "100"))
         self.scan_interval     = int(os.getenv("SCAN_INTERVAL_MINUTES", "20")) * 60
         self.monitor_interval  = int(os.getenv("MONITOR_INTERVAL_MINUTES", "15")) * 60
 
@@ -255,6 +255,7 @@ class Orchestrator:
         best_result = None
         best_score  = -1
         rejections  = []
+        scan_summary = []
 
         for i, candidate in enumerate(candidates[:5]):
             symbol    = candidate.get("symbol", "")
@@ -272,6 +273,12 @@ class Orchestrator:
             result = await self._analyze_candidate(symbol, direction, price, iv_rank, regime)
             if result is None:
                 rejections.append(f"{symbol}: error")
+                scan_summary.append({
+                    "symbol": symbol, "direction": direction, "price": price,
+                    "iv_rank": iv_rank, "rsi": candidate.get("rsi", 0),
+                    "decision": "error", "pass_reason": "Analysis failed",
+                    "proposal_generated": False,
+                })
                 continue
 
             judge    = result.get("judge", {})
@@ -281,6 +288,24 @@ class Orchestrator:
             reason   = judge.get("pass_reason") or judge.get("reasoning", "")
 
             self.state.record_symbol_analysis(symbol, direction, result, decision, score)
+            scan_summary.append({
+                "symbol":          symbol,
+                "direction":       direction,
+                "price":           price,
+                "iv_rank":         iv_rank,
+                "rsi":             candidate.get("rsi", 0),
+                "bull_score":      candidate.get("bull_score", 0),
+                "bear_score":      candidate.get("bear_score", 0),
+                "tech_score":      result["technical"].get("score"),
+                "fund_score":      result["fundamental"].get("score"),
+                "sent_score":      result["sentiment"].get("score"),
+                "weighted_score":  score,
+                "confidence":      conf,
+                "decision":        decision,
+                "pass_reason":     (reason or "")[:120],
+                "tech_fatal_flaw": result["technical"].get("fatal_flaw"),
+                "proposal_generated": False,
+            })
 
             if decision == "trade":
                 logger.info(f"Cycle {cycle}: {symbol} APPROVED score={score} conf={conf} IV={iv_rank:.0f}")
@@ -293,12 +318,17 @@ class Orchestrator:
                     {"message": f"{symbol} {direction}: PASS — {reason[:120]}"})
 
         if best_result:
+            best_sym = best_result.get("symbol")
+            for e in scan_summary:
+                if e["symbol"] == best_sym:
+                    e["proposal_generated"] = True
             await self._store_proposal(best_result)
         else:
             await self._emit("system", "info", {
                 "message": f"Cycle {cycle} done — no trades. "
                            + (" | ".join(rejections) or "All passed threshold")
             })
+        self.state.store_scan_results(scan_summary, cycle)
 
     # ── Candidate analysis ─────────────────────────────────────────────────────
 

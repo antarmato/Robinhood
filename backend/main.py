@@ -317,6 +317,23 @@ async def stop(req: StartRequest):
 async def events():
     return {"events": get_state().get_full_state().get("event_log", [])[-50:]}
 
+@app.get("/api/scan-results")
+async def get_scan_results():
+    s = get_state()
+    full = s.get_full_state()
+    tracker = get_outcome_tracker()
+    results = list(full.get("last_scan_results", []))
+    for r in results:
+        sym_stats = tracker.get_symbol_stats(r.get("symbol", ""))
+        if sym_stats:
+            r["sym_perf"] = sym_stats
+    return {
+        "cycle":      full.get("last_scan_cycle", 0),
+        "scanned_at": full.get("last_scan"),
+        "results":    results,
+        "regime":     s.market_regime,
+    }
+
 @app.get("/api/stats")
 async def stats():
     """Trade statistics: win rate, Kelly fraction, expectancy."""

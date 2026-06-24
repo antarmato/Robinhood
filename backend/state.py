@@ -28,6 +28,8 @@ def _default() -> dict:
         "premarket_context":       {},  # symbol -> premarket snapshot, reset each morning
         "last_premarket_prep":     None,
         "last_afterhours_capture": None,
+        "last_scan_results":       [],
+        "last_scan_cycle":         0,
     }
 
 
@@ -234,6 +236,11 @@ class StateManager:
         if ts:
             return ts[:10]
         return None
+
+    def store_scan_results(self, results: list, cycle: int):
+        self._s["last_scan_results"] = results
+        self._s["last_scan_cycle"] = cycle
+        self.save()
 
     # ── Event log ──────────────────────────────────────────────────────────────
 
