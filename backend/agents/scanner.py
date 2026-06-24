@@ -171,23 +171,25 @@ class ScannerAgent(BaseAgent):
                 d["best_score"]     = max(d["bull_score"], d["bear_score"])
                 d["best_direction"] = "bullish" if d["bull_score"] >= d["bear_score"] else "bearish"
 
-        # ── Pre-market gap bonus ───────────────────────────────────────────────
+        # ── Pre-market gap bonus (with volume confirmation) ───────────────────
         if premarket_context:
             gap_notes = []
             for sym, d in iv_passed.items():
                 pm = premarket_context.get(sym, {})
                 if not pm.get("significant"):
                     continue
-                gap_pct = pm.get("gap_pct", 0.0)
-                gap_dir = pm.get("gap_direction", "flat")
+                gap_pct  = pm.get("gap_pct", 0.0)
+                gap_dir  = pm.get("gap_direction", "flat")
+                vol_ratio = pm.get("vol_ratio", 1.0)   # premarket vol vs normal
                 d["premarket_gap"] = gap_pct
-                # Strong gap confirming direction = +2 bonus
+                # Large gap with volume = strongest signal (+3), normal gap = +2
+                gap_bonus = 3 if (abs(gap_pct) >= 3.0 and vol_ratio >= 2.0) else 2
                 if gap_dir == "up":
-                    d["bull_score"] = min(16, d["bull_score"] + 2)
-                    gap_notes.append(f"{sym}↑{gap_pct:+.1f}%")
+                    d["bull_score"] = min(16, d["bull_score"] + gap_bonus)
+                    gap_notes.append(f"{sym}↑{gap_pct:+.1f}%×{vol_ratio:.1f}v")
                 elif gap_dir == "down":
-                    d["bear_score"] = min(16, d["bear_score"] + 2)
-                    gap_notes.append(f"{sym}↓{gap_pct:+.1f}%")
+                    d["bear_score"] = min(16, d["bear_score"] + gap_bonus)
+                    gap_notes.append(f"{sym}↓{gap_pct:+.1f}%×{vol_ratio:.1f}v")
                 d["best_score"]     = max(d["bull_score"], d["bear_score"])
                 d["best_direction"] = "bullish" if d["bull_score"] >= d["bear_score"] else "bearish"
             if gap_notes:

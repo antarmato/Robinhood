@@ -237,21 +237,31 @@ class Orchestrator:
                    }.get(self._session_phase(), "LIVE")
         await self._emit("system", "cycle_start", {"cycle": cycle, "session": session})
 
-        # Classify regime on-demand if it's empty (system started after pre-market)
-        regime = self.state.market_regime
-        if not regime:
-            loop = asyncio.get_event_loop()
-            try:
-                regime = await loop.run_in_executor(None, classify_regime)
-                self.state.market_regime = regime
+        # Reclassify regime each cycle (catches intraday market shifts)
+        loop = asyncio.get_event_loop()
+        prior_regime = self.state.market_regime
+        try:
+            regime = await loop.run_in_executor(None, classify_regime)
+            prior_label = prior_regime.get("regime", "") if prior_regime else ""
+            # Alert on regime change
+            if prior_label and prior_label != regime["regime"]:
                 await self._emit("system", "info", {
                     "message": (
-                        f"Regime (on-demand): {regime['regime'].upper()} "
+                        f"⚠️ REGIME CHANGE: {prior_label.upper()} → {regime['regime'].upper()} "
+                        f"(strength {regime['strength']}/10) — reviewing open positions..."
+                    )
+                })
+            elif not prior_label:
+                await self._emit("system", "info", {
+                    "message": (
+                        f"Regime: {regime['regime'].upper()} "
                         f"(strength {regime['strength']}/10) | {regime.get('summary', '')}"
                     )
                 })
-            except Exception as e:
-                logger.warning(f"On-demand regime classification failed: {e}")
+            self.state.market_regime = regime
+        except Exception as e:
+            logger.warning(f"Regime classification failed: {e}")
+            regime = prior_regime or {}
 
         premarket = self.state.premarket_context
         sym_perf  = get_outcome_tracker().get_all_symbol_stats()
