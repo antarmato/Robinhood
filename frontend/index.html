@@ -78,6 +78,7 @@ tr:last-child td{border-bottom:none}
 .row-sim-open td:first-child{box-shadow:inset 2px 0 0 var(--sim)}
 .row-sim-open{background:rgba(167,139,250,.04)}
 .row-flaw{opacity:.55}
+.row-scanner-only{opacity:.7}
 .tag{display:inline-block;padding:1px 5px;border-radius:2px;font-size:10px;font-weight:700}
 .tag-sim{background:rgba(167,139,250,.18);color:var(--sim)}
 .tag-pass{background:rgba(255,255,255,.05);color:var(--muted)}
@@ -701,6 +702,9 @@ function renderScan(data) {
     const dirHtml = isBull ? `<span class="dir-b">▲</span>` : `<span class="dir-s">▼</span>`;
 
     let statusHtml = '', rowCls = '';
+    if (r._scanner_only) {
+      rowCls = 'row-scanner-only';  // dimmed row for non-analyzed symbols
+    }
     if (r.proposal_generated) {
       statusHtml = '<span class="tag tag-sim">ENTERED</span>';
       rowCls = 'row-sim-open';
@@ -712,13 +716,17 @@ function renderScan(data) {
     } else if (r.decision === 'error') {
       statusHtml = '<span class="tag tag-flaw">ERR</span>';
       rowCls = 'row-flaw';
+    } else if (r._scanner_only) {
+      statusHtml = `<span class="tag" style="background:#333;color:var(--muted)" title="${esc(r.pass_reason||'')}">SCAN</span>`;
     } else {
       statusHtml = `<span class="tag tag-pass" title="${esc(r.pass_reason||'')}">PASS</span>`;
     }
 
     const techHtml = r.tech_fatal_flaw
       ? `<span style="color:var(--red)">FLAW</span>`
-      : (r.tech_score != null ? r.tech_score.toFixed(1) : '—');
+      : r._scanner_only
+        ? `<span style="color:var(--muted)">—</span>`
+        : (r.tech_score != null ? r.tech_score.toFixed(1) : '—');
 
     const scoreHtml = r.weighted_score != null
       ? `<span class="${r.weighted_score > 50 ? 'score-hi' : ''}">${r.weighted_score.toFixed(1)}</span>`
@@ -730,9 +738,11 @@ function renderScan(data) {
       ? (r.news_score > 0.1 ? ' <span style="color:var(--green);font-size:10px">▲</span>'
        : r.news_score < -0.1 ? ' <span style="color:var(--red);font-size:10px">▼</span>' : '')
       : '';
-    const scoreBreak = (r.tech_score != null)
-      ? `Tech:${r.tech_score?.toFixed(1)} Fund:${r.fund_score?.toFixed(1)} Sent:${r.sent_score?.toFixed(1)}`
-      : '';
+    const scoreBreak = r._scanner_only
+      ? `Scanner: bull=${r.bull_score} bear=${r.bear_score} (not fully analyzed)`
+      : (r.tech_score != null)
+        ? `Tech:${r.tech_score?.toFixed(1)} Fund:${r.fund_score?.toFixed(1)} Sent:${r.sent_score?.toFixed(1)}`
+        : '';
     const vwapStr = r.vwap20_pct != null
       ? `VWAP20:${r.vwap20_pct >= 0 ? '+' : ''}${r.vwap20_pct?.toFixed(1)}%` : '';
     const stochStr = r.stoch_k != null ? `Stoch:${r.stoch_k?.toFixed(0)}` : '';
