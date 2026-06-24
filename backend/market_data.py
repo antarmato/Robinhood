@@ -190,73 +190,73 @@ def get_intraday(symbol: str, period: str = "5d", interval: str = "1h") -> pd.Da
 
 
 # ── Quotes ────────────────────────────────────────────────────────────────────
-# Alpaca IEX feed = real-time prices (free tier).
-# Polygon snapshot = 15-min delayed on free tier → used as fallback only.
+# Alpaca snapshot endpoint: returns dailyBar + prevDailyBar — works on free tier,
+# gives real pct_change without specifying a feed (no IEX restriction for snapshots).
+
+def _alpaca_snapshots(symbols: list) -> dict:
+    """
+    Batch Alpaca snapshot — returns {symbol: {price, prev_close, pct_change, volume}}.
+    Uses the snapshot endpoint (no feed restriction) so ETFs like SPY/QQQ/IWM work.
+    """
+    if not _alpaca_available() or not symbols:
+        return {}
+    try:
+        r = requests.get(
+            f"{_ALPACA_BASE}/v2/stocks/snapshots",
+            params={"symbols": ",".join(symbols)},
+            headers=_alpaca_headers(),
+            timeout=_TIMEOUT,
+        )
+        if r.status_code != 200:
+            logger.warning(f"Alpaca snapshots HTTP {r.status_code}: {r.text[:80]}")
+            return {}
+        result = {}
+        for sym, data in r.json().items():
+            daily = data.get("dailyBar") or {}
+            prev  = data.get("prevDailyBar") or {}
+            price = float(daily.get("c") or daily.get("vw") or 0)
+            if not price:
+                trade = data.get("latestTrade") or {}
+                price = float(trade.get("p") or 0)
+            prev_close = float(prev.get("c") or 0)
+            pct = round((price - prev_close) / prev_close * 100, 2) if prev_close and price else 0.0
+            if price:
+                result[sym] = {
+                    "price": price, "prev_close": prev_close,
+                    "pct_change": pct, "volume": int(daily.get("v") or 0),
+                }
+        return result
+    except Exception as e:
+        logger.error(f"Alpaca snapshots {symbols}: {e}")
+    return {}
 
 
 def get_batch_quotes(symbols: list) -> dict:
-    """
-    Real-time prices via Alpaca IEX feed (free tier).
-    Falls back to Polygon snapshot if ALPACA_API_KEY not set.
-    Returns {symbol: price}.
-    """
-    if _alpaca_available():
-        try:
-            r = requests.get(
-                f"{_ALPACA_BASE}/v2/stocks/trades/latest",
-                params={"symbols": ",".join(symbols), "feed": "iex"},
-                headers=_alpaca_headers(),
-                timeout=_TIMEOUT,
-            )
-            if r.status_code == 200:
-                trades = r.json().get("trades", {})
-                result = {sym: float(t["p"]) for sym, t in trades.items() if t.get("p")}
-                if result:
-                    return result
-            else:
-                logger.warning(f"Alpaca batch quotes {r.status_code}: {r.text[:80]}")
-        except Exception as e:
-            logger.error(f"Alpaca batch quotes: {e}")
-
-    # Polygon fallback (delayed on free tier)
+    """Real-time prices via Alpaca snapshot. Returns {symbol: price}."""
+    snaps = _alpaca_snapshots(symbols)
+    if snaps:
+        return {sym: d["price"] for sym, d in snaps.items()}
+    # Polygon fallback (403 on free tier — only reached if Alpaca not configured)
     tickers = ",".join(symbols)
     data = _get("/v2/snapshot/locale/us/markets/stocks/tickers", {"tickers": tickers})
     result = {}
     if data and data.get("tickers"):
         for t in data["tickers"]:
             sym  = t.get("ticker", "")
-            last = (t.get("lastTrade") or {}).get("p", 0)
             day  = t.get("day", {})
             prev = t.get("prevDay", {})
-            price = last or day.get("c") or prev.get("c") or 0
+            price = day.get("c") or prev.get("c") or 0
             if sym and price:
                 result[sym] = float(price)
     return result
 
 
 def get_quote(symbol: str) -> dict:
-    """
-    Current price — Alpaca IEX (real-time) with Polygon fallback.
-    """
-    if _alpaca_available():
-        try:
-            r = requests.get(
-                f"{_ALPACA_BASE}/v2/stocks/{symbol}/trades/latest",
-                params={"feed": "iex"},
-                headers=_alpaca_headers(),
-                timeout=_TIMEOUT,
-            )
-            if r.status_code == 200:
-                trade = r.json().get("trade", {})
-                price = float(trade.get("p", 0))
-                if price:
-                    return {
-                        "symbol": symbol, "price": price,
-                        "prev_close": price, "pct_change": 0.0, "volume": 0,
-                    }
-        except Exception as e:
-            logger.error(f"Alpaca quote {symbol}: {e}")
-
+    """Current price + pct_change via Alpaca snapshot (real pct_change, no feed restriction)."""
+    snaps = _alpaca_snapshots([symbol])
+    if snaps and symbol in snaps:
+        d = snaps[symbol]
+        return {"symbol": symbol, **d}
     # Polygon fallback
     data = _get(f"/v2/snapshot/locale/us/markets/stocks/tickers/{symbol}")
     if data and data.get("ticker"):
@@ -303,38 +303,26 @@ def get_premarket_snapshot(symbol: str) -> dict:
 
 
 def get_vix() -> float:
-    """VIX via Polygon (falls back to 20 if unavailable on free tier)."""
-    try:
-        # Polygon free tier may not have VIX index — use SPY historicals as proxy
-        data = _get("/v2/snapshot/locale/us/markets/stocks/tickers/VIXY")
-        if data and data.get("ticker"):
-            day = data["ticker"].get("day", {})
-            return float(day.get("c", 20.0))
-    except Exception:
-        pass
+    """VIXY price as VIX proxy — Alpaca snapshot, fallback 20."""
+    snaps = _alpaca_snapshots(["VIXY"])
+    if snaps and snaps.get("VIXY", {}).get("price", 0):
+        return float(snaps["VIXY"]["price"])
     return 20.0
 
 
 def get_sector_etf_performance() -> dict:
-    """Today's % change for major sector ETFs via Polygon snapshot."""
+    """Today's % change for major sector ETFs via Alpaca snapshots."""
     etf_map = {
         "XLK": "Tech", "XLF": "Financials", "XLE": "Energy",
         "XLV": "Healthcare", "XLY": "Consumer Disc", "XLC": "Comm Services",
         "XLI": "Industrials", "XLB": "Materials",
     }
-    tickers = ",".join(etf_map.keys())
-    data = _get("/v2/snapshot/locale/us/markets/stocks/tickers",
-                {"tickers": tickers})
+    snaps = _alpaca_snapshots(list(etf_map.keys()))
     result = {}
-    if data and data.get("tickers"):
-        for t in data["tickers"]:
-            sym = t.get("ticker", "")
-            if sym in etf_map:
-                day  = t.get("day", {})
-                prev = t.get("prevDay", {})
-                c, p = day.get("c", 0), prev.get("c", 0)
-                if c and p:
-                    result[etf_map[sym]] = round((c - p) / p * 100, 2)
+    for sym, label in etf_map.items():
+        d = snaps.get(sym, {})
+        if d.get("pct_change") is not None and d.get("price", 0):
+            result[label] = d["pct_change"]
     return result
 
 
