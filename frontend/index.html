@@ -314,6 +314,16 @@ canvas{display:block}
           <div class="wl-v" id="s-kelly" style="color:var(--muted)">—</div>
         </div>
       </div>
+      <div class="wl-row">
+        <div class="wl-cell" title="Max peak-to-trough drawdown in cumulative P&L">
+          <div class="wl-l">Max Drawdown</div>
+          <div class="wl-v v-r" id="s-maxdd">—</div>
+        </div>
+        <div class="wl-cell" title="Win rate × avg win$ ÷ avg loss$ (profit factor > 1 = edge)">
+          <div class="wl-l">Profit Factor</div>
+          <div class="wl-v" id="s-pf" style="color:var(--muted)">—</div>
+        </div>
+      </div>
     </div>
 
     <!-- Recent closed trades -->
@@ -798,6 +808,24 @@ function renderStats(s) {
   if (kellyEl && s.kelly_fraction != null) {
     const kf = s.kelly_fraction;
     kellyEl.textContent = kf > 0 ? `${(kf * 100).toFixed(1)}%` : '—';
+  }
+
+  const mddEl = document.getElementById('s-maxdd');
+  if (mddEl && s.max_drawdown != null) {
+    mddEl.textContent = s.max_drawdown > 0 ? `-$${s.max_drawdown.toFixed(2)}` : '$0';
+  }
+
+  const pfEl = document.getElementById('s-pf');
+  if (pfEl) {
+    const win = s.avg_win ?? 0;
+    const los = Math.abs(s.avg_loss ?? 0);
+    const wr  = s.win_rate ? s.win_rate / 100 : 0;
+    const cnt = s.total_trades ?? 0;
+    if (cnt >= 3 && los > 0 && win > 0) {
+      const pf = (wr * win) / ((1 - wr) * los);
+      pfEl.textContent = pf.toFixed(2);
+      pfEl.style.color = pf > 1 ? 'var(--green)' : 'var(--red)';
+    }
   }
 }
 

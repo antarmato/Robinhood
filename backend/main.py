@@ -333,6 +333,18 @@ async def get_sim():
     from .outcome_tracker import get_outcome_tracker
     ot_stats = get_outcome_tracker().get_stats()
 
+    # Max drawdown from equity curve (worst peak-to-trough)
+    max_dd = 0.0
+    if history:
+        peak = history[0]["cumulative_pnl"] if history else 0.0
+        for h in history:
+            v = h["cumulative_pnl"]
+            if v > peak:
+                peak = v
+            dd = peak - v
+            if dd > max_dd:
+                max_dd = dd
+
     # Expectancy: E = WR * avg_win% - (1-WR) * avg_loss%
     avg_win_pct  = ot_stats.get("avg_win_pct", 0)
     avg_loss_pct = ot_stats.get("avg_loss_pct", 0)
@@ -356,6 +368,7 @@ async def get_sim():
             "avg_loss_pct":    avg_loss_pct,
             "expectancy_pct":  expectancy_pct,
             "kelly_fraction":  ot_stats.get("kelly_fraction", 0),
+            "max_drawdown":    round(max_dd, 2),
         },
     }
 
