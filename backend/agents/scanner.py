@@ -310,13 +310,22 @@ class ScannerAgent(BaseAgent):
             bw = bb_up - bb_low_val
             bb_pos = (price - bb_low_val) / bw if bw > 0 else 0.5
 
+            # Detect BB squeeze (bands contracting) and breakout (price just crossed band)
             try:
                 bw_hist = (close.rolling(20).std() * 4 / close.rolling(20).mean()).tail(60).dropna()
                 bw_avg  = float(bw_hist.mean()) if len(bw_hist) > 5 else bb_pos * 2
                 bb_bw_pct = bw / float(sma20.iloc[-1]) if float(sma20.iloc[-1]) > 0 else 0.05
                 squeeze = bb_bw_pct < bw_avg * 0.75
+                # Breakout: today above upper band but yesterday was inside (momentum ignition)
+                bb_up_prev = float((sma20 + 2 * std20).iloc[-2]) if len(close) >= 2 else bb_up
+                bb_lo_prev = float((sma20 - 2 * std20).iloc[-2]) if len(close) >= 2 else bb_low_val
+                prev_price = float(close.iloc[-2]) if len(close) >= 2 else price
+                bb_bull_breakout = (price > bb_up) and (prev_price <= bb_up_prev)
+                bb_bear_breakout = (price < bb_low_val) and (prev_price >= bb_lo_prev)
             except Exception:
                 squeeze = False
+                bb_bull_breakout = False
+                bb_bear_breakout = False
 
             # Bull scoring (0-16)
             bull = 0
@@ -334,6 +343,7 @@ class ScannerAgent(BaseAgent):
             if near_52w_high:               bull += 1
             if 0.2 <= bb_pos <= 0.55 and above_ema20: bull += 1
             if squeeze and above_ema20:     bull += 1
+            if bb_bull_breakout:            bull += 2   # momentum ignition above upper band
 
             # Bear scoring (0-16)
             bear = 0
@@ -351,6 +361,7 @@ class ScannerAgent(BaseAgent):
             if near_52w_low:                bear += 1
             if 0.45 <= bb_pos <= 0.8 and not above_ema20: bear += 1
             if squeeze and not above_ema20: bear += 1
+            if bb_bear_breakout:            bear += 2   # breakdown below lower band
 
             best_dir   = "bullish" if bull >= bear else "bearish"
             best_score = max(bull, bear)

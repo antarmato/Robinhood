@@ -826,12 +826,13 @@ async function stopSystem() {
 
 // ── Diagnostics ───────────────────────────────────────────────────────────────
 const DIAG_TESTS = [
-  { key:'env_vars',        label:'Env Vars',        detail: r => `${r.alpaca} | ${r.anthropic} | ${r.tradier} | TZ: ${r.tz}` },
-  { key:'market',          label:'Market Status',   detail: r => `${(r.phase||'').replace('_',' ').toUpperCase()} | ${r.trading_day?'Trading day':'Weekend/holiday'}` },
-  { key:'alpaca_history',  label:'Alpaca History',  detail: r => r.detail || r.error || '—' },
+  { key:'env_vars',        label:'Env Vars',         detail: r => `${r.alpaca} | ${r.anthropic} | ${r.tradier} | TZ: ${r.tz}` },
+  { key:'market',          label:'Market Status',    detail: r => `${(r.phase||'').replace('_',' ').toUpperCase()} | ${r.trading_day?'Trading day':'Weekend/holiday'}` },
+  { key:'alpaca_history',  label:'Alpaca History',   detail: r => r.detail || r.error || '—' },
   { key:'alpaca_quotes',   label:'Alpaca Live (IEX)',detail: r => r.detail || r.error || '—' },
-  { key:'alpaca_macro',    label:'Alpaca Macro',    detail: r => r.detail || r.error || '—' },
-  { key:'anthropic',       label:'Anthropic API',   detail: r => r.detail || r.error || '—' },
+  { key:'alpaca_macro',    label:'Alpaca Macro/VIX', detail: r => r.detail || r.error || '—' },
+  { key:'alpaca_news',     label:'Alpaca News',      detail: r => r.detail || (r.ok === false ? 'No news data — check ALPACA_API_KEY' : '—') },
+  { key:'anthropic',       label:'Anthropic API',    detail: r => r.detail || r.error || '—' },
 ];
 
 async function runDiagnostics() {
