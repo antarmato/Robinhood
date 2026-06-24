@@ -259,6 +259,9 @@ class Orchestrator:
                     )
                 })
             self.state.market_regime = regime
+            # Tighten stops on counter-trend positions when regime shifts
+            if prior_label and prior_label != regime["regime"] and regime["regime"] in ("bull", "bear"):
+                await self._tighten_counter_trend_positions(regime["regime"])
         except Exception as e:
             logger.warning(f"Regime classification failed: {e}")
             regime = prior_regime or {}
@@ -731,6 +734,34 @@ class Orchestrator:
                 )
             else:
                 self.state.update_sim_position(pos_id, updates)
+
+    async def _tighten_counter_trend_positions(self, new_regime: str):
+        """
+        When market regime flips (e.g. bull → bear), tighten trailing stops on
+        any open positions that are now trading against the new regime.
+        Counter-trend positions get stall_count bumped to trigger faster tightening.
+        """
+        open_positions = self.state.get_sim_positions(status="open")
+        tightened = []
+        for pos in open_positions:
+            direction = pos.get("direction", "bullish")
+            pos_id    = pos["position_id"]
+            symbol    = pos.get("symbol", "")
+            is_counter = (new_regime == "bear" and direction == "bullish") or \
+                         (new_regime == "bull" and direction == "bearish")
+            if is_counter:
+                old_stall = int(pos.get("stall_count", 0))
+                new_stall = max(3, old_stall + 2)  # jump to tightening threshold
+                self.state.update_sim_position(pos_id, {"stall_count": new_stall})
+                tightened.append(symbol)
+
+        if tightened:
+            await self._emit("system", "info", {
+                "message": (
+                    f"⚠️ Regime flip → {new_regime.upper()}: "
+                    f"tightened trailing stops on counter-trend positions: {', '.join(tightened)}"
+                )
+            })
 
     def _expire_stale_proposals(self):
         pass  # No manual proposals in sim mode
