@@ -146,10 +146,18 @@ class Orchestrator:
                 if now - last_scan >= self.scan_interval:
                     last_scan = now
                     open_count = len(self.state.get_sim_positions(status="open"))
-                    if open_count:
-                        await self._emit("system", "info",
-                            {"message": f"📊 {open_count} position(s) open — scanning for new entries..."})
-                    await self._run_scan_cycle()
+                    if open_count >= self.MAX_OPEN_POSITIONS:
+                        await self._emit("system", "info", {
+                            "message": (
+                                f"Portfolio full ({open_count}/{self.MAX_OPEN_POSITIONS}) — "
+                                f"skipping scan cycle. Monitor still active."
+                            )
+                        })
+                    else:
+                        if open_count:
+                            await self._emit("system", "info",
+                                {"message": f"📊 {open_count}/{self.MAX_OPEN_POSITIONS} open — scanning for new entries..."})
+                        await self._run_scan_cycle()
 
                 await asyncio.sleep(30)
 

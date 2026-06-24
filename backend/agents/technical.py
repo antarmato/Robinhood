@@ -161,13 +161,22 @@ class TechnicalAgent(BaseAgent):
         vol_avg20 = float(volume.iloc[-21:-1].mean()) if len(volume) >= 21 else float(volume.mean())
         ind["vol_ratio"] = float(volume.iloc[-1]) / vol_avg20 if vol_avg20 > 0 else 1.0
 
-        # ── Momentum (5d and 20d returns) ─────────────────────────────────────
+        # ── Momentum (5d, 20d, 60d returns) ──────────────────────────────────
         ind["momentum_5d"]  = (float(close.iloc[-1]) - float(close.iloc[-5]))  / float(close.iloc[-5])  * 100 if len(close) >= 5  else 0.0
         ind["momentum_20d"] = (float(close.iloc[-1]) - float(close.iloc[-20])) / float(close.iloc[-20]) * 100 if len(close) >= 20 else 0.0
+        ind["momentum_60d"] = (float(close.iloc[-1]) - float(close.iloc[-60])) / float(close.iloc[-60]) * 100 if len(close) >= 60 else 0.0
 
         # Acceleration: is recent 5d move stronger than expected slice of 20d?
         expected_5d = ind["momentum_20d"] / 4.0
         ind["momentum_accel"] = ind["momentum_5d"] - expected_5d
+
+        # Multi-timeframe alignment: all 3 timeframes agree on direction
+        ind["mtf_bull_aligned"] = (ind["momentum_5d"] > 0
+                                   and ind["momentum_20d"] > 0
+                                   and ind["momentum_60d"] > 0)
+        ind["mtf_bear_aligned"] = (ind["momentum_5d"] < 0
+                                   and ind["momentum_20d"] < 0
+                                   and ind["momentum_60d"] < 0)
 
         # ── Relative strength vs SPY ───────────────────────────────────────────
         ind["rs_5d"]  = 0.0
@@ -313,6 +322,10 @@ class TechnicalAgent(BaseAgent):
             elif i["bb_pct"] < 0.3 and above_ema50:
                 score += 0.5;  signals.append("pullback in uptrend")
 
+            # ── Multi-timeframe alignment bonus ───────────────────────────────
+            if i.get("mtf_bull_aligned"):
+                score += 0.75; signals.append("MTF aligned bullish (5d/20d/60d)")
+
             trend = (
                 "strong_uptrend" if i["adx"] > 25 and above_ema50 else
                 "uptrend"        if above_ema20 and above_ema50 else
@@ -398,6 +411,10 @@ class TechnicalAgent(BaseAgent):
                 score -= 1.0;  signals.append("near lower BB — oversold")
             elif i["bb_pct"] > 0.7 and not above_ema50:
                 score += 0.5;  signals.append("overbought in downtrend")
+
+            # ── Multi-timeframe alignment bonus ───────────────────────────────
+            if i.get("mtf_bear_aligned"):
+                score += 0.75; signals.append("MTF aligned bearish (5d/20d/60d)")
 
             trend = (
                 "strong_downtrend" if i["adx"] > 25 and not above_ema50 else
