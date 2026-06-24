@@ -117,7 +117,13 @@ class RiskAgent(BaseAgent):
             return env_max
 
         kelly = tracker.get_kelly_fraction()
-        if kelly <= 0:
+
+        if kelly < 0:
+            # Negative expectancy: reduce to 50% of flat budget as a warning signal
+            # Don't stop entirely — simulation needs data to recover
+            return env_max * 0.5
+
+        if kelly == 0:
             return env_max
 
         # Fractional Kelly: 25% of Kelly fraction applied to the budget ceiling

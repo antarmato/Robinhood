@@ -284,6 +284,24 @@ class Orchestrator:
             return
 
         candidates = self._apply_portfolio_filters(candidates)
+
+        # ── Consecutive-loss circuit breaker ──────────────────────────────────
+        recent_closed = self.state.get_sim_positions(status="closed")[-5:]
+        if len(recent_closed) >= 3:
+            last3 = recent_closed[-3:]
+            if all(float(p.get("pnl_dollars", 0)) < 0 for p in last3):
+                await self._emit("system", "info", {
+                    "message": (
+                        "⚠️ 3 consecutive losses — circuit breaker: "
+                        "applying +3 threshold surcharge this cycle."
+                    )
+                })
+                self._streak_surcharge = 3.0
+            else:
+                self._streak_surcharge = 0.0
+        else:
+            self._streak_surcharge = 0.0
+
         await self._emit("system", "info",
             {"message": f"Cycle {cycle}: {len(candidates)} candidate(s) — analyzing..."})
 
@@ -436,6 +454,7 @@ class Orchestrator:
                 symbol_history=self.state.get_symbol_history(symbol),
                 iv_rank=iv_rank,
                 market_regime=market_regime,
+                streak_surcharge=getattr(self, "_streak_surcharge", 0.0),
             )
 
             return {

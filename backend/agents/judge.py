@@ -64,6 +64,7 @@ class JudgeAgent(BaseAgent):
         symbol_history: list | None = None,
         iv_rank: float = 50.0,
         market_regime: dict = None,
+        streak_surcharge: float = 0.0,
     ) -> dict:
         await self._emit("status", f"Judge: evaluating {symbol} {direction}...")
 
@@ -99,7 +100,8 @@ class JudgeAgent(BaseAgent):
             elif _reg in ("bull", "bear"):
                 _r_aligned = False   # counter-trend
         threshold = score_threshold(iv_rank, market_open, time_of_day=tod,
-                                    regime_aligned=_r_aligned, regime_strength=_r_strength)
+                                    regime_aligned=_r_aligned, regime_strength=_r_strength,
+                                    streak_surcharge=streak_surcharge)
         score_failed   = weighted_score < threshold
 
         # ── Strategy / HV context ─────────────────────────────────────────────

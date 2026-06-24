@@ -26,7 +26,8 @@ STOP_LOSS_PCT     = 50 # close at 50% loss
 
 
 def score_threshold(iv_rank: float, market_open: bool, time_of_day=None,
-                    regime_aligned: bool = None, regime_strength: int = 0) -> float:
+                    regime_aligned: bool = None, regime_strength: int = 0,
+                    streak_surcharge: float = 0.0) -> float:
     """
     Return the weighted_score threshold for this IV environment + time of day.
 
@@ -76,6 +77,9 @@ def score_threshold(iv_rank: float, market_open: bool, time_of_day=None,
             base -= 1   # moderate tailwind
     elif regime_aligned is False:
         base += 3   # counter-trend is much harder — only exceptional setups qualify
+
+    # ── Consecutive-loss surcharge ────────────────────────────────────────────
+    base += streak_surcharge
 
     # ── Adaptive adjustment from rolling sim win rate ─────────────────────────
     try:
