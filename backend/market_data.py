@@ -18,9 +18,27 @@ logger = logging.getLogger(__name__)
 _BASE    = "https://api.polygon.io"
 _TIMEOUT = 12
 
-# ── In-memory cache — prevents redundant Polygon calls within a cycle ─────────
-# Scanner fetches symbol data, then technical/HV agents re-fetch the same symbol.
-# Cache with 10-min TTL eliminates rate-limit 429s and speeds up each cycle.
+# ── Alpaca (primary data source — 200+ req/min free tier, real-time IEX) ──────
+_ALPACA_BASE = "https://data.alpaca.markets"
+
+
+def _alpaca_available() -> bool:
+    return bool(os.getenv("ALPACA_API_KEY", ""))
+
+
+def _alpaca_headers() -> dict:
+    key    = os.getenv("ALPACA_API_KEY", "")
+    secret = os.getenv("ALPACA_API_SECRET", "")
+    if not key or not secret:
+        logger.warning("Alpaca keys missing — ALPACA_API_KEY and/or ALPACA_API_SECRET not set")
+    return {
+        "APCA-API-KEY-ID":     key,
+        "APCA-API-SECRET-KEY": secret,
+        "Accept": "application/json",
+    }
+
+
+# ── In-memory cache — prevents redundant calls within a cycle ─────────────────
 _HIST_CACHE: dict = {}   # (symbol, period) -> (timestamp, DataFrame)
 _INTRA_CACHE: dict = {}  # (symbol, period, interval) -> (timestamp, DataFrame)
 _CACHE_TTL = 600         # seconds
@@ -169,20 +187,6 @@ def get_intraday(symbol: str, period: str = "5d", interval: str = "1h") -> pd.Da
 # ── Quotes ────────────────────────────────────────────────────────────────────
 # Alpaca IEX feed = real-time prices (free tier).
 # Polygon snapshot = 15-min delayed on free tier → used as fallback only.
-
-_ALPACA_BASE = "https://data.alpaca.markets"
-
-
-def _alpaca_headers() -> dict:
-    return {
-        "APCA-API-KEY-ID":     os.getenv("ALPACA_API_KEY", ""),
-        "APCA-API-SECRET-KEY": os.getenv("ALPACA_API_SECRET", ""),
-        "Accept": "application/json",
-    }
-
-
-def _alpaca_available() -> bool:
-    return bool(os.getenv("ALPACA_API_KEY", ""))
 
 
 def get_batch_quotes(symbols: list) -> dict:

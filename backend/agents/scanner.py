@@ -44,20 +44,29 @@ class ScannerAgent(BaseAgent):
         premarket_context  : {symbol: premarket_snapshot} — gap confirms direction
         """
         import os
-        poly_key = os.getenv("POLYGON_API_KEY", "")
-        if not poly_key:
+        alpaca_key = os.getenv("ALPACA_API_KEY", "")
+        poly_key   = os.getenv("POLYGON_API_KEY", "")
+
+        if alpaca_key:
             await self._emit("status",
-                "❌ POLYGON_API_KEY not set. Add it in Railway → Variables.")
+                f"✅ Alpaca key set ({alpaca_key[:6]}…). Using Alpaca as primary data source.")
+        else:
+            await self._emit("status",
+                "⚠️ ALPACA_API_KEY not set — falling back to Polygon (rate-limited). "
+                "Add ALPACA_API_KEY + ALPACA_API_SECRET in Railway → Variables.")
+
+        if not poly_key and not alpaca_key:
+            await self._emit("status", "❌ No data source configured. Set ALPACA_API_KEY in Railway.")
             return []
 
         test_df = md.get_historicals("SPY", period="3mo")
         if test_df.empty:
             await self._emit("status",
-                f"❌ Polygon returned no data for SPY — key may be invalid. "
-                f"Prefix: {poly_key[:6]}...")
+                "❌ All data sources failed for SPY — check API keys in Railway Variables.")
             return []
 
-        await self._emit("status", f"✅ Polygon OK. Fetching {len(self.watchlist)} symbols...")
+        source = "Alpaca" if alpaca_key else "Polygon"
+        await self._emit("status", f"✅ {source} OK. Fetching {len(self.watchlist)} symbols...")
 
         # ── Fetch OHLCV in batches ─────────────────────────────────────────────
         loop = asyncio.get_event_loop()
