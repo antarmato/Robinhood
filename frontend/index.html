@@ -304,6 +304,16 @@ canvas{display:block}
           <div class="wl-v v-r" id="s-worst">—</div>
         </div>
       </div>
+      <div class="wl-row">
+        <div class="wl-cell" title="Expected P&L per trade (WR × avg_win% − (1−WR) × avg_loss%)">
+          <div class="wl-l">Expectancy</div>
+          <div class="wl-v" id="s-expectancy">—</div>
+        </div>
+        <div class="wl-cell" title="Kelly criterion suggests this fraction of capital per trade">
+          <div class="wl-l">Kelly f*</div>
+          <div class="wl-v" id="s-kelly" style="color:var(--muted)">—</div>
+        </div>
+      </div>
     </div>
 
     <!-- Recent closed trades -->
@@ -764,6 +774,19 @@ function renderStats(s) {
   document.getElementById('s-loss').textContent = los  ? `$${los.toFixed(2)}`   : '—';
   document.getElementById('s-best').textContent  = s.best_trade  ? `+$${s.best_trade.toFixed(2)}`  : '—';
   document.getElementById('s-worst').textContent = s.worst_trade ? `$${s.worst_trade.toFixed(2)}`  : '—';
+
+  // Expectancy and Kelly (populated once we have enough data)
+  const expEl = document.getElementById('s-expectancy');
+  const kellyEl = document.getElementById('s-kelly');
+  if (expEl && s.expectancy_pct != null) {
+    const ep = s.expectancy_pct;
+    expEl.textContent = ep > 0 ? `+${ep.toFixed(1)}%` : `${ep.toFixed(1)}%`;
+    expEl.style.color = ep > 0 ? 'var(--green)' : 'var(--red)';
+  }
+  if (kellyEl && s.kelly_fraction != null) {
+    const kf = s.kelly_fraction;
+    kellyEl.textContent = kf > 0 ? `${(kf * 100).toFixed(1)}%` : '—';
+  }
 }
 
 function renderClosedTrades(trades) {

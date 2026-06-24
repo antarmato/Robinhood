@@ -330,19 +330,32 @@ async def get_sim():
     losses = [p for p in closed if float(p.get("pnl_dollars", 0)) <= 0]
 
     total_pnl = s.cumulative_sim_pnl()
+    from .outcome_tracker import get_outcome_tracker
+    ot_stats = get_outcome_tracker().get_stats()
+
+    # Expectancy: E = WR * avg_win% - (1-WR) * avg_loss%
+    avg_win_pct  = ot_stats.get("avg_win_pct", 0)
+    avg_loss_pct = ot_stats.get("avg_loss_pct", 0)
+    win_rate_frac = ot_stats.get("win_rate", 0)
+    expectancy_pct = round(win_rate_frac * avg_win_pct - (1 - win_rate_frac) * avg_loss_pct, 1) if ot_stats else 0
+
     return {
         "open_positions":  open_,
         "closed_positions": closed[-20:],  # last 20
         "pnl_history":     history,
         "stats": {
-            "total_pnl":    total_pnl,
-            "total_trades": len(closed),
-            "open_count":   len(open_),
-            "win_rate":     round(len(wins) / len(closed) * 100, 1) if closed else 0,
-            "avg_win":      round(sum(float(p.get("pnl_dollars", 0)) for p in wins)  / len(wins),   2) if wins   else 0,
-            "avg_loss":     round(sum(float(p.get("pnl_dollars", 0)) for p in losses) / len(losses), 2) if losses else 0,
-            "best_trade":   round(max((float(p.get("pnl_dollars", 0)) for p in closed), default=0), 2),
-            "worst_trade":  round(min((float(p.get("pnl_dollars", 0)) for p in closed), default=0), 2),
+            "total_pnl":       total_pnl,
+            "total_trades":    len(closed),
+            "open_count":      len(open_),
+            "win_rate":        round(len(wins) / len(closed) * 100, 1) if closed else 0,
+            "avg_win":         round(sum(float(p.get("pnl_dollars", 0)) for p in wins)  / len(wins),   2) if wins   else 0,
+            "avg_loss":        round(sum(float(p.get("pnl_dollars", 0)) for p in losses) / len(losses), 2) if losses else 0,
+            "best_trade":      round(max((float(p.get("pnl_dollars", 0)) for p in closed), default=0), 2),
+            "worst_trade":     round(min((float(p.get("pnl_dollars", 0)) for p in closed), default=0), 2),
+            "avg_win_pct":     avg_win_pct,
+            "avg_loss_pct":    avg_loss_pct,
+            "expectancy_pct":  expectancy_pct,
+            "kelly_fraction":  ot_stats.get("kelly_fraction", 0),
         },
     }
 
