@@ -426,7 +426,7 @@ class Orchestrator:
 
             technical, fundamental, sentiment, risk = await asyncio.gather(
                 TechnicalAgent(self.claude, self._make_broadcast()).analyze(symbol, direction),
-                FundamentalAgent(self.claude, self._make_broadcast()).analyze(symbol),
+                FundamentalAgent(self.claude, self._make_broadcast()).analyze(symbol, direction=direction),
                 SentimentAgent(self.claude, self._make_broadcast()).analyze(
                     symbol, direction, market_regime=market_regime),
                 RiskAgent(self.claude, self.max_loss, self._make_broadcast()).evaluate(

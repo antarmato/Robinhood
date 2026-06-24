@@ -44,7 +44,8 @@ class FundamentalAgent(BaseAgent):
     def __init__(self, client, broadcast: Optional[BroadcastFn] = None):
         super().__init__(client, "Fundamental", broadcast=broadcast)
 
-    async def analyze(self, symbol: str, expiration_date: Optional[str] = None) -> dict:
+    async def analyze(self, symbol: str, expiration_date: Optional[str] = None,
+                      direction: str = "bullish") -> dict:
         await self._emit("status", f"Fundamental: checking {symbol}...")
 
         if not expiration_date:
@@ -58,7 +59,7 @@ class FundamentalAgent(BaseAgent):
 
         earnings_risk, earnings_date_str = self._check_earnings_risk(fund, expiration_date)
 
-        score, summary, catalyst_risk = self._score(fund, earnings_risk, earnings_date_str, symbol)
+        score, summary, catalyst_risk = self._score(fund, earnings_risk, earnings_date_str, symbol, direction)
 
         result = {
             "score":                score,
@@ -107,7 +108,8 @@ class FundamentalAgent(BaseAgent):
     # ── Pure Python scoring ───────────────────────────────────────────────────
 
     def _score(
-        self, fund: dict, earnings_risk: bool, earnings_date_str: Optional[str], symbol: str
+        self, fund: dict, earnings_risk: bool, earnings_date_str: Optional[str],
+        symbol: str, direction: str = "bullish"
     ) -> tuple[float, str, str]:
         score = 6.5  # neutral starting point (lower than before to allow upside differentiation)
         notes: list[str] = []
@@ -165,26 +167,36 @@ class FundamentalAgent(BaseAgent):
         elif short_ratio > 5:
             score -= 0.25; notes.append(f"short ratio {short_ratio:.1f}")
 
-        # ── 52-week price position ────────────────────────────────────────────
+        # ── 52-week price position (direction-aware) ──────────────────────────
         price = fund.get("current_price") or fund.get("price")
         high52 = fund.get("52w_high")
         low52  = fund.get("52w_low")
         if price and high52 and low52 and high52 > low52:
             try:
                 price, high52, low52 = float(price), float(high52), float(low52)
-                pct_from_high = (price - high52) / high52 * 100   # negative = below high
-                pct_from_low  = (price - low52)  / low52  * 100   # positive = above low
                 rng = high52 - low52
-                # Where in 52w range is price? (0=low, 1=high)
-                range_pos = (price - low52) / rng
-                if range_pos > 0.90:
-                    score += 0.5; notes.append(f"52w high breakout range ({range_pos:.0%})")
-                elif range_pos > 0.75:
-                    score += 0.25; notes.append(f"52w upper range ({range_pos:.0%})")
-                elif range_pos < 0.10:
-                    score -= 0.5; notes.append(f"52w low breakdown range ({range_pos:.0%})")
-                elif range_pos < 0.25:
-                    score -= 0.25; notes.append(f"52w lower range ({range_pos:.0%})")
+                range_pos = (price - low52) / rng  # 0=at low, 1=at high
+                is_bull = (direction == "bullish")
+                if is_bull:
+                    # Bull setup: upper range = momentum confirmation
+                    if range_pos > 0.90:
+                        score += 0.5; notes.append(f"52w high breakout ({range_pos:.0%} of range)")
+                    elif range_pos > 0.75:
+                        score += 0.25; notes.append(f"upper 52w range ({range_pos:.0%})")
+                    elif range_pos < 0.10:
+                        score -= 0.75; notes.append(f"52w low — weak trend for calls ({range_pos:.0%})")
+                    elif range_pos < 0.25:
+                        score -= 0.25; notes.append(f"lower 52w range ({range_pos:.0%})")
+                else:
+                    # Bear setup: lower range = confirmed downtrend
+                    if range_pos < 0.10:
+                        score += 0.5; notes.append(f"52w low breakdown ({range_pos:.0%} of range)")
+                    elif range_pos < 0.25:
+                        score += 0.25; notes.append(f"lower 52w range ({range_pos:.0%})")
+                    elif range_pos > 0.90:
+                        score -= 0.5; notes.append(f"52w high — shorting strength ({range_pos:.0%})")
+                    elif range_pos > 0.75:
+                        score -= 0.25; notes.append(f"upper 52w range — headwind for puts ({range_pos:.0%})")
             except (TypeError, ValueError):
                 pass
 
