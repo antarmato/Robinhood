@@ -531,20 +531,37 @@ class Orchestrator:
                 "dte_left":           dte_left,
             }
 
-            # Exit logic (matches MonitorAgent rules)
+            # ── Exit logic ────────────────────────────────────────────────────
+            # No fixed profit target — trailing stop lets winners run.
+            # Floor tightens in tiers as the peak gain grows.
+            # Only hard exit: -50% stop and theta/expiry rules.
+
+            # Compute trailing floor from peak gain
+            if new_high >= 150.0:
+                trail_floor = new_high - 35.0   # give back 35pts max after 150%+
+            elif new_high >= 100.0:
+                trail_floor = new_high - 30.0   # give back 30pts max after 100%+
+            elif new_high >= 50.0:
+                trail_floor = max(0.0, new_high - 25.0)  # give back 25pts, floor ≥ 0%
+            elif new_high >= 25.0:
+                trail_floor = 0.0               # protect breakeven after 25%
+            else:
+                trail_floor = -50.0             # only hard stop while gain < 25%
+
             exit_reason = None
-            if pnl_pct >= 50.0:
-                exit_reason = f"Profit target +{pnl_pct:.1f}%"
-            elif new_high >= 40.0 and pnl_pct <= new_high - 20.0:
-                exit_reason = f"Trailing stop (peak {new_high:.0f}% → {pnl_pct:.1f}%)"
-            elif new_high >= 25.0 and pnl_pct <= 0.0:
-                exit_reason = f"Trailing stop (peak {new_high:.0f}% → fell to breakeven)"
-            elif pnl_pct <= -50.0:
-                exit_reason = f"Stop loss {pnl_pct:.1f}%"
-            elif dte_left <= 14 and pnl_pct < -10.0:
-                exit_reason = f"Theta exit: {dte_left} DTE & {pnl_pct:.1f}%"
+            if pnl_pct <= trail_floor:
+                if trail_floor == -50.0:
+                    exit_reason = f"Stop loss {pnl_pct:.1f}%"
+                else:
+                    exit_reason = (
+                        f"Trailing stop — peak {new_high:+.0f}% | "
+                        f"floor {trail_floor:+.0f}% | now {pnl_pct:+.1f}%"
+                    )
+            elif dte_left <= 7 and pnl_pct < 20.0:
+                # Final week: theta burns fast; close unless strongly profitable
+                exit_reason = f"Theta exit: {dte_left} DTE, P&L {pnl_pct:+.1f}% (final week)"
             elif dte_left <= 2:
-                exit_reason = f"Expiry: {dte_left} DTE — closing"
+                exit_reason = f"Expiry: {dte_left} DTE — forced close"
 
             if exit_reason:
                 self.state.close_sim_position(pos_id, {
