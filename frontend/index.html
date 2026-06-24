@@ -743,12 +743,14 @@ function renderScan(data) {
       : (r.tech_score != null)
         ? `Tech:${r.tech_score?.toFixed(1)} Fund:${r.fund_score?.toFixed(1)} Sent:${r.sent_score?.toFixed(1)}`
         : '';
-    const vwapStr = r.vwap20_pct != null
+    const vwapStr  = r.vwap20_pct != null
       ? `VWAP20:${r.vwap20_pct >= 0 ? '+' : ''}${r.vwap20_pct?.toFixed(1)}%` : '';
     const stochStr = r.stoch_k != null ? `Stoch:${r.stoch_k?.toFixed(0)}` : '';
     const mtfStr   = r.momentum_60d != null
       ? `MTF60d:${r.momentum_60d >= 0 ? '+' : ''}${r.momentum_60d?.toFixed(1)}%` : '';
-    const indicStr = [vwapStr, stochStr, mtfStr].filter(Boolean).join(' | ');
+    const ema200Str = r.above_ema200 != null
+      ? (r.above_ema200 ? '✓EMA200' : '✗EMA200') : '';
+    const indicStr = [vwapStr, stochStr, mtfStr, ema200Str].filter(Boolean).join(' | ');
     const tooltipLines = [
       scoreBreak,
       indicStr,
@@ -794,6 +796,17 @@ function renderPositions(positions) {
     const pnlStr  = `${pnl >= 0 ? '+' : ''}${pnl.toFixed(1)}% ($${pnl$ >= 0 ? '+' : ''}${pnl$.toFixed(0)})`;
     const hwm     = p.high_water_pnl_pct ?? 0;
     const hwmStr  = hwm > 0 ? ` ↑${hwm.toFixed(0)}%pk` : '';
+    // Compute the trailing stop floor from peak (mirrors backend tiered logic)
+    function trailFloor(peak) {
+      if (peak >= 150) return peak - 35;
+      if (peak >= 100) return peak - 30;
+      if (peak >= 75)  return peak - 25;
+      if (peak >= 50)  return peak - 20;
+      if (peak >= 25)  return peak - 15;
+      return -50; // initial stop: -50%
+    }
+    const floor   = trailFloor(hwm);
+    const floorStr = hwm >= 25 ? ` floor:${floor.toFixed(0)}%` : '';
     const conf    = p.confidence;
     const score   = p.weighted_score;
     const tooltip = [
@@ -802,6 +815,7 @@ function renderPositions(positions) {
       `Bull case: ${p.bull_case || '—'}`,
       `Bear case: ${p.bear_case || '—'}`,
       `Entry DTE: ${p.entry_dte ?? 35} | Days held: ${days}`,
+      hwm >= 25 ? `Trail stop floor: ${floor.toFixed(0)}% (peak was ${hwm.toFixed(0)}%)` : 'Trail stop: -50% from entry',
     ].join('\n');
     return `<tr title="${esc(tooltip)}">
       <td><strong>${esc(p.symbol)}</strong></td>
@@ -809,7 +823,7 @@ function renderPositions(positions) {
       <td>$${p.entry_stock_price?.toFixed(2) ?? '—'}</td>
       <td>$${p.last_stock_price?.toFixed(2) ?? '—'}</td>
       <td class="${pnlCls}">${pnlStr}${hwmStr}</td>
-      <td style="color:var(--muted)">D${days}/${dte}dte${conf ? ` c${conf}` : ''}</td>
+      <td style="color:var(--muted)">D${days}/${dte}dte${conf ? ` c${conf}` : ''}${floorStr}</td>
     </tr>`;
   }).join('');
 }
