@@ -12,6 +12,7 @@ Pipeline (v3 — regime-aware, pre-market-informed, continuous):
 
 import asyncio
 import logging
+import math
 import os
 import uuid
 from datetime import datetime, time as dtime
@@ -481,6 +482,11 @@ class Orchestrator:
         self.state.update_last_monitor()
 
     async def _monitor_sim_positions(self):
+        # Prices only move during market hours — skip polling outside them
+        if not self._is_market_hours():
+            logger.debug("Market closed — skipping position monitor")
+            return
+
         open_positions = self.state.get_sim_positions(status="open")
         if not open_positions:
             return
@@ -511,11 +517,30 @@ class Orchestrator:
             if not current_stock:
                 continue
 
-            # Delta-theta option pricing
-            stock_move      = (current_stock - entry_stock) if direction == "bullish" else (entry_stock - current_stock)
-            directional_pnl = stock_move * delta
-            theta_cost      = (entry_opt / max(entry_dte, 1)) * days_held
-            current_opt     = round(max(0.01, entry_opt + directional_pnl - theta_cost), 4)
+            # ── Option pricing model ──────────────────────────────────────────
+            # Favorable stock move (+ means the stock moved in our direction)
+            if direction == "bullish":
+                favorable_move = current_stock - entry_stock
+            else:
+                favorable_move = entry_stock - current_stock
+
+            move_pct = favorable_move / max(entry_stock, 0.01)
+
+            # Gamma-adjusted delta:
+            #   • Favorable move → delta rises toward 0.80 (option going ITM)
+            #   • Adverse move   → delta falls toward 0.05 (option going OTM, less sensitive)
+            if move_pct >= 0:
+                effective_delta = min(0.80, delta + move_pct * 0.35)
+            else:
+                effective_delta = max(0.05, delta + move_pct * 0.15)
+
+            directional_pnl = favorable_move * effective_delta
+
+            # Sqrt-of-time theta: time value decays faster near expiry
+            #   DTE=35 → factor 1.0  |  DTE=17 → 0.70  |  DTE=7 → 0.45  |  DTE=0 → 0
+            dte_remaining = max(0, entry_dte - days_held)
+            time_factor   = math.sqrt(dte_remaining / max(entry_dte, 1))
+            current_opt   = round(max(0.01, entry_opt * time_factor + directional_pnl), 4)
 
             pnl_pct     = round((current_opt - entry_opt) / entry_opt * 100, 2)
             pnl_dollars = round((current_opt - entry_opt) * contracts * 100, 2)

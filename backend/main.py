@@ -347,6 +347,117 @@ async def get_sim():
     }
 
 
+@app.get("/api/diagnostics")
+async def diagnostics():
+    """Run all API connectivity tests — Alpaca, Anthropic, market status, env vars."""
+    import asyncio as _aio
+    import time
+    from . import market_data as mdata
+    from .orchestrator import Orchestrator
+
+    loop = _aio.get_event_loop()
+
+    # ── Env vars ───────────────────────────────────────────────────────────────
+    alpaca_key    = os.getenv("ALPACA_API_KEY", "")
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+    tradier_key   = os.getenv("TRADIER_TOKEN", "")
+    results: dict = {
+        "env_vars": {
+            "ok":       bool(alpaca_key and anthropic_key),
+            "alpaca":   f"✓ {alpaca_key[:6]}..." if alpaca_key else "✗ NOT SET",
+            "anthropic": "✓ set" if anthropic_key else "✗ NOT SET",
+            "tradier":  f"✓ set" if tradier_key else "— optional (not set)",
+            "tz":       os.getenv("TZ", "not set"),
+            "latency_ms": 0,
+        },
+        "market": {
+            "ok":          True,
+            "phase":       Orchestrator._session_phase(),
+            "market_open": Orchestrator._is_market_hours(),
+            "trading_day": Orchestrator._is_trading_day(),
+            "latency_ms":  0,
+        },
+    }
+
+    # ── Async tests ────────────────────────────────────────────────────────────
+    async def _test_alpaca_history():
+        t0 = time.time()
+        try:
+            df = await loop.run_in_executor(None, lambda: mdata.get_historicals("SOFI", period="3mo"))
+            ms = round((time.time() - t0) * 1000)
+            if df.empty:
+                return {"ok": False, "detail": "Empty — no bars returned", "latency_ms": ms}
+            return {"ok": True,
+                    "detail": f"SOFI: {len(df)} bars | last close ${df['close'].iloc[-1]:.2f}",
+                    "latency_ms": ms}
+        except Exception as e:
+            return {"ok": False, "detail": str(e)[:150], "latency_ms": round((time.time()-t0)*1000)}
+
+    async def _test_alpaca_quotes():
+        t0 = time.time()
+        try:
+            quotes = await loop.run_in_executor(
+                None, lambda: mdata.get_batch_quotes(["SOFI", "PLTR", "MSTR"]))
+            ms = round((time.time() - t0) * 1000)
+            if not quotes:
+                return {"ok": False, "detail": "No quotes returned (IEX feed)", "latency_ms": ms}
+            items = " | ".join(f"{s} ${p:.2f}" for s, p in quotes.items())
+            return {"ok": True, "detail": items, "latency_ms": ms}
+        except Exception as e:
+            return {"ok": False, "detail": str(e)[:150], "latency_ms": round((time.time()-t0)*1000)}
+
+    async def _test_alpaca_macro():
+        t0 = time.time()
+        try:
+            vix     = await loop.run_in_executor(None, mdata.get_vix)
+            spy     = await loop.run_in_executor(None, lambda: mdata.get_quote("SPY"))
+            sectors = await loop.run_in_executor(None, mdata.get_sector_etf_performance)
+            ms = round((time.time() - t0) * 1000)
+            spy_p, spy_c = spy.get("price", 0), spy.get("pct_change", 0)
+            return {
+                "ok":    vix > 0 or spy_p > 0,
+                "detail": (f"VIXY ${vix:.2f} (VIX proxy) | SPY ${spy_p:.2f} "
+                           f"({spy_c:+.2f}%) | {len(sectors)} sector ETFs"),
+                "latency_ms": ms,
+            }
+        except Exception as e:
+            return {"ok": False, "detail": str(e)[:150], "latency_ms": round((time.time()-t0)*1000)}
+
+    async def _test_anthropic():
+        t0 = time.time()
+        if not anthropic_key:
+            return {"ok": False, "detail": "ANTHROPIC_API_KEY not set", "latency_ms": 0}
+        try:
+            import anthropic as _ant
+            client = _ant.AsyncAnthropic(api_key=anthropic_key)
+            resp = await client.messages.create(
+                model="claude-haiku-4-5-20251001", max_tokens=10,
+                messages=[{"role": "user", "content": "ping"}])
+            ms = round((time.time() - t0) * 1000)
+            return {"ok": True,
+                    "detail": f"Haiku OK | reply: '{resp.content[0].text.strip()[:30]}'",
+                    "latency_ms": ms}
+        except Exception as e:
+            return {"ok": False, "detail": str(e)[:150], "latency_ms": round((time.time()-t0)*1000)}
+
+    hist_r, quotes_r, macro_r, ant_r = await _aio.gather(
+        _test_alpaca_history(),
+        _test_alpaca_quotes(),
+        _test_alpaca_macro(),
+        _test_anthropic(),
+    )
+    results["alpaca_history"]   = hist_r
+    results["alpaca_quotes"]    = quotes_r
+    results["alpaca_macro"]     = macro_r
+    results["anthropic"]        = ant_r
+    results["all_ok"] = all(
+        v.get("ok", False)
+        for v in results.values()
+        if isinstance(v, dict) and "ok" in v
+    )
+    return results
+
+
 @app.get("/api/scan-results")
 async def get_scan_results():
     s = get_state()
