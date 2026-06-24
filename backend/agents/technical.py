@@ -1,8 +1,9 @@
 """
 Technical Analysis Agent — pure Python scoring, no LLM.
 
-Computes EMAs, RSI, MACD, ADX, Stochastic, Bollinger Bands from Polygon OHLCV.
-Scores 1-10 based on how many indicators confirm the proposed direction.
+Computes EMAs, RSI, MACD, ADX, Bollinger Bands, relative strength vs SPY,
+momentum acceleration, and 52W range position from Alpaca OHLCV.
+Scores 1-10; tuned so a genuinely strong setup earns 7-8, exceptional is 9-10.
 """
 
 import logging
@@ -15,6 +16,9 @@ from .base import BaseAgent, BroadcastFn
 from .. import market_data as md
 
 logger = logging.getLogger(__name__)
+
+# SPY daily bars are fetched once and cached here for the scan cycle
+_SPY_CACHE: dict = {}
 
 
 class TechnicalAgent(BaseAgent):
@@ -41,7 +45,8 @@ class TechnicalAgent(BaseAgent):
             await self._emit("score", result)
             return result
 
-        ind = self._compute_indicators(df)
+        spy_df = self._get_spy_bars()
+        ind = self._compute_indicators(df, spy_df)
         score, trend, signals, fatal_flaw = self._score_direction(ind, direction)
 
         result = {
@@ -56,20 +61,32 @@ class TechnicalAgent(BaseAgent):
             "signals":        signals,
             "fatal_flaw":     fatal_flaw,
             "summary":        f"{trend} | {', '.join(signals[:4]) if signals else 'no clear signals'}",
-            # pass raw indicators for Judge context
             "rsi":            round(ind["rsi"], 1),
             "adx":            round(ind["adx"], 1),
             "bb_pct":         round(ind["bb_pct"], 2),
             "vol_ratio":      round(ind["vol_ratio"], 2),
             "ema20_slope":    round(ind["ema20_slope"], 3),
+            "rs_5d":          round(ind.get("rs_5d", 0), 2),
+            "momentum_5d":    round(ind.get("momentum_5d", 0), 2),
+            "w52_pct":        round(ind.get("w52_pct", 50), 1),
         }
         await self._emit("score", {"symbol": symbol, "score": score, "trend": trend,
                                     "signals": signals, "fatal_flaw": fatal_flaw})
         return result
 
+    def _get_spy_bars(self) -> Optional[pd.DataFrame]:
+        global _SPY_CACHE
+        try:
+            df = md.get_historicals("SPY", period="3mo")
+            if not df.empty and len(df) >= 20:
+                return df
+        except Exception:
+            pass
+        return None
+
     # ── Indicator computation ─────────────────────────────────────────────────
 
-    def _compute_indicators(self, df: pd.DataFrame) -> dict:
+    def _compute_indicators(self, df: pd.DataFrame, spy_df: Optional[pd.DataFrame] = None) -> dict:
         close  = df["close"]
         high   = df["high"]
         low    = df["low"]
@@ -138,9 +155,34 @@ class TechnicalAgent(BaseAgent):
         lookback = min(252, len(close))
         ind["high_52w"] = float(close.tail(lookback).max())
         ind["low_52w"]  = float(close.tail(lookback).min())
+        rng = ind["high_52w"] - ind["low_52w"]
+        ind["w52_pct"] = (price - ind["low_52w"]) / rng * 100 if rng > 0 else 50.0
 
         vol_avg20 = float(volume.iloc[-21:-1].mean()) if len(volume) >= 21 else float(volume.mean())
         ind["vol_ratio"] = float(volume.iloc[-1]) / vol_avg20 if vol_avg20 > 0 else 1.0
+
+        # ── Momentum (5d and 20d returns) ─────────────────────────────────────
+        ind["momentum_5d"]  = (float(close.iloc[-1]) - float(close.iloc[-5]))  / float(close.iloc[-5])  * 100 if len(close) >= 5  else 0.0
+        ind["momentum_20d"] = (float(close.iloc[-1]) - float(close.iloc[-20])) / float(close.iloc[-20]) * 100 if len(close) >= 20 else 0.0
+
+        # Acceleration: is recent 5d move stronger than expected slice of 20d?
+        expected_5d = ind["momentum_20d"] / 4.0
+        ind["momentum_accel"] = ind["momentum_5d"] - expected_5d
+
+        # ── Relative strength vs SPY ───────────────────────────────────────────
+        ind["rs_5d"]  = 0.0
+        ind["rs_20d"] = 0.0
+        if spy_df is not None and len(spy_df) >= 20:
+            spy_close = spy_df["close"]
+            try:
+                spy_5d  = (float(spy_close.iloc[-1]) - float(spy_close.iloc[-5]))  / float(spy_close.iloc[-5])  * 100
+                spy_20d = (float(spy_close.iloc[-1]) - float(spy_close.iloc[-20])) / float(spy_close.iloc[-20]) * 100
+                if len(close) >= 5:
+                    ind["rs_5d"]  = ind["momentum_5d"]  - spy_5d
+                if len(close) >= 20:
+                    ind["rs_20d"] = ind["momentum_20d"] - spy_20d
+            except Exception:
+                pass
 
         ind["price"] = price
         return ind
@@ -172,9 +214,9 @@ class TechnicalAgent(BaseAgent):
         """
         Returns (score 1-10, trend label, contributing signals list, fatal_flaw or None).
 
-        Fatal flaws (hard rejection before any LLM call):
-          - Calls: RSI > 78 (overbought — chase risk)
-          - Puts:  RSI < 22 (oversold — squeeze risk)
+        Calibration goal: strong trending stock with good RS = 7-8.
+        Exceptional alignment (RS dominant, ADX strong, clean MACD cross) = 9-10.
+        Ranging or conflicted = 5-6. Strong counter-signals = 3-4.
         """
         price = i["price"]
         score = 5.0
@@ -192,102 +234,168 @@ class TechnicalAgent(BaseAgent):
         above_ema50 = price > i["ema50"]
 
         if direction == "bullish":
-            # EMA alignment
+            # ── EMA alignment (max +1.5, not +2.0) ───────────────────────────
             if above_ema20 and above_ema50:
-                score += 2.0;  signals.append("above both EMAs")
+                score += 1.5;  signals.append("above both EMAs")
             elif above_ema20:
                 score += 0.5;  signals.append("above EMA20")
             elif not above_ema20 and not above_ema50:
-                score -= 2.0;  signals.append("below both EMAs")
+                score -= 1.5;  signals.append("below both EMAs")
 
-            # EMA20 slope
-            if i["ema20_slope"] > 0.2:   score += 0.5
-            elif i["ema20_slope"] < -0.2: score -= 0.5
+            # ── EMA slope (scaled) ────────────────────────────────────────────
+            slope = i["ema20_slope"]
+            if slope > 0.4:    score += 0.75; signals.append(f"EMA20 rising +{slope:.2f}%/wk")
+            elif slope > 0.15: score += 0.25
+            elif slope < -0.4: score -= 0.75
+            elif slope < -0.15:score -= 0.25
 
-            # RSI
-            if 45 <= rsi <= 68:
+            # ── RSI (max +1.5) ────────────────────────────────────────────────
+            if 45 <= rsi <= 65:
                 score += 1.5;  signals.append(f"RSI {rsi:.0f} bullish zone")
             elif 35 <= rsi < 45 and above_ema50:
-                score += 1.0;  signals.append(f"RSI {rsi:.0f} recovering in uptrend")
-            elif rsi > 75:
-                score -= 2.0;  signals.append(f"RSI {rsi:.0f} overbought")
+                score += 0.75; signals.append(f"RSI {rsi:.0f} recovering")
+            elif rsi > 70:
+                score -= 1.5;  signals.append(f"RSI {rsi:.0f} overbought")
             elif rsi < 35:
-                score -= 1.0
+                score -= 0.75
 
-            # MACD
+            # ── MACD (max +1.5) ───────────────────────────────────────────────
             if i["macd_hist"] > 0 and i["macd_hist2"] <= 0:
-                score += 2.0;  signals.append("MACD bullish cross")
+                score += 1.5;  signals.append("MACD bullish cross")
             elif i["macd_hist"] > 0:
-                score += 1.0;  signals.append("MACD above zero")
+                score += 0.75; signals.append("MACD above zero")
             elif i["macd_hist"] < 0:
-                score -= 1.0
+                score -= 0.75
 
-            # Volume confirmation
-            if i["vol_ratio"] >= 1.5:
-                score += 1.0;  signals.append(f"volume {i['vol_ratio']:.1f}x")
-            elif i["vol_ratio"] < 0.7:
+            # ── Relative strength vs SPY (key differentiator) ─────────────────
+            rs = i.get("rs_5d", 0)
+            if rs > 4:
+                score += 1.5;  signals.append(f"RS +{rs:.1f}% vs SPY")
+            elif rs > 2:
+                score += 0.75; signals.append(f"RS +{rs:.1f}% vs SPY")
+            elif rs < -3:
+                score -= 1.0;  signals.append(f"lagging SPY {rs:.1f}%")
+            elif rs < -1:
                 score -= 0.5
 
-            # ADX trend strength
-            if i["adx"] > 25:    score += 0.5
-            elif i["adx"] < 15:  score -= 0.5
+            # ── Momentum acceleration ─────────────────────────────────────────
+            accel = i.get("momentum_accel", 0)
+            if accel > 2:
+                score += 0.5;  signals.append("momentum accelerating")
+            elif accel < -2:
+                score -= 0.5;  signals.append("momentum decelerating")
 
-            # BB — check for overextension
+            # ── Volume ────────────────────────────────────────────────────────
+            vr = i["vol_ratio"]
+            if vr >= 2.0:
+                score += 1.0;  signals.append(f"volume {vr:.1f}x surge")
+            elif vr >= 1.4:
+                score += 0.5;  signals.append(f"volume {vr:.1f}x above avg")
+            elif vr < 0.6:
+                score -= 0.5;  signals.append("low volume")
+
+            # ── ADX trend strength (scaled) ───────────────────────────────────
+            adx = i["adx"]
+            if adx > 35:   score += 0.5
+            elif adx > 25: score += 0.25
+            elif adx < 15: score -= 0.5
+
+            # ── 52W range position ────────────────────────────────────────────
+            w52 = i.get("w52_pct", 50)
+            if w52 > 92:
+                score -= 0.75; signals.append("near 52W high — limited room")
+            elif w52 < 30 and above_ema50:
+                score += 0.5;  signals.append("low in 52W range, still in uptrend")
+
+            # ── BB overextension ──────────────────────────────────────────────
             if i["bb_pct"] > 0.92:
-                score -= 1.5;  signals.append("near upper BB — stretched")
+                score -= 1.0;  signals.append("near upper BB — stretched")
             elif i["bb_pct"] < 0.3 and above_ema50:
                 score += 0.5;  signals.append("pullback in uptrend")
 
             trend = (
-                "strong_uptrend"   if i["adx"] > 25 and above_ema50 else
-                "uptrend"          if above_ema20 and above_ema50 else
-                "ranging"          if abs(i["ema20_slope"]) < 0.1 else
+                "strong_uptrend" if i["adx"] > 25 and above_ema50 else
+                "uptrend"        if above_ema20 and above_ema50 else
+                "ranging"        if abs(i["ema20_slope"]) < 0.1 else
                 "downtrend"
             )
 
         else:  # bearish
-            # EMA alignment
+            # ── EMA alignment ─────────────────────────────────────────────────
             if not above_ema20 and not above_ema50:
-                score += 2.0;  signals.append("below both EMAs")
+                score += 1.5;  signals.append("below both EMAs")
             elif not above_ema20:
                 score += 0.5;  signals.append("below EMA20")
             elif above_ema20 and above_ema50:
-                score -= 2.0;  signals.append("above both EMAs")
+                score -= 1.5;  signals.append("above both EMAs")
 
-            if i["ema20_slope"] < -0.2:   score += 0.5
-            elif i["ema20_slope"] > 0.2:  score -= 0.5
+            slope = i["ema20_slope"]
+            if slope < -0.4:   score += 0.75; signals.append(f"EMA20 falling {slope:.2f}%/wk")
+            elif slope < -0.15:score += 0.25
+            elif slope > 0.4:  score -= 0.75
+            elif slope > 0.15: score -= 0.25
 
-            # RSI
-            if 30 <= rsi <= 55:
+            # ── RSI ───────────────────────────────────────────────────────────
+            if 32 <= rsi <= 55:
                 score += 1.5;  signals.append(f"RSI {rsi:.0f} bearish zone")
             elif 55 < rsi <= 65 and not above_ema50:
-                score += 1.0;  signals.append(f"RSI {rsi:.0f} overbought in downtrend")
-            elif rsi < 25:
-                score -= 2.0;  signals.append(f"RSI {rsi:.0f} oversold")
+                score += 0.75; signals.append(f"RSI {rsi:.0f} overbought in downtrend")
+            elif rsi < 28:
+                score -= 1.5;  signals.append(f"RSI {rsi:.0f} oversold")
             elif rsi > 65:
-                score -= 1.0
+                score -= 0.75
 
-            # MACD
+            # ── MACD ──────────────────────────────────────────────────────────
             if i["macd_hist"] < 0 and i["macd_hist2"] >= 0:
-                score += 2.0;  signals.append("MACD bearish cross")
+                score += 1.5;  signals.append("MACD bearish cross")
             elif i["macd_hist"] < 0:
-                score += 1.0;  signals.append("MACD below zero")
+                score += 0.75; signals.append("MACD below zero")
             elif i["macd_hist"] > 0:
-                score -= 1.0
+                score -= 0.75
 
-            # Volume
-            if i["vol_ratio"] >= 1.5:
-                score += 1.0;  signals.append(f"volume {i['vol_ratio']:.1f}x")
-            elif i["vol_ratio"] < 0.7:
+            # ── Relative strength vs SPY (bearish: underperformance is good) ──
+            rs = i.get("rs_5d", 0)
+            if rs < -4:
+                score += 1.5;  signals.append(f"lagging SPY {rs:.1f}% — bearish RS")
+            elif rs < -2:
+                score += 0.75; signals.append(f"lagging SPY {rs:.1f}%")
+            elif rs > 3:
+                score -= 1.0;  signals.append(f"outperforming SPY +{rs:.1f}% — bearish headwind")
+            elif rs > 1:
                 score -= 0.5
 
-            # ADX
-            if i["adx"] > 25:    score += 0.5
-            elif i["adx"] < 15:  score -= 0.5
+            # ── Momentum acceleration ─────────────────────────────────────────
+            accel = i.get("momentum_accel", 0)
+            if accel < -2:
+                score += 0.5;  signals.append("downside momentum accelerating")
+            elif accel > 2:
+                score -= 0.5;  signals.append("downside momentum weakening")
 
-            # BB
+            # ── Volume ────────────────────────────────────────────────────────
+            vr = i["vol_ratio"]
+            if vr >= 2.0:
+                score += 1.0;  signals.append(f"volume {vr:.1f}x surge")
+            elif vr >= 1.4:
+                score += 0.5;  signals.append(f"volume {vr:.1f}x above avg")
+            elif vr < 0.6:
+                score -= 0.5;  signals.append("low volume")
+
+            # ── ADX ───────────────────────────────────────────────────────────
+            adx = i["adx"]
+            if adx > 35:   score += 0.5
+            elif adx > 25: score += 0.25
+            elif adx < 15: score -= 0.5
+
+            # ── 52W range position ────────────────────────────────────────────
+            w52 = i.get("w52_pct", 50)
+            if w52 < 8:
+                score -= 0.75; signals.append("near 52W low — bounce risk")
+            elif w52 > 70 and not above_ema50:
+                score += 0.5;  signals.append("high in 52W range, below EMAs")
+
+            # ── BB ────────────────────────────────────────────────────────────
             if i["bb_pct"] < 0.08:
-                score -= 1.5;  signals.append("near lower BB — oversold")
+                score -= 1.0;  signals.append("near lower BB — oversold")
             elif i["bb_pct"] > 0.7 and not above_ema50:
                 score += 0.5;  signals.append("overbought in downtrend")
 

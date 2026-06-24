@@ -1,11 +1,8 @@
 """
 Fundamental Agent — pure Python, no LLM.
 
-Checks earnings risk within option DTE window, market cap quality, and analyst data.
-Scoring rules:
-  Earnings in 45-day window → score 2 (near-fatal for directional plays)
-  Clean, large cap, no catalyst risk → score 7-8
-  Small cap / no analyst data → score 5-6
+Checks earnings risk, market cap, beta, short ratio, and liquidity.
+Scoring is deliberately differentiated: 5 = risky setup, 7 = neutral/clean, 9 = ideal.
 """
 
 import logging
@@ -16,6 +13,11 @@ from .base import BaseAgent, BroadcastFn
 from .. import market_data as md
 
 logger = logging.getLogger(__name__)
+
+# Known high-volatility / meme / crypto-adjacent stocks — extra beta penalty
+_HIGH_RISK = {"MSTR", "IONQ", "RIVN", "SMCI", "HOOD", "COIN", "AMC", "GME", "BBBY", "PLTR"}
+# Known mega/large cap with good liquidity — bonus
+_QUALITY_CAP = {"AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "AMD", "SPY", "QQQ"}
 
 
 class FundamentalAgent(BaseAgent):
@@ -80,42 +82,66 @@ class FundamentalAgent(BaseAgent):
     def _score(
         self, fund: dict, earnings_risk: bool, earnings_date_str: Optional[str], symbol: str
     ) -> tuple[float, str, str]:
-        score = 7.0  # default: clean backdrop
+        score = 6.5  # neutral starting point (lower than before to allow upside differentiation)
+        notes: list[str] = []
 
-        # Earnings risk is the only hard penalty
+        # ── Earnings: hard penalty (fatal flaw handled above) ─────────────────
         if earnings_risk:
-            score = 2.0
-            return score, f"⚠ Earnings {earnings_date_str} within option window — binary risk", "high"
+            return 2.0, f"⚠ Earnings {earnings_date_str} within option window — binary risk", "high"
 
-        # Market cap quality bonus
+        # ── Market cap quality ─────────────────────────────────────────────────
         mcap = fund.get("market_cap")
         if mcap:
-            if mcap > 100_000_000_000:    # > $100B mega-cap
-                score += 0.5
-            elif mcap < 2_000_000_000:    # < $2B small-cap
-                score -= 1.0
+            if mcap > 200_000_000_000:    # >$200B — mega cap, liquid
+                score += 1.0; notes.append(f"mega-cap ${mcap/1e9:.0f}B")
+            elif mcap > 50_000_000_000:   # >$50B — large cap
+                score += 0.5; notes.append(f"large-cap ${mcap/1e9:.0f}B")
+            elif mcap > 10_000_000_000:   # >$10B — mid cap
+                score += 0.0; notes.append(f"mid-cap ${mcap/1e9:.0f}B")
+            elif mcap > 2_000_000_000:    # >$2B — small-mid
+                score -= 0.5; notes.append(f"small-mid ${mcap/1e9:.1f}B")
+            else:                          # micro cap
+                score -= 1.5; notes.append(f"micro-cap ${mcap/1e6:.0f}M")
 
-        # Short squeeze risk flag (doesn't change score much — info only)
-        short_ratio = fund.get("short_ratio") or 0
-        squeeze_note = f" | Short ratio {short_ratio:.1f} — squeeze risk" if short_ratio > 8 else ""
-
-        # Beta — extreme beta means higher risk
+        # ── Beta — directional option risk ────────────────────────────────────
         beta = fund.get("beta") or 1.0
-        if beta and beta > 2.5:
-            score -= 0.5
+        try:
+            beta = float(beta)
+        except (TypeError, ValueError):
+            beta = 1.0
+
+        if beta > 3.0:
+            score -= 1.5; notes.append(f"beta {beta:.1f} — extreme vol, wide stops needed")
+        elif beta > 2.0:
+            score -= 0.75; notes.append(f"beta {beta:.1f} — high vol")
+        elif beta > 1.5:
+            score -= 0.25; notes.append(f"beta {beta:.1f}")
+        elif beta < 0.5 and beta > 0:
+            score -= 0.5;  notes.append(f"beta {beta:.1f} — low movement, poor for options")
+
+        # ── Short ratio — squeeze risk for puts ───────────────────────────────
+        short_ratio = fund.get("short_ratio") or 0
+        try:
+            short_ratio = float(short_ratio)
+        except (TypeError, ValueError):
+            short_ratio = 0
+
+        if short_ratio > 12:
+            score -= 1.5; notes.append(f"short ratio {short_ratio:.1f} — extreme squeeze risk")
+        elif short_ratio > 8:
+            score -= 0.75; notes.append(f"short ratio {short_ratio:.1f} — squeeze risk")
+        elif short_ratio > 5:
+            score -= 0.25; notes.append(f"short ratio {short_ratio:.1f}")
+
+        # ── Known high-risk symbols ───────────────────────────────────────────
+        if symbol in _HIGH_RISK:
+            score -= 0.5; notes.append("high-volatility / speculative")
+
+        # ── Quality bonus ─────────────────────────────────────────────────────
+        if symbol in _QUALITY_CAP:
+            score += 0.5; notes.append("quality large cap")
 
         score = round(max(1.0, min(10.0, score)), 1)
-        catalyst_risk = "low" if score >= 7 else "medium"
-
-        cap_str = ""
-        if mcap:
-            if mcap > 1e12:    cap_str = f"${mcap/1e12:.1f}T"
-            elif mcap > 1e9:   cap_str = f"${mcap/1e9:.1f}B"
-            else:              cap_str = f"${mcap/1e6:.0f}M"
-
-        summary = (
-            f"No earnings risk in window. "
-            f"Market cap {cap_str or 'N/A'}, beta {beta:.1f}"
-            f"{squeeze_note}"
-        )
+        catalyst_risk = "low" if score >= 7 else "medium" if score >= 5 else "high"
+        summary = ", ".join(notes) if notes else "No earnings risk, neutral fundamentals"
         return score, summary, catalyst_risk

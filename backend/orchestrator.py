@@ -381,6 +381,8 @@ class Orchestrator:
 
     # ── Portfolio filters ──────────────────────────────────────────────────────
 
+    MAX_OPEN_POSITIONS = 4  # hard cap on total sim positions at once
+
     def _apply_portfolio_filters(self, candidates: list[dict]) -> list[dict]:
         # Use sim positions as the portfolio reference
         open_sims   = self.state.get_sim_positions(status="open")
@@ -390,11 +392,17 @@ class Orchestrator:
         bear_open   = sum(1 for p in open_sims if p.get("option_type") == "put")
         open_syms   = {p["symbol"] for p in open_sims}
 
+        # Hard cap on total positions
+        if len(open_sims) >= self.MAX_OPEN_POSITIONS:
+            self.state.log_event("info", {
+                "message": f"Portfolio full ({len(open_sims)}/{self.MAX_OPEN_POSITIONS} open) — no new entries"
+            })
+            return []
+
         filtered = []
         for c in candidates:
             sym  = c["symbol"]
             dirn = c["direction"]
-            # Skip if already holding this symbol
             if sym in open_syms:
                 self.state.log_event("info", {"message": f"Portfolio filter: {sym} already open — skipping"})
                 continue
@@ -426,12 +434,25 @@ class Orchestrator:
         iv_rank   = float(analysis.get("iv_rank", 50.0))
         opt_type  = "call" if direction == "bullish" else "put"
 
+        # Opening 15-minute guard — first candles are volatile/wide spread
+        now_et = self._now_et()
+        tod    = now_et.time()
+        if dtime(9, 30) <= tod < dtime(9, 45):
+            await self._emit("system", "info",
+                {"message": f"SIM: Skipping {symbol} — opening 15 min (volatile spreads). Will try next cycle."})
+            return
+
         # Don't open a second position in the same symbol
         open_syms = {p["symbol"] for p in self.state.get_sim_positions(status="open")}
         if symbol in open_syms:
             await self._emit("system", "info",
                 {"message": f"SIM: {symbol} already open — skipping duplicate."})
             return
+
+        # Collect scores from sub-agents to store with position (for learning)
+        technical   = analysis.get("technical", {})
+        fundamental = analysis.get("fundamental", {})
+        sentiment   = analysis.get("sentiment", {})
 
         pos = {
             "position_id":       str(uuid.uuid4()),
@@ -445,8 +466,11 @@ class Orchestrator:
             "entry_dte":         35,
             "delta":             0.25,
             "iv_rank":           iv_rank,
-            "score":             judge.get("weighted_score", 0),
+            "weighted_score":    judge.get("weighted_score", 0),
             "confidence":        judge.get("confidence", 0),
+            "tech_score":        technical.get("score", 5),
+            "fund_score":        fundamental.get("score", 5),
+            "sent_score":        sentiment.get("score", 5),
             "bull_case":         judge.get("bull_case", ""),
             "bear_case":         judge.get("bear_case", ""),
             "opened_at":         datetime.now().isoformat(),
@@ -589,14 +613,23 @@ class Orchestrator:
                 exit_reason = f"Expiry: {dte_left} DTE — forced close"
 
             if exit_reason:
-                self.state.close_sim_position(pos_id, {
+                exit_data = {
                     "exit_stock_price":  round(current_stock, 2),
                     "exit_option_price": current_opt,
                     "pnl_dollars":       pnl_dollars,
                     "pnl_pct":           pnl_pct,
                     "exit_reason":       exit_reason,
                     "days_held":         days_held,
-                })
+                }
+                self.state.close_sim_position(pos_id, exit_data)
+
+                # Feed result into outcome tracker so the learning loop accumulates data
+                closed_pos = {**pos, **exit_data}
+                try:
+                    get_outcome_tracker().record_sim_close(closed_pos)
+                except Exception as e:
+                    logger.warning(f"Outcome tracker record failed: {e}")
+
                 cumulative = self.state.cumulative_sim_pnl()
                 await self._emit("system", "sim_closed", {
                     "symbol": symbol, "direction": direction,

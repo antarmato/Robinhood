@@ -160,6 +160,44 @@ class OutcomeTracker:
                 result[sym] = s
         return result
 
+    def record_sim_close(self, pos: dict):
+        """
+        Record a closed sim position in the outcome tracker so the learning
+        loop accumulates real win-rate data from simulated trades.
+        """
+        pnl_dollars = float(pos.get("pnl_dollars", 0))
+        pnl_pct     = float(pos.get("pnl_pct", 0))
+        outcome     = "win" if pnl_dollars > 0 else "loss"
+        entry = {
+            "trade_id":       pos.get("position_id", ""),
+            "symbol":         pos.get("symbol", ""),
+            "direction":      pos.get("direction", ""),
+            "option_type":    pos.get("option_type", ""),
+            "iv_rank":        float(pos.get("iv_rank", 50)),
+            "tech_score":     float(pos.get("tech_score", 5)),
+            "sent_score":     float(pos.get("sent_score", 5)),
+            "fund_score":     float(pos.get("fund_score", 5)),
+            "weighted_score": float(pos.get("weighted_score", 0)),
+            "confidence":     float(pos.get("confidence", 5)),
+            "entered_at":     pos.get("opened_at", datetime.now().isoformat()),
+            "closed_at":      pos.get("closed_at", datetime.now().isoformat()),
+            "outcome":        outcome,
+            "pnl_pct":        round(pnl_pct, 2),
+            "pnl_total":      round(pnl_dollars, 2),
+            "exit_reason":    pos.get("exit_reason", ""),
+            "days_held":      pos.get("days_held", 0),
+            "source":         "sim",
+        }
+        # Avoid duplicates
+        existing_ids = {t.get("trade_id") for t in self._data["trades"]}
+        if entry["trade_id"] and entry["trade_id"] in existing_ids:
+            return
+        self._data["trades"].append(entry)
+        if len(self._data["trades"]) > 500:
+            self._data["trades"] = self._data["trades"][-500:]
+        self._refresh_stats()
+        self.save()
+
     def get_similar_setups(
         self, iv_rank: float, direction: str, min_count: int = 3
     ) -> Optional[dict]:
