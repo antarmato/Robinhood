@@ -514,9 +514,16 @@ function handleWS(msg) {
   if (type === 'sim_closed') {
     const pnl = data.pnl_dollars || 0;
     feedAdd('system',
-      `${pnl >= 0 ? '✅ SIM WIN' : '❌ SIM LOSS'}`,
+      `${pnl >= 0 ? 'SIM WIN' : 'SIM LOSS'}`,
       data.message || `${data.symbol} | P&L $${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} (${data.pnl_pct >= 0 ? '+' : ''}${data.pnl_pct?.toFixed(1)}%)`,
-      timestamp, 't-sim');
+      timestamp, pnl >= 0 ? 't-sim' : 't-error');
+    // Update info bar P&L immediately from event (don't wait for poll)
+    if (data.cumulative_pnl != null) {
+      const tot = data.cumulative_pnl;
+      const pnlEl = document.getElementById('ib-pnl');
+      pnlEl.textContent = `${tot >= 0 ? '+' : ''}$${Math.abs(tot).toFixed(2)}`;
+      pnlEl.style.color = tot > 0 ? 'var(--green)' : tot < 0 ? 'var(--red)' : 'var(--text)';
+    }
     refreshSim();
     return;
   }
@@ -694,7 +701,10 @@ function renderScan(data) {
 function renderPositions(positions) {
   const tbody = document.getElementById('pos-body');
   const lbl   = document.getElementById('pos-count-lbl');
-  lbl.textContent = positions.length ? `${positions.length} open` : '';
+  const maxExposure = positions.length * 100;
+  lbl.textContent = positions.length
+    ? `${positions.length} open · $${maxExposure} at risk`
+    : '';
 
   if (!positions.length) {
     tbody.innerHTML = '<tr><td colspan="6" style="color:var(--muted);padding:8px 12px">No open positions</td></tr>';
