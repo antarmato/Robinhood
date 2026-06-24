@@ -555,6 +555,15 @@ class Orchestrator:
 
         loop = asyncio.get_event_loop()
 
+        # Batch-fetch all quotes in a single API call
+        symbols = [p["symbol"] for p in open_positions]
+        try:
+            batch_quotes = await loop.run_in_executor(
+                None, lambda: md.get_batch_quotes(symbols))
+        except Exception as e:
+            logger.warning(f"Batch quote fetch failed: {e}")
+            batch_quotes = {}
+
         for pos in open_positions:
             symbol      = pos["symbol"]
             direction   = pos["direction"]
@@ -570,12 +579,14 @@ class Orchestrator:
             days_held  = max(0, (datetime.now() - opened_at).days)
             dte_left   = max(0, entry_dte - days_held)
 
-            # Live stock price
-            try:
-                quote = await loop.run_in_executor(None, lambda s=symbol: md.get_quote(s))
-                current_stock = float(quote.get("price", 0))
-            except Exception:
-                current_stock = 0.0
+            # Use batch price, fall back to individual call if missing
+            current_stock = float(batch_quotes.get(symbol, 0))
+            if not current_stock:
+                try:
+                    quote = await loop.run_in_executor(None, lambda s=symbol: md.get_quote(s))
+                    current_stock = float(quote.get("price", 0))
+                except Exception:
+                    current_stock = 0.0
             if not current_stock:
                 continue
 

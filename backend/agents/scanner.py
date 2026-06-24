@@ -152,17 +152,21 @@ class ScannerAgent(BaseAgent):
             regime   = market_regime.get("regime", "neutral")
             strength = market_regime.get("strength", 5)
             boost    = 2 if strength >= 8 else 1
+            # Penalize the opposing direction to naturally filter counter-trend setups
+            penalty  = 1 if strength >= 6 else 0
             if regime == "bull":
                 for d in iv_passed.values():
                     d["bull_score"] = min(16, d["bull_score"] + boost)
+                    d["bear_score"] = max(0,  d["bear_score"] - penalty)
             elif regime == "bear":
                 for d in iv_passed.values():
                     d["bear_score"] = min(16, d["bear_score"] + boost)
+                    d["bull_score"] = max(0,  d["bull_score"] - penalty)
             if regime != "neutral":
                 await self._emit("status",
                     f"Regime {regime.upper()} (strength {strength}/10): "
-                    f"{'+' if regime == 'bull' else '-'}{boost} applied to "
-                    f"{'bull' if regime == 'bull' else 'bear'} scores")
+                    f"+{boost} {'bull' if regime=='bull' else 'bear'}, "
+                    f"-{penalty} opposing")
             for d in iv_passed.values():
                 d["best_score"]     = max(d["bull_score"], d["bear_score"])
                 d["best_direction"] = "bullish" if d["bull_score"] >= d["bear_score"] else "bearish"
