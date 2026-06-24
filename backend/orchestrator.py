@@ -357,7 +357,7 @@ class Orchestrator:
                 SentimentAgent(self.claude, self._make_broadcast()).analyze(
                     symbol, direction, market_regime=market_regime),
                 RiskAgent(self.claude, self.max_loss, self._make_broadcast()).evaluate(
-                    symbol, {}, self.state.active_trades),
+                    symbol, {}, self.state.get_sim_positions(status="open")),
             )
 
             if not risk.get("approved", True):
@@ -433,7 +433,7 @@ class Orchestrator:
             elif dirn == "bearish" and bear_open >= 2 and bull_open == 0:
                 c["caution"] = f"{bear_open} short positions open — net short exposure"
             filtered.append(c)
-        return filtered if filtered else candidates
+        return filtered
 
     # ── Sim auto-execution ─────────────────────────────────────────────────────
 
@@ -585,6 +585,14 @@ class Orchestrator:
             pnl_pct     = round((current_opt - entry_opt) / entry_opt * 100, 2)
             pnl_dollars = round((current_opt - entry_opt) * contracts * 100, 2)
             new_high    = max(high_water, pnl_pct)
+            prev_pnl    = float(pos.get("last_pnl_pct", 0.0))
+
+            # Detect stalling: 3 consecutive flat/declining checks while already profitable
+            stall_count = int(pos.get("stall_count", 0))
+            if new_high >= 40.0 and pnl_pct < prev_pnl - 2.0:
+                stall_count += 1  # declining from a profitable peak
+            elif pnl_pct >= new_high - 3.0:
+                stall_count = 0   # still near the high — reset
 
             updates = {
                 "high_water_pnl_pct": new_high,
@@ -594,12 +602,13 @@ class Orchestrator:
                 "last_pnl_dollars":   pnl_dollars,
                 "days_held":          days_held,
                 "dte_left":           dte_left,
+                "stall_count":        stall_count,
             }
 
             # ── Exit logic ────────────────────────────────────────────────────
             # No fixed profit target — trailing stop lets winners run.
             # Floor tightens in tiers as the peak gain grows.
-            # Only hard exit: -50% stop and theta/expiry rules.
+            # Stall tightening: if momentum is dying after a big gain, narrow the trail.
 
             # Compute trailing floor from peak gain
             if new_high >= 150.0:
@@ -612,6 +621,10 @@ class Orchestrator:
                 trail_floor = 0.0               # protect breakeven after 25%
             else:
                 trail_floor = -50.0             # only hard stop while gain < 25%
+
+            # Stall tightening: 3+ declining checks → reduce the allowance by 10pts
+            if stall_count >= 3 and trail_floor > -50.0:
+                trail_floor = min(pnl_pct + 5.0, trail_floor + 10.0)
 
             exit_reason = None
             if pnl_pct <= trail_floor:
