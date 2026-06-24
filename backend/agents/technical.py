@@ -309,6 +309,16 @@ class TechnicalAgent(BaseAgent):
             elif adx > 25: score += 0.25
             elif adx < 15: score -= 0.5
 
+            # ── Stochastic oscillator ─────────────────────────────────────────
+            sk = i.get("stoch_k", 50)
+            sd = i.get("stoch_d", 50)
+            if sk < 25 and sd < 25:
+                score += 0.75; signals.append(f"Stoch {sk:.0f}/{sd:.0f} oversold bounce zone")
+            elif sk > 75 and sd > 75:
+                score -= 0.5;  signals.append(f"Stoch {sk:.0f}/{sd:.0f} overbought")
+            elif 30 <= sk <= 60 and sk > sd:
+                score += 0.25  # stoch rising in healthy zone
+
             # ── 52W range position ────────────────────────────────────────────
             w52 = i.get("w52_pct", 50)
             if w52 > 92:
@@ -398,6 +408,16 @@ class TechnicalAgent(BaseAgent):
             if adx > 35:   score += 0.5
             elif adx > 25: score += 0.25
             elif adx < 15: score -= 0.5
+
+            # ── Stochastic oscillator ─────────────────────────────────────────
+            sk = i.get("stoch_k", 50)
+            sd = i.get("stoch_d", 50)
+            if sk > 75 and sd > 75:
+                score += 0.75; signals.append(f"Stoch {sk:.0f}/{sd:.0f} overbought — put play")
+            elif sk < 25 and sd < 25:
+                score -= 0.5;  signals.append(f"Stoch {sk:.0f}/{sd:.0f} oversold — bounce risk")
+            elif 40 <= sk <= 70 and sk < sd:
+                score += 0.25  # stoch falling in sell zone
 
             # ── 52W range position ────────────────────────────────────────────
             w52 = i.get("w52_pct", 50)
