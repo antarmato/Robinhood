@@ -182,6 +182,7 @@ canvas{display:block}
 <div id="info-bar">
   <div class="ib"><span class="ib-l">Regime</span><span id="ib-regime" class="ib-v">—</span></div>
   <div class="ib"><span class="ib-l">VIX</span><span id="ib-vix" class="ib-v">—</span></div>
+  <div class="ib"><span class="ib-l">Breadth</span><span id="ib-breadth" class="ib-v" title="# of SPY/QQQ/IWM above EMA20">—/3</span></div>
   <div class="ib"><span class="ib-l">Scanned</span><span id="ib-cands" class="ib-v">—</span></div>
   <div class="ib"><span class="ib-l">Next scan</span><span id="ib-next" class="ib-v">—</span></div>
   <div class="ib"><span class="ib-l">Open</span><span id="ib-open" class="ib-v">0</span></div>
@@ -593,11 +594,18 @@ function renderRegime(r) {
   el.textContent = r.regime ? (r.regime.toUpperCase() + (r.strength != null ? ` (${r.strength})` : '')) : '—';
   el.style.color = rColor;
 
-  const vix = r.vix != null ? r.vix.toFixed(1) : '—';
+  const vix = r.vix_level != null ? r.vix_level.toFixed(1) : (r.vix != null ? r.vix.toFixed(1) : '—');
   const vColor = r.vix_regime === 'elevated' ? 'var(--yellow)' : r.vix_regime === 'extreme' ? 'var(--red)' : 'var(--text)';
   const ve = document.getElementById('ib-vix');
   ve.textContent = vix;
   ve.style.color = vColor;
+
+  // Breadth: # of SPY/QQQ/IWM above EMA20
+  if (r.breadth != null) {
+    const be = document.getElementById('ib-breadth');
+    be.textContent = `${r.breadth}/3`;
+    be.style.color = r.breadth === 3 ? 'var(--green)' : r.breadth === 0 ? 'var(--red)' : 'var(--yellow)';
+  }
 }
 
 function renderScan(data) {

@@ -38,6 +38,19 @@ def classify_regime() -> dict:
         vix_level = float(md.get_vix() or 20.0)
         vix_trend = _get_vix_trend()
 
+        # Breadth: how many of SPY/QQQ/IWM are above their own EMA20?
+        breadth_bull = 1 if spy_above_ema20 else 0
+        for etf in ["QQQ", "IWM"]:
+            try:
+                df = md.get_historicals(etf, period="3mo")
+                if not df.empty and len(df) >= 21:
+                    c   = df["close"]
+                    e20 = c.ewm(span=20, adjust=False).mean()
+                    if float(c.iloc[-1]) > float(e20.iloc[-1]):
+                        breadth_bull += 1
+            except Exception:
+                pass
+
         bull = 0
         bear = 0
 
@@ -48,10 +61,14 @@ def classify_regime() -> dict:
         elif spy_slope_5d < -0.1: bear += 1
 
         # EMA position
-        if spy_above_ema20: bull += 1
-        else:               bear += 1
         if spy_above_ema50: bull += 1
         else:               bear += 1
+
+        # Broad market breadth (SPY + QQQ + IWM above EMA20)
+        if breadth_bull == 3:   bull += 2   # all three aligned bullish
+        elif breadth_bull >= 2: bull += 1
+        elif breadth_bull == 0: bear += 2   # all three bearish — real deterioration
+        else:                   bear += 1
 
         # 20-day return
         if spy_ret_20d > 4:    bull += 2
@@ -85,11 +102,13 @@ def classify_regime() -> dict:
             "spy_ret_20d":     round(spy_ret_20d, 2),
             "vix_level":       round(vix_level, 1),
             "vix_trend":       vix_trend,
+            "breadth":         breadth_bull,   # 0-3: how many indexes above EMA20
             "bull_points":     bull,
             "bear_points":     bear,
             "summary": (
                 f"SPY slope {spy_slope_5d:+.2f}%/5d | "
                 f"{'above' if spy_above_ema50 else 'below'} EMA50 | "
+                f"breadth {breadth_bull}/3 | "
                 f"20d ret {spy_ret_20d:+.1f}% | "
                 f"VIX {vix_level:.0f} {vix_trend}"
             ),
