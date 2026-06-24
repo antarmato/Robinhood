@@ -284,12 +284,16 @@ class StateManager:
 
     def close_sim_position(self, pos_id: str, exit_data: dict):
         """Mark position closed, append PnL history point."""
-        pnl_dollars = exit_data.get("pnl_dollars", 0.0)
+        pnl_dollars  = exit_data.get("pnl_dollars", 0.0)
+        symbol, direction, pnl_pct = "", "", 0.0
         for p in self._s.get("sim_positions", []):
             if p.get("position_id") == pos_id:
+                symbol    = p.get("symbol", "")
+                direction = p.get("direction", "")
                 p.update(exit_data)
                 p["status"]    = "closed"
                 p["closed_at"] = datetime.now().isoformat()
+                pnl_pct = float(p.get("pnl_pct", 0.0))
                 break
 
         cumulative = self.cumulative_sim_pnl()
@@ -297,8 +301,11 @@ class StateManager:
             "timestamp":      datetime.now().isoformat(),
             "cumulative_pnl": round(cumulative, 2),
             "trade_pnl":      round(pnl_dollars, 2),
+            "trade_pnl_pct":  round(pnl_pct, 2),
             "outcome":        "win" if pnl_dollars > 0 else "loss",
             "position_id":    pos_id,
+            "symbol":         symbol,
+            "direction":      direction,
         })
         if len(self._s["pnl_history"]) > 500:
             self._s["pnl_history"] = self._s["pnl_history"][-500:]

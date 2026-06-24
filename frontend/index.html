@@ -395,9 +395,16 @@ function initChart() {
         legend: { display: false },
         tooltip: {
           callbacks: {
+            title: ctx => {
+              const d = ctx[0].raw;
+              const pct = d.pct != null ? ` (${d.pct >= 0 ? '+' : ''}${d.pct.toFixed(1)}%)` : '';
+              return `${d.symbol} ${d.dir}${pct}`;
+            },
             label: ctx => {
               const d = ctx.raw;
-              return ` $${d.y >= 0 ? '+' : ''}${d.y.toFixed(2)} (trade: $${d.trade >= 0 ? '+' : ''}${d.trade.toFixed(2)})`;
+              const tSign = d.trade >= 0 ? '+' : '';
+              const cSign = d.y     >= 0 ? '+' : '';
+              return ` Trade: $${tSign}${d.trade.toFixed(2)} | Total: $${cSign}${d.y.toFixed(2)}`;
             }
           },
           backgroundColor: '#1a1a2e',
@@ -426,8 +433,15 @@ function initChart() {
 function updateChart(history) {
   if (!chart || !history.length) return;
 
-  const labels   = history.map((_, i) => `T${i+1}`);
-  const data     = history.map(h => ({ x: h.timestamp, y: h.cumulative_pnl, trade: h.trade_pnl }));
+  const labels   = history.map((h, i) => h.symbol ? `${h.symbol} T${i+1}` : `T${i+1}`);
+  const data     = history.map(h => ({
+    x:      h.timestamp,
+    y:      h.cumulative_pnl,
+    trade:  h.trade_pnl,
+    pct:    h.trade_pnl_pct,
+    symbol: h.symbol || '—',
+    dir:    h.direction || '',
+  }));
   const ptColors = history.map(h => h.outcome === 'win' ? '#22c55e' : '#ef4444');
 
   const ds = chart.data.datasets[0];
