@@ -59,10 +59,9 @@ def _get(path: str, params: dict = None) -> Optional[dict]:
 
 def get_historicals(symbol: str, period: str = "1y") -> pd.DataFrame:
     """
-    Daily OHLCV via Polygon aggregates endpoint.
-    period: '3mo', '6mo', '1y', '2y' — mapped to calendar days.
-    Caches results for 10 minutes — prevents rate-limit 429s when multiple
-    agents fetch the same symbol within a single cycle.
+    Daily OHLCV — Alpaca primary (no rate limit), Polygon fallback.
+    period: '3mo', '6mo', '1y', '2y'
+    Cached 10 minutes to avoid redundant calls within a scan cycle.
     """
     import time as _time
     cache_key = (symbol, period)
@@ -73,6 +72,37 @@ def get_historicals(symbol: str, period: str = "1y") -> pd.DataFrame:
             logger.debug(f"get_historicals({symbol},{period}): cache hit")
             return cached_df.copy()
 
+    # ── Alpaca (primary — 200+ req/min free tier) ──────────────────────────
+    if _alpaca_available():
+        days = {"3mo": 95, "6mo": 185, "1y": 370, "2y": 740}.get(period, 370)
+        try:
+            r = requests.get(
+                f"{_ALPACA_BASE}/v2/stocks/{symbol}/bars",
+                params={"timeframe": "1Day", "limit": min(days, 1000),
+                        "feed": "iex", "adjustment": "all", "sort": "asc"},
+                headers=_alpaca_headers(),
+                timeout=_TIMEOUT,
+            )
+            if r.status_code == 200:
+                bars = r.json().get("bars", [])
+                if bars and len(bars) >= 20:
+                    df = pd.DataFrame({
+                        "open":   [b["o"] for b in bars],
+                        "high":   [b["h"] for b in bars],
+                        "low":    [b["l"] for b in bars],
+                        "close":  [b["c"] for b in bars],
+                        "volume": [b["v"] for b in bars],
+                    }, index=pd.to_datetime([b["t"] for b in bars], utc=True).tz_convert(None))
+                    df = df.dropna(subset=["close"])
+                    _HIST_CACHE[cache_key] = (_time.time(), df)
+                    logger.debug(f"get_historicals({symbol}): Alpaca OK {len(df)} bars")
+                    return df.copy()
+            else:
+                logger.warning(f"Alpaca historicals {symbol} {r.status_code}: {r.text[:80]}")
+        except Exception as e:
+            logger.error(f"Alpaca historicals {symbol}: {e}")
+
+    # ── Polygon fallback ───────────────────────────────────────────────────
     days = {"3mo": 95, "6mo": 185, "1y": 370, "2y": 740}.get(period, 370)
     end   = date.today().strftime("%Y-%m-%d")
     start = (date.today() - timedelta(days=days)).strftime("%Y-%m-%d")
