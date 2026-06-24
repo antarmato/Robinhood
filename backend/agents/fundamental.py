@@ -51,6 +51,11 @@ class FundamentalAgent(BaseAgent):
             expiration_date = (date.today() + timedelta(days=45)).strftime("%Y-%m-%d")
 
         fund = md.get_fundamentals(symbol)
+        # Inject current price so _score() can compute 52w range position
+        price_data = md.get_quote(symbol)
+        if price_data:
+            fund["current_price"] = price_data.get("price", 0)
+
         earnings_risk, earnings_date_str = self._check_earnings_risk(fund, expiration_date)
 
         score, summary, catalyst_risk = self._score(fund, earnings_risk, earnings_date_str, symbol)
@@ -63,6 +68,8 @@ class FundamentalAgent(BaseAgent):
             "analyst_consensus":    "unknown",
             "upside_to_target":     None,
             "market_cap":           fund.get("market_cap"),
+            "52w_high":             fund.get("52w_high"),
+            "52w_low":              fund.get("52w_low"),
             "summary":              summary,
             "fatal_flaw": (
                 f"Earnings {earnings_date_str} — binary gap risk before expiration"
@@ -157,6 +164,29 @@ class FundamentalAgent(BaseAgent):
             score -= 0.75; notes.append(f"short ratio {short_ratio:.1f} — squeeze risk")
         elif short_ratio > 5:
             score -= 0.25; notes.append(f"short ratio {short_ratio:.1f}")
+
+        # ── 52-week price position ────────────────────────────────────────────
+        price = fund.get("current_price") or fund.get("price")
+        high52 = fund.get("52w_high")
+        low52  = fund.get("52w_low")
+        if price and high52 and low52 and high52 > low52:
+            try:
+                price, high52, low52 = float(price), float(high52), float(low52)
+                pct_from_high = (price - high52) / high52 * 100   # negative = below high
+                pct_from_low  = (price - low52)  / low52  * 100   # positive = above low
+                rng = high52 - low52
+                # Where in 52w range is price? (0=low, 1=high)
+                range_pos = (price - low52) / rng
+                if range_pos > 0.90:
+                    score += 0.5; notes.append(f"52w high breakout range ({range_pos:.0%})")
+                elif range_pos > 0.75:
+                    score += 0.25; notes.append(f"52w upper range ({range_pos:.0%})")
+                elif range_pos < 0.10:
+                    score -= 0.5; notes.append(f"52w low breakdown range ({range_pos:.0%})")
+                elif range_pos < 0.25:
+                    score -= 0.25; notes.append(f"52w lower range ({range_pos:.0%})")
+            except (TypeError, ValueError):
+                pass
 
         # ── Known high-risk symbols ───────────────────────────────────────────
         if symbol in _HIGH_RISK:
