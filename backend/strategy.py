@@ -95,6 +95,33 @@ def score_threshold(iv_rank: float, market_open: bool, time_of_day=None,
     except Exception:
         pass
 
+    # ── Secondary adaptive signal from PostgreSQL training log ───────────────
+    # Uses broader sample (persists across restarts) and regime-specific data.
+    # Only active when regime context is provided (so we can be direction-specific).
+    try:
+        from .training_store import get_stats as ts_stats
+        db_stats = ts_stats()
+        db_n = int(db_stats.get("trades_entered") or 0)
+        db_wins = int(db_stats.get("wins") or 0)
+        db_losses = int(db_stats.get("losses") or 0)
+        db_closed = db_wins + db_losses
+        if db_closed >= 20:             # trust DB data after 20 closed trades
+            db_wr = db_wins / db_closed
+            # Only apply if it disagrees by more than 5% with outcome_tracker (avoid double-counting)
+            try:
+                from .outcome_tracker import get_outcome_tracker as _ot
+                ot_wr = _ot().get_stats().get("win_rate", db_wr)
+                wr_delta = abs(db_wr - ot_wr)
+            except Exception:
+                wr_delta = 0
+            if wr_delta > 0.05:         # DB has meaningfully different read
+                if   db_wr < 0.35: base += 3
+                elif db_wr < 0.45: base += 1
+                elif db_wr > 0.75: base -= 2
+                elif db_wr > 0.65: base -= 1
+    except Exception:
+        pass
+
     return float(base)
 
 

@@ -270,6 +270,16 @@ class Orchestrator:
         premarket = self.state.premarket_context
         sym_perf  = get_outcome_tracker().get_all_symbol_stats()
 
+        # Merge training DB stats into sym_perf (DB wins over in-memory if both present,
+        # since it persists across restarts and has a larger sample)
+        try:
+            db_sym_rows = ts.get_symbol_perf()
+            for sym, db_perf in db_sym_rows.items():
+                if sym not in sym_perf or db_perf.get("trade_count", 0) > sym_perf.get(sym, {}).get("trade_count", 0):
+                    sym_perf[sym] = db_perf
+        except Exception as e:
+            logger.debug(f"DB sym_perf merge failed: {e}")
+
         scanner    = ScannerAgent(self.claude, self.watchlist, self._make_broadcast())
         candidates = await scanner.scan(
             symbol_performance=sym_perf,
@@ -672,6 +682,19 @@ class Orchestrator:
             if not current_stock:
                 continue
 
+            iv_rank_pos = float(pos.get("iv_rank", 50.0))
+
+            # IV-aware initial stop: expensive options bleed faster on no movement.
+            # High IV = tight stop. Low IV = room to breathe.
+            if iv_rank_pos >= 70:
+                initial_stop = -20.0   # very expensive — exit fast if wrong
+            elif iv_rank_pos >= 50:
+                initial_stop = -28.0   # elevated IV
+            elif iv_rank_pos >= 30:
+                initial_stop = -38.0   # moderate
+            else:
+                initial_stop = -50.0   # cheap premium, give it room
+
             # ── Option pricing model ──────────────────────────────────────────
             # Favorable stock move (+ means the stock moved in our direction)
             if direction == "bullish":
@@ -735,21 +758,31 @@ class Orchestrator:
             elif new_high >= 25.0:
                 trail_floor = 0.0               # protect breakeven after 25%
             else:
-                trail_floor = -50.0             # only hard stop while gain < 25%
+                trail_floor = initial_stop      # IV-adjusted hard stop while gain < 25%
 
             # Stall tightening: 3+ declining checks → reduce the allowance by 10pts
-            if stall_count >= 3 and trail_floor > -50.0:
+            if stall_count >= 3 and trail_floor > initial_stop:
                 trail_floor = min(pnl_pct + 5.0, trail_floor + 10.0)
 
             exit_reason = None
             if pnl_pct <= trail_floor:
-                if trail_floor == -50.0:
-                    exit_reason = f"Stop loss {pnl_pct:.1f}%"
+                if new_high < 25.0:
+                    exit_reason = (
+                        f"Stop loss {pnl_pct:.1f}% "
+                        f"(IV {iv_rank_pos:.0f} → floor {initial_stop:.0f}%)"
+                    )
                 else:
                     exit_reason = (
                         f"Trailing stop — peak {new_high:+.0f}% | "
                         f"floor {trail_floor:+.0f}% | now {pnl_pct:+.1f}%"
                     )
+            elif days_held >= 10 and pnl_pct < -15.0 and new_high < 5.0:
+                # Stale loser: 10+ days held, never got above 5%, still deeply negative.
+                # The thesis didn't materialize — cut and preserve capital for next setup.
+                exit_reason = (
+                    f"Stale-loser exit: {days_held}d held, "
+                    f"max gain {new_high:+.0f}%, now {pnl_pct:+.1f}%"
+                )
             elif dte_left <= 7 and pnl_pct < 20.0:
                 # Final week: theta burns fast; close unless strongly profitable
                 exit_reason = f"Theta exit: {dte_left} DTE, P&L {pnl_pct:+.1f}% (final week)"

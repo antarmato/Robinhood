@@ -218,6 +218,160 @@ def get_recent(limit: int = 200) -> list:
         return []
 
 
+def get_learned_context(min_samples: int = 5) -> str:
+    """
+    Query historical outcomes and return a compact calibration summary
+    for the Judge agent's system prompt. Returns empty string if insufficient data.
+    """
+    conn = _get_conn()
+    if not conn:
+        return ""
+    try:
+        with conn.cursor() as cur:
+            # Overall win rate on entered trades
+            cur.execute("""
+                SELECT COUNT(*) AS n, COUNT(*) FILTER (WHERE outcome='win') AS wins,
+                       AVG(outcome_pnl_pct) FILTER (WHERE outcome='win') AS avg_win,
+                       AVG(outcome_pnl_pct) FILTER (WHERE outcome='loss') AS avg_loss
+                FROM scan_log WHERE decision='trade' AND outcome IS NOT NULL
+            """)
+            row = cur.fetchone()
+            if not row or not row[0] or row[0] < min_samples:
+                return ""
+            n, wins, avg_win, avg_loss = row
+            wr = wins / n * 100 if n else 0
+
+            lines = [
+                f"HISTORICAL PERFORMANCE ({n} closed trades):",
+                f"  Win rate: {wr:.0f}%  |  Avg win: {avg_win:+.1f}%  |  Avg loss: {avg_loss:+.1f}%",
+            ]
+
+            # Win rate by regime
+            cur.execute("""
+                SELECT regime,
+                       COUNT(*) AS n,
+                       ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr
+                FROM scan_log
+                WHERE decision='trade' AND outcome IS NOT NULL AND regime IS NOT NULL
+                GROUP BY regime HAVING COUNT(*) >= 3
+                ORDER BY wr DESC
+            """)
+            regime_rows = cur.fetchall()
+            if regime_rows:
+                lines.append("  Win rate by regime: " +
+                    " | ".join(f"{r[0]} {int(r[2])}% ({r[1]}T)" for r in regime_rows))
+
+            # Win rate by direction
+            cur.execute("""
+                SELECT direction,
+                       COUNT(*) AS n,
+                       ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr
+                FROM scan_log
+                WHERE decision='trade' AND outcome IS NOT NULL
+                GROUP BY direction HAVING COUNT(*) >= 3
+            """)
+            dir_rows = cur.fetchall()
+            if dir_rows:
+                lines.append("  Win rate by direction: " +
+                    " | ".join(f"{r[0]} {int(r[2])}% ({r[1]}T)" for r in dir_rows))
+
+            # Win rate by score bucket
+            cur.execute("""
+                SELECT
+                    CASE WHEN weighted_score >= 55 THEN 'score≥55'
+                         WHEN weighted_score >= 50 THEN 'score 50-55'
+                         ELSE 'score<50' END AS bucket,
+                    COUNT(*) AS n,
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr
+                FROM scan_log
+                WHERE decision='trade' AND outcome IS NOT NULL AND weighted_score IS NOT NULL
+                GROUP BY 1 HAVING COUNT(*) >= 3
+                ORDER BY MIN(weighted_score) DESC
+            """)
+            score_rows = cur.fetchall()
+            if score_rows:
+                lines.append("  Win rate by score: " +
+                    " | ".join(f"{r[0]}: {int(r[2])}% ({r[1]}T)" for r in score_rows))
+
+            # Per-symbol performance
+            cur.execute("""
+                SELECT symbol,
+                       COUNT(*) AS n,
+                       ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr,
+                       ROUND(AVG(outcome_pnl_pct)::NUMERIC, 1) AS avg_pnl
+                FROM scan_log
+                WHERE decision='trade' AND outcome IS NOT NULL
+                GROUP BY symbol HAVING COUNT(*) >= 2
+                ORDER BY wr DESC
+            """)
+            sym_rows = cur.fetchall()
+            if sym_rows:
+                lines.append("  Per-symbol history: " +
+                    " | ".join(f"{r[0]} {int(r[2])}%WR avg{r[3]:+.0f}% ({r[1]}T)" for r in sym_rows))
+
+            # Confidence calibration
+            cur.execute("""
+                SELECT
+                    CASE WHEN confidence >= 7 THEN 'conf≥7'
+                         WHEN confidence >= 5 THEN 'conf 5-6'
+                         ELSE 'conf<5' END AS bucket,
+                    COUNT(*) AS n,
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr
+                FROM scan_log
+                WHERE decision='trade' AND outcome IS NOT NULL AND confidence IS NOT NULL
+                GROUP BY 1 HAVING COUNT(*) >= 2
+            """)
+            conf_rows = cur.fetchall()
+            if conf_rows:
+                lines.append("  Win rate by confidence: " +
+                    " | ".join(f"{r[0]}: {int(r[2])}% ({r[1]}T)" for r in conf_rows))
+
+            lines.append("Use this data to calibrate your decision — raise the bar in underperforming regimes/symbols.")
+            return "\n".join(lines)
+
+    except Exception as e:
+        logger.warning(f"TrainingStore get_learned_context failed: {e}")
+        return ""
+
+
+def get_symbol_perf(min_trades: int = 2) -> dict:
+    """
+    Return per-symbol performance stats in the same shape as OutcomeTracker.get_all_symbol_stats().
+    Used to seed the Scanner's symbol_performance with persistent DB data.
+    """
+    conn = _get_conn()
+    if not conn:
+        return {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT symbol,
+                       COUNT(*) AS n,
+                       COUNT(*) FILTER (WHERE outcome='win') AS wins,
+                       AVG(outcome_pnl_pct) AS avg_pnl,
+                       AVG(outcome_pnl_pct) FILTER (WHERE outcome='win')  AS avg_win,
+                       AVG(outcome_pnl_pct) FILTER (WHERE outcome='loss') AS avg_loss
+                FROM scan_log
+                WHERE decision='trade' AND outcome IS NOT NULL
+                GROUP BY symbol
+                HAVING COUNT(*) >= %s
+            """, (min_trades,))
+            result = {}
+            for row in cur.fetchall():
+                sym, n, wins, avg_pnl, avg_win, avg_loss = row
+                result[sym] = {
+                    "trade_count": int(n),
+                    "win_rate":    float(wins) / int(n) if n else 0.0,
+                    "avg_pnl":     float(avg_pnl) if avg_pnl else 0.0,
+                    "avg_win":     float(avg_win) if avg_win else 0.0,
+                    "avg_loss":    float(avg_loss) if avg_loss else 0.0,
+                }
+            return result
+    except Exception as e:
+        logger.warning(f"TrainingStore get_symbol_perf failed: {e}")
+        return {}
+
+
 def get_stats() -> dict:
     """Aggregate stats over all training data (for dashboard display)."""
     conn = _get_conn()

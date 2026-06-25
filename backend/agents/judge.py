@@ -1,11 +1,13 @@
 """
 Judge Agent — final decision maker.
 
-Architecture (v4 — IV-aware, outcome-informed):
+Architecture (v5 — self-learning loop):
   - Python computes weighted_score from agent outputs
   - Python applies IV-aware threshold (cheap IV = lower bar, expensive = harder bar)
   - Claude provides: confidence (1-10), reasoning, bull_case, bear_case
-  - Context includes: IV rank label, similar-setup win rate from OutcomeTracker, risk flags
+  - Context includes: IV rank label, OutcomeTracker stats, risk flags,
+    AND self-learned calibration from PostgreSQL scan_log (win rates by regime,
+    direction, score bucket, symbol, confidence — built from every past cycle)
   - Decision: Python only (weighted_score >= threshold AND confidence >= THRESHOLD_CONF)
   - Fatal flaws from Technical/Fundamental short-circuit before any LLM call
 """
@@ -25,6 +27,7 @@ from .base import BaseAgent, BroadcastFn
 from .. import market_data as md
 from ..strategy import score_threshold, iv_edge_label, trade_defaults, THRESHOLD_CONF
 from ..outcome_tracker import get_outcome_tracker
+from .. import training_store as ts
 
 logger = logging.getLogger(__name__)
 
@@ -231,6 +234,9 @@ class JudgeAgent(BaseAgent):
                 + (f"\n  ⚠️ Regime mismatch — directional trade against {regime} market" if mismatch else "")
             )
 
+        # ── Self-learned calibration context ─────────────────────────────────
+        learned_context = ts.get_learned_context(min_samples=5)
+
         context = f"""[{session} | Cycle {cycle} | {tod_note}]
 
 TRADE: {symbol} {direction.upper()} {option_type.upper()} @ ${price:.2f}
@@ -251,7 +257,8 @@ COMPUTED SCORE: {weighted_score} / threshold {threshold}
 RISK FLAGS:
 {chr(10).join(f'  • {f}' for f in risk_flags) if risk_flags else '  None identified'}
 {similar_block}
-{hist_block}"""
+{hist_block}
+{('SELF-LEARNED CALIBRATION (from PostgreSQL training log):\n' + learned_context) if learned_context else ''}"""
 
         regime_mismatch = False
         regime_aligned  = False
