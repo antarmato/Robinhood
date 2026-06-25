@@ -518,6 +518,17 @@ class Orchestrator:
         bear_open   = sum(1 for p in open_sims if p.get("option_type") == "put")
         open_syms   = {p["symbol"] for p in open_sims}
 
+        # Re-entry prevention: skip symbols closed in the last 3 cycles at a loss
+        current_cycle = self.state.cycle_count
+        recently_closed = {
+            p["symbol"]: p
+            for p in self.state.get_sim_positions(status="closed")
+            if (current_cycle - int(p.get("cycle", 0))) <= 3
+               and float(p.get("pnl_dollars", 0)) < 0
+        }
+        if recently_closed:
+            logger.debug(f"Re-entry prevention: {list(recently_closed.keys())} recently closed at a loss")
+
         # Pre-compute which correlation groups already have a position
         occupied_groups = set()
         for p in open_sims:
@@ -545,6 +556,12 @@ class Orchestrator:
             dirn = c["direction"]
             if sym in open_syms:
                 self.state.log_event("info", {"message": f"Portfolio filter: {sym} already open — skipping"})
+                continue
+            if sym in recently_closed:
+                closed_pos = recently_closed[sym]
+                pnl = float(closed_pos.get("pnl_pct", 0))
+                self.state.log_event("info", {"message":
+                    f"Re-entry block: {sym} closed {pnl:+.0f}% in last 3 cycles — skipping"})
                 continue
             if sym in _TECH and tech_open >= 2:
                 self.state.log_event("info", {"message": f"Sector filter: {sym} skipped (2 tech open)"})

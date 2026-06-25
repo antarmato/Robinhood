@@ -268,6 +268,12 @@ class ScannerAgent(BaseAgent):
             above_ema20 = price > ema20_curr
             above_ema50 = price > ema50_curr
 
+            # EMA200 — long-term structural signal (only valid with ≥200 bars = ~10 months)
+            above_ema200 = None
+            if len(close) >= 200:
+                ema200_curr = float(close.ewm(span=200, adjust=False).mean().iloc[-1])
+                above_ema200 = price > ema200_curr
+
             delta = close.diff()
             gain  = delta.where(delta > 0, 0.0).rolling(14).mean()
             loss  = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
@@ -361,8 +367,10 @@ class ScannerAgent(BaseAgent):
                 bb_bull_breakout = False
                 bb_bear_breakout = False
 
-            # Bull scoring (0-18)
+            # Bull scoring (0-20)
             bull = 0
+            if above_ema200 is True:        bull += 1   # long-term uptrend structure
+            elif above_ema200 is False:     bull -= 1   # long-term bear structure
             if above_ema20 and above_ema50: bull += 3
             elif above_ema20:               bull += 1
             if ema20_slope > 0.15:          bull += 1
@@ -381,8 +389,10 @@ class ScannerAgent(BaseAgent):
             if trending and above_ema20:    bull += 1   # ADX confirms uptrend
             if choppy:                      bull -= 1   # ranging — options bleed
 
-            # Bear scoring (0-18)
+            # Bear scoring (0-20)
             bear = 0
+            if above_ema200 is False:       bear += 1   # long-term bear structure
+            elif above_ema200 is True:      bear -= 1   # long-term bull headwind for puts
             if not above_ema20 and not above_ema50: bear += 3
             elif not above_ema20:           bear += 1
             if ema20_slope < -0.15:         bear += 1
@@ -427,6 +437,7 @@ class ScannerAgent(BaseAgent):
                 "adx":              round(adx_val, 1),
                 "trending":         trending,
                 "choppy":           choppy,
+                "above_ema200":     above_ema200,
                 "bull_score":       max(0, bull),
                 "bear_score":       max(0, bear),
                 "best_direction":   best_dir,
