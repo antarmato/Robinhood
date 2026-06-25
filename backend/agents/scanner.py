@@ -462,11 +462,14 @@ class ScannerAgent(BaseAgent):
         """
         def combined(d):
             primary = d["best_score"] + d.get("iv_bonus", 0.0)
+            # ADX bonus: trending market makes directional options more likely to pay
+            adx = d.get("adx", 20.0)
+            adx_bonus = 0.4 if adx >= 25 else (0.2 if adx >= 20 else -0.3)
             # Tiebreaker: lower IV rank = cheaper premium = preferred
             iv_tiebreak = -d.get("iv_rank", 50.0) / 1000.0
             # Secondary: relative strength vs group
             rs_tiebreak = d.get("rs_vs_group", 0.0) / 10000.0
-            return primary + iv_tiebreak + rs_tiebreak
+            return primary + adx_bonus + iv_tiebreak + rs_tiebreak
 
         ranked = sorted(scored.values(), key=combined, reverse=True)
 

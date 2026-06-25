@@ -435,6 +435,7 @@ class Orchestrator:
                 "above_ema20":  d.get("above_ema20"),
                 "above_ema50":  d.get("above_ema50"),
                 "adx":          d.get("adx"),
+                "vol_ratio":    d.get("volume_ratio") or d.get("vol_ratio"),
                 "decision":  "pass",
                 "pass_reason": f"Not in top-5 (scanner bull={d.get('bull_score',0)} bear={d.get('bear_score',0)})",
                 "proposal_generated": False,
