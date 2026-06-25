@@ -64,6 +64,9 @@ def _ensure_schema(conn):
 
                 -- Technical indicators
                 above_ema200         BOOLEAN,
+                above_ema20          BOOLEAN,
+                above_ema50          BOOLEAN,
+                adx                  FLOAT,
                 momentum_60d         FLOAT,
                 stoch_k              FLOAT,
                 vwap20_pct           FLOAT,
@@ -92,6 +95,16 @@ def _ensure_schema(conn):
             CREATE INDEX IF NOT EXISTS scan_log_cycle_idx    ON scan_log (cycle_id);
             CREATE INDEX IF NOT EXISTS scan_log_position_idx ON scan_log (position_id);
         """)
+        # Migrate: add new columns if they don't exist yet (idempotent ALTER TABLE)
+        for col_ddl in [
+            "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS above_ema20 BOOLEAN",
+            "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS above_ema50 BOOLEAN",
+            "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS adx FLOAT",
+        ]:
+            try:
+                cur.execute(col_ddl)
+            except Exception:
+                pass
 
 
 def log_scan_results(cycle: int, scan_summary: list, regime: dict, position_id_map: dict = None):
@@ -129,6 +142,9 @@ def log_scan_results(cycle: int, scan_summary: list, regime: dict, position_id_m
             float(vix) if vix else None,
             reg.get("breadth"),
             r.get("above_ema200"),
+            r.get("above_ema20"),
+            r.get("above_ema50"),
+            r.get("adx"),
             r.get("momentum_60d"),
             r.get("stoch_k"),
             r.get("vwap20_pct"),
@@ -148,11 +164,12 @@ def log_scan_results(cycle: int, scan_summary: list, regime: dict, position_id_m
                     weighted_score, confidence, tech_score, fund_score, sent_score,
                     price, iv_rank, rsi,
                     regime, regime_strength, vix, breadth,
-                    above_ema200, momentum_60d, stoch_k, vwap20_pct, tech_fatal_flaw,
+                    above_ema200, above_ema20, above_ema50, adx,
+                    momentum_60d, stoch_k, vwap20_pct, tech_fatal_flaw,
                     pass_reason, reasoning, bull_case, bear_case,
                     position_id
                 ) VALUES (%s,%s,%s,%s, %s,%s,%s,%s,%s, %s,%s,%s, %s,%s,%s,%s,
-                          %s,%s,%s,%s,%s, %s,%s,%s,%s, %s)
+                          %s,%s,%s,%s, %s,%s,%s,%s, %s,%s,%s,%s, %s)
             """, rows)
         logger.info(f"TrainingStore: logged {len(rows)} rows for cycle {cycle}")
     except Exception as e:

@@ -387,6 +387,10 @@ class Orchestrator:
                 "vwap20_pct":      tech.get("vwap20_pct"),
                 "stoch_k":         tech.get("stoch_k"),
                 "momentum_60d":    tech.get("momentum_60d"),
+                "above_ema200":    tech.get("above_ema200"),
+                "above_ema20":     candidate.get("above_ema20"),
+                "above_ema50":     candidate.get("above_ema50"),
+                "adx":             tech.get("adx") or candidate.get("adx"),
                 "proposal_generated": False,
             })
 
