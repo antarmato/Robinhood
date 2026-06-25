@@ -661,6 +661,16 @@ class Orchestrator:
             "sent_score":        sentiment.get("score", 5),
             "bull_case":         judge.get("bull_case", ""),
             "bear_case":         judge.get("bear_case", ""),
+            "reasoning":         judge.get("reasoning", ""),
+            # Regime context at entry — useful for post-trade analysis
+            "entry_regime":      regime.get("regime", "neutral") if regime else "neutral",
+            "entry_regime_str":  regime.get("strength", 5) if regime else 5,
+            "entry_vix":         round(float(regime.get("vix_level", 20)), 1) if regime else None,
+            # Technical signals at entry
+            "entry_adx":         technical.get("adx"),
+            "entry_above_ema200": technical.get("above_ema200"),
+            "entry_momentum_1d": technical.get("momentum_1d"),
+            "entry_rsi":         technical.get("rsi"),
             "opened_at":         datetime.now().isoformat(),
             "cycle":             self.state.cycle_count,
             "status":            "open",

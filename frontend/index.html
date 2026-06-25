@@ -1088,10 +1088,22 @@ function openModal(jsonStr) {
       <div class="modal-section-title">Trade Details</div>
       <div class="modal-kv"><span class="modal-kv-k">Days held</span><span class="modal-kv-v">${t.days_held??0}d</span></div>
       <div class="modal-kv"><span class="modal-kv-k">DTE at entry</span><span class="modal-kv-v">${t.entry_dte??'—'}</span></div>
+      <div class="modal-kv"><span class="modal-kv-k">IV Rank at entry</span><span class="modal-kv-v">${t.iv_rank!=null?Math.round(t.iv_rank)+'%':'—'}</span></div>
       <div class="modal-kv"><span class="modal-kv-k">Peak P&L</span><span class="modal-kv-v" style="color:var(--green)">${hwm>0?'+'+hwm.toFixed(1)+'%':'—'}</span></div>
       ${!isOpen?`<div class="modal-kv"><span class="modal-kv-k">Exit reason</span><span class="modal-kv-v" style="color:var(--muted)">${esc(t.exit_reason||'—')}</span></div>`:''}
       <div class="modal-kv"><span class="modal-kv-k">Status</span><span class="modal-kv-v">${isOpen?'Open':'Closed'}</span></div>
     </div>
+
+    ${(t.entry_regime||t.entry_adx!=null||t.entry_above_ema200!=null||t.entry_rsi!=null)?`
+    <div class="modal-section">
+      <div class="modal-section-title">Market Context at Entry</div>
+      ${t.entry_regime?`<div class="modal-kv"><span class="modal-kv-k">Regime</span><span class="modal-kv-v" style="color:${t.entry_regime==='bull'?'var(--green)':t.entry_regime==='bear'?'var(--red)':'var(--text)'}">${t.entry_regime.toUpperCase()} (strength ${t.entry_regime_str??'?'}/10)</span></div>`:''}
+      ${t.entry_vix!=null?`<div class="modal-kv"><span class="modal-kv-k">VIX</span><span class="modal-kv-v">${t.entry_vix}</span></div>`:''}
+      ${t.entry_rsi!=null?`<div class="modal-kv"><span class="modal-kv-k">RSI at entry</span><span class="modal-kv-v">${t.entry_rsi.toFixed(1)}</span></div>`:''}
+      ${t.entry_adx!=null?`<div class="modal-kv"><span class="modal-kv-k">ADX at entry</span><span class="modal-kv-v">${t.entry_adx.toFixed(0)} ${t.entry_adx>=25?'(trending)':t.entry_adx<18?'(choppy)':'(moderate)'}</span></div>`:''}
+      ${t.entry_above_ema200!=null?`<div class="modal-kv"><span class="modal-kv-k">Above EMA200</span><span class="modal-kv-v" style="color:${t.entry_above_ema200?'var(--green)':'var(--red)'}">${t.entry_above_ema200?'Yes ▲':'No ▼'}</span></div>`:''}
+      ${t.entry_momentum_1d!=null?`<div class="modal-kv"><span class="modal-kv-k">Day's move at entry</span><span class="modal-kv-v" style="color:${t.entry_momentum_1d>=0?'var(--green)':'var(--red)'}">${t.entry_momentum_1d>=0?'+':''}${t.entry_momentum_1d.toFixed(1)}%</span></div>`:''}
+    </div>`:''}
 
     ${(t.bull_case||t.bear_case)?`
     <div class="modal-section">
