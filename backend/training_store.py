@@ -566,6 +566,30 @@ def get_learned_context(min_samples: int = 5) -> str:
                 lines.append("  Regime+direction combos: " +
                     " | ".join(f"{r[0]} {int(r[2])}% ({r[1]}T)" for r in combo_rows))
 
+            # Most common pass reasons (top 5 — helps identify systematic filters)
+            cur.execute("""
+                SELECT
+                    CASE
+                        WHEN pass_reason ILIKE '%fatal flaw%'        THEN 'fatal-flaw'
+                        WHEN pass_reason ILIKE '%score%fails%'       THEN 'score-below-threshold'
+                        WHEN pass_reason ILIKE '%confidence%'        THEN 'low-confidence'
+                        WHEN pass_reason ILIKE '%earnings%'          THEN 'earnings-risk'
+                        WHEN pass_reason ILIKE '%iv%high%'           THEN 'IV-too-high'
+                        WHEN pass_reason ILIKE '%max position%'      THEN 'max-positions'
+                        WHEN pass_reason ILIKE '%duplicate%'         THEN 'duplicate-symbol'
+                        WHEN pass_reason ILIKE '%regime%'            THEN 'regime-mismatch'
+                        ELSE 'other' END AS reason_type,
+                    COUNT(*) AS n
+                FROM scan_log
+                WHERE decision='pass' AND pass_reason IS NOT NULL AND pass_reason != ''
+                GROUP BY 1 HAVING COUNT(*) >= 2
+                ORDER BY n DESC LIMIT 5
+            """)
+            pass_rows = cur.fetchall()
+            if pass_rows:
+                lines.append("  Top pass reasons: " +
+                    " | ".join(f"{r[0]} ({r[1]}×)" for r in pass_rows))
+
             # Time-of-day win rates (using logged_at → ET hour)
             cur.execute("""
                 SELECT
