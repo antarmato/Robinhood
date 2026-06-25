@@ -35,6 +35,15 @@ def classify_regime() -> dict:
         spy_above_ema50 = float(close.iloc[-1]) > float(ema50.iloc[-1])
         spy_ret_20d     = (float(close.iloc[-1]) - float(close.iloc[-21])) / float(close.iloc[-21]) * 100
 
+        # EMA200 — major long-term structural regime signal
+        spy_above_ema200 = False
+        try:
+            if len(close) >= 200:
+                ema200 = close.ewm(span=200, adjust=False).mean()
+                spy_above_ema200 = float(close.iloc[-1]) > float(ema200.iloc[-1])
+        except Exception:
+            pass
+
         vix_level = float(md.get_vix() or 20.0)
         vix_trend = _get_vix_trend()
 
@@ -85,6 +94,10 @@ def classify_regime() -> dict:
         if vix_trend == "rising":    bear += 2
         elif vix_trend == "falling": bull += 1
 
+        # EMA200 — long-term structural bull/bear
+        if spy_above_ema200:  bull += 1   # healthy long-term uptrend
+        else:                 bear += 1   # below long-term MA — structural bear
+
         margin = bull - bear
         total  = bull + bear or 1
 
@@ -99,6 +112,7 @@ def classify_regime() -> dict:
             "strength":        strength,
             "spy_slope_5d":    round(spy_slope_5d, 3),
             "spy_above_ema50": spy_above_ema50,
+            "spy_above_ema200": spy_above_ema200,
             "spy_ret_20d":     round(spy_ret_20d, 2),
             "vix_level":       round(vix_level, 1),
             "vix_trend":       vix_trend,
@@ -108,6 +122,7 @@ def classify_regime() -> dict:
             "summary": (
                 f"SPY slope {spy_slope_5d:+.2f}%/5d | "
                 f"{'above' if spy_above_ema50 else 'below'} EMA50 | "
+                f"{'above' if spy_above_ema200 else 'below'} EMA200 | "
                 f"breadth {breadth_bull}/3 | "
                 f"20d ret {spy_ret_20d:+.1f}% | "
                 f"VIX {vix_level:.0f} {vix_trend}"

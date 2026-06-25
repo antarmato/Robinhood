@@ -776,8 +776,9 @@ function renderScan(data) {
     const techHtml = r.tech_fatal_flaw?`<span style="color:var(--red)">FLAW</span>`:r._scanner_only?`<span style="color:var(--muted)">—</span>`:(r.tech_score!=null?r.tech_score.toFixed(1):'—');
     const scoreHtml = r.weighted_score!=null?`<span class="${r.weighted_score>50?'score-hi':''}">${r.weighted_score.toFixed(1)}</span>`:(r.bull_score!=null?`<span style="color:var(--muted);font-size:10px">b${r.bull_score}/a${r.bear_score}</span>`:'—');
     const newsIcon = r.news_score!=null?(r.news_score>0.1?' <span style="color:var(--green);font-size:10px">▲</span>':r.news_score<-0.1?' <span style="color:var(--red);font-size:10px">▼</span>':''):'';
+    const adxStr = r._scanner_data?.adx!=null ? ` | ADX:${r._scanner_data.adx.toFixed(0)}${r._scanner_data.trending?' trending':r._scanner_data.choppy?' CHOPPY':''}` : '';
     const tt = [
-      r._scanner_only?`Scanner: bull=${r.bull_score} bear=${r.bear_score}`:(r.tech_score!=null?`Tech:${r.tech_score?.toFixed(1)} Fund:${r.fund_score?.toFixed(1)} Sent:${r.sent_score?.toFixed(1)}`:''),
+      r._scanner_only?`Scanner: bull=${r.bull_score} bear=${r.bear_score}${adxStr}`:(r.tech_score!=null?`Tech:${r.tech_score?.toFixed(1)} Fund:${r.fund_score?.toFixed(1)} Sent:${r.sent_score?.toFixed(1)}${adxStr}`:''),
       r.pass_reason?`Reason: ${r.pass_reason}`:'', r.reasoning?`Judge: ${r.reasoning}`:'',
       r.bull_case?`Bull: ${r.bull_case}`:'', r.bear_case?`Bear: ${r.bear_case}`:'',
       r.news_headline?`News: ${r.news_headline}`:'',
@@ -803,14 +804,16 @@ function renderPositions(positions) {
     const pnlCls=pnl>0?'pnl-pos':pnl<0?'pnl-neg':'pnl-zero';
     const pnlStr=`${pnl>=0?'+':''}${pnl.toFixed(1)}% ($${pnl$>=0?'+':''}${pnl$.toFixed(0)})`;
     const hwm=p.high_water_pnl_pct??0, hwmStr=hwm>0?` ↑${hwm.toFixed(0)}%pk`:'';
-    function trailFloor(pk){if(pk>=150)return pk-35;if(pk>=100)return pk-30;if(pk>=75)return pk-25;if(pk>=50)return pk-20;if(pk>=25)return pk-15;return -50;}
+    const iv4pos = p.iv_rank??50;
+    const initStop = iv4pos>=70?-20:iv4pos>=50?-28:iv4pos>=30?-38:-50;
+    function trailFloor(pk){if(pk>=150)return pk-35;if(pk>=100)return pk-30;if(pk>=50)return Math.max(0,pk-25);if(pk>=25)return 0;return initStop;}
     const floor=trailFloor(hwm), floorStr=hwm>=25?` floor:${floor.toFixed(0)}%`:'';
     const tt=[
       `Score: ${p.weighted_score?.toFixed(1)??'—'} | Conf: ${p.confidence??'—'}/10`,
       `Tech: ${p.tech_score??'—'} | Fund: ${p.fund_score??'—'} | Sent: ${p.sent_score??'—'}`,
       `Bull case: ${p.bull_case||'—'}`, `Bear case: ${p.bear_case||'—'}`,
-      `Entry DTE: ${p.entry_dte??35} | Days held: ${days}`,
-      hwm>=25?`Trail stop floor: ${floor.toFixed(0)}% (peak ${hwm.toFixed(0)}%)`:'Trail stop: -50% from entry',
+      `Entry DTE: ${p.entry_dte??35} | Days held: ${days} | IV rank: ${Math.round(iv4pos)}`,
+      hwm>=25?`Trail stop floor: ${floor.toFixed(0)}% (peak ${hwm.toFixed(0)}%)`:`Initial stop: ${initStop}% (IV ${Math.round(iv4pos)})`,
     ].join('\n');
     return `<tr title="${esc(tt)}" onclick='openModal(${JSON.stringify(JSON.stringify(p))})' style="cursor:pointer">
       <td><strong>${esc(p.symbol)}</strong></td>

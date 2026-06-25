@@ -218,6 +218,78 @@ def get_recent(limit: int = 200) -> list:
         return []
 
 
+def get_best_patterns(min_samples: int = 3) -> list:
+    """
+    Find feature-combination patterns that historically predict winning trades.
+    Returns a list of {description, win_rate, n} dicts sorted by win_rate desc.
+    Used to inject high-confidence pattern context into the Judge.
+    """
+    conn = _get_conn()
+    if not conn:
+        return []
+    patterns = []
+    try:
+        with conn.cursor() as cur:
+            # Pattern 1: tech_score + regime
+            cur.execute("""
+                SELECT CONCAT('tech≥',
+                    CASE WHEN tech_score >= 8 THEN '8' WHEN tech_score >= 7 THEN '7' ELSE '<7' END,
+                    ' + ', COALESCE(regime,'unknown')) AS pat,
+                    COUNT(*) AS n,
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr
+                FROM scan_log
+                WHERE decision='trade' AND outcome IS NOT NULL AND tech_score IS NOT NULL
+                GROUP BY 1 HAVING COUNT(*) >= %s
+                ORDER BY wr DESC LIMIT 10
+            """, (min_samples,))
+            for row in cur.fetchall():
+                patterns.append({"desc": row[0], "n": int(row[1]), "win_rate": float(row[2])})
+
+            # Pattern 2: iv_rank bucket + above_ema200
+            cur.execute("""
+                SELECT CONCAT(
+                    CASE WHEN iv_rank < 25 THEN 'IV<25' WHEN iv_rank < 40 THEN 'IV<40' ELSE 'IV≥40' END,
+                    ' + ', CASE WHEN above_ema200 THEN 'above EMA200' ELSE 'below EMA200' END
+                ) AS pat,
+                    COUNT(*) AS n,
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr
+                FROM scan_log
+                WHERE decision='trade' AND outcome IS NOT NULL AND iv_rank IS NOT NULL AND above_ema200 IS NOT NULL
+                GROUP BY 1 HAVING COUNT(*) >= %s
+                ORDER BY wr DESC LIMIT 10
+            """, (min_samples,))
+            for row in cur.fetchall():
+                patterns.append({"desc": row[0], "n": int(row[1]), "win_rate": float(row[2])})
+
+            # Pattern 3: confidence bucket
+            cur.execute("""
+                SELECT CONCAT('conf=',
+                    CASE WHEN confidence >= 8 THEN '8+' WHEN confidence >= 6 THEN '6-7' ELSE '≤5' END,
+                    ' + ', direction) AS pat,
+                    COUNT(*) AS n,
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr
+                FROM scan_log
+                WHERE decision='trade' AND outcome IS NOT NULL AND confidence IS NOT NULL
+                GROUP BY 1 HAVING COUNT(*) >= %s
+                ORDER BY wr DESC LIMIT 10
+            """, (min_samples,))
+            for row in cur.fetchall():
+                patterns.append({"desc": row[0], "n": int(row[1]), "win_rate": float(row[2])})
+
+    except Exception as e:
+        logger.warning(f"TrainingStore get_best_patterns failed: {e}")
+
+    # Deduplicate and return top patterns sorted by win_rate
+    seen = set()
+    result = []
+    for p in sorted(patterns, key=lambda x: x["win_rate"], reverse=True):
+        k = p["desc"]
+        if k not in seen:
+            seen.add(k)
+            result.append(p)
+    return result[:10]
+
+
 def get_learned_context(min_samples: int = 5) -> str:
     """
     Query historical outcomes and return a compact calibration summary
@@ -325,6 +397,17 @@ def get_learned_context(min_samples: int = 5) -> str:
             if conf_rows:
                 lines.append("  Win rate by confidence: " +
                     " | ".join(f"{r[0]}: {int(r[2])}% ({r[1]}T)" for r in conf_rows))
+
+            # Top predictive patterns
+            patterns = get_best_patterns(min_samples=3)
+            good = [p for p in patterns if p["win_rate"] >= 60 and p["n"] >= 3]
+            bad  = [p for p in patterns if p["win_rate"] <= 35 and p["n"] >= 3]
+            if good:
+                lines.append("  TOP WIN patterns: " +
+                    " | ".join(f"{p['desc']} {int(p['win_rate'])}%WR ({p['n']}T)" for p in good[:4]))
+            if bad:
+                lines.append("  LOW WIN patterns: " +
+                    " | ".join(f"{p['desc']} {int(p['win_rate'])}%WR ({p['n']}T)" for p in bad[:4]))
 
             lines.append("Use this data to calibrate your decision — raise the bar in underperforming regimes/symbols.")
             return "\n".join(lines)

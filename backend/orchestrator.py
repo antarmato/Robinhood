@@ -40,9 +40,17 @@ logger = logging.getLogger(__name__)
 
 BroadcastFn = Callable[[str, str, Any], Awaitable[None]]
 
-_TECH   = {"NVDA", "AAPL", "MSFT", "META", "GOOGL", "AMD", "CRM", "PLTR", "SMCI", "IONQ", "ROKU"}
-_CRYPTO = {"COIN", "MSTR", "HOOD"}
+_TECH    = {"NVDA", "AAPL", "MSFT", "META", "GOOGL", "AMD", "CRM", "PLTR", "SMCI", "IONQ", "ROKU"}
+_CRYPTO  = {"COIN", "MSTR"}
 _FINTECH = {"SOFI", "SQ", "PYPL", "HOOD"}
+
+# Correlation groups: at most 1 open position per group (high same-factor correlation)
+_CORR_GROUPS: list[frozenset] = [
+    frozenset({"COIN", "MSTR"}),          # pure crypto proxies
+    frozenset({"HOOD", "SOFI", "SQ"}),    # retail fintech
+    frozenset({"NVDA", "AMD", "SMCI"}),   # semiconductor / AI hardware
+    frozenset({"IONQ"}),                  # standalone (quantum, low liquidity)
+]
 
 
 class Orchestrator:
@@ -472,6 +480,10 @@ class Orchestrator:
                     },
                 }
 
+            combined_surcharge = (
+                getattr(self, "_streak_surcharge", 0.0) +
+                getattr(self, "_last_slot_surcharge", 0.0)
+            )
             judge = await JudgeAgent(self.claude, self._make_broadcast()).decide(
                 symbol, direction, technical, fundamental, sentiment, risk,
                 self.state.cycle_count,
@@ -479,7 +491,7 @@ class Orchestrator:
                 symbol_history=self.state.get_symbol_history(symbol),
                 iv_rank=iv_rank,
                 market_regime=market_regime,
-                streak_surcharge=getattr(self, "_streak_surcharge", 0.0),
+                streak_surcharge=combined_surcharge,
             )
 
             return {
@@ -499,7 +511,6 @@ class Orchestrator:
     MAX_OPEN_POSITIONS = 4  # hard cap on total sim positions at once
 
     def _apply_portfolio_filters(self, candidates: list[dict]) -> list[dict]:
-        # Use sim positions as the portfolio reference
         open_sims   = self.state.get_sim_positions(status="open")
         tech_open   = sum(1 for p in open_sims if p.get("symbol") in _TECH)
         crypto_open = sum(1 for p in open_sims if p.get("symbol") in _CRYPTO)
@@ -507,7 +518,21 @@ class Orchestrator:
         bear_open   = sum(1 for p in open_sims if p.get("option_type") == "put")
         open_syms   = {p["symbol"] for p in open_sims}
 
-        # Hard cap on total positions
+        # Pre-compute which correlation groups already have a position
+        occupied_groups = set()
+        for p in open_sims:
+            sym = p.get("symbol", "")
+            for i, grp in enumerate(_CORR_GROUPS):
+                if sym in grp:
+                    occupied_groups.add(i)
+
+        # Set last-slot surcharge for the judge (stored on self for this cycle)
+        slots_remaining = self.MAX_OPEN_POSITIONS - len(open_sims)
+        self._last_slot_surcharge = 5.0 if slots_remaining == 1 else 0.0
+        if slots_remaining == 1 and candidates:
+            self.state.log_event("info", {"message":
+                "⚠️ Last portfolio slot — applying +5 quality gate this cycle."})
+
         if len(open_sims) >= self.MAX_OPEN_POSITIONS:
             self.state.log_event("info", {
                 "message": f"Portfolio full ({len(open_sims)}/{self.MAX_OPEN_POSITIONS} open) — no new entries"
@@ -524,8 +549,17 @@ class Orchestrator:
             if sym in _TECH and tech_open >= 2:
                 self.state.log_event("info", {"message": f"Sector filter: {sym} skipped (2 tech open)"})
                 continue
-            if sym in _CRYPTO and crypto_open >= 2:
-                self.state.log_event("info", {"message": f"Sector filter: {sym} skipped (2 crypto open)"})
+            if sym in _CRYPTO and crypto_open >= 1:
+                self.state.log_event("info", {"message": f"Crypto limit: {sym} skipped (1 crypto max)"})
+                continue
+            # Correlation group guard
+            corr_blocked = False
+            for i, grp in enumerate(_CORR_GROUPS):
+                if sym in grp and i in occupied_groups:
+                    self.state.log_event("info", {"message": f"Corr filter: {sym} skipped (correlated position open)"})
+                    corr_blocked = True
+                    break
+            if corr_blocked:
                 continue
             if dirn == "bullish" and bull_open >= 2 and bear_open == 0:
                 c["caution"] = f"{bull_open} long positions open — net long exposure"
