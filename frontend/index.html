@@ -1176,74 +1176,67 @@ async function loadLearningInsights() {
   if (!el) return;
   el.innerHTML = '<span style="color:var(--muted)">Querying training DB...</span>';
   try {
-    const r = await fetch('/api/training-data?limit=500');
+    const r = await fetch('/api/model-insights');
     const d = await r.json();
-    const rows = d.rows || [];
-    const stats = d.stats || {};
+    const stats  = d.stats  || {};
+    const symPf  = d.symbol_perf || {};
+    const pats   = d.patterns || [];
+    const ctx    = d.learned_context || '';
 
-    if (!rows.length) {
+    const closed  = parseInt(stats.wins||0) + parseInt(stats.losses||0);
+    const wins    = parseInt(stats.wins||0);
+    const entered = parseInt(stats.trades_entered||0);
+    const wr = closed ? (wins/closed*100).toFixed(0) : '—';
+    const wrColor = wr === '—' ? 'var(--muted)' : wr >= 50 ? 'var(--green)' : 'var(--red)';
+
+    if (!closed && !entered) {
       el.innerHTML = '<span style="color:var(--muted)">No training data yet — decisions are logged each cycle.</span>';
       return;
     }
 
-    const closed  = rows.filter(r => r.outcome);
-    const wins    = closed.filter(r => r.outcome === 'win');
-    const entered = rows.filter(r => r.decision === 'trade');
-    const wr = closed.length ? (wins.length / closed.length * 100).toFixed(0) : '—';
-
-    // Group by regime
-    const byRegime = {};
-    closed.forEach(r => {
-      const reg = r.regime || 'unknown';
-      if (!byRegime[reg]) byRegime[reg] = {n:0,w:0};
-      byRegime[reg].n++; if(r.outcome==='win') byRegime[reg].w++;
-    });
-    const regLines = Object.entries(byRegime)
-      .filter(([,v])=>v.n>=2)
-      .sort((a,b)=>b[1].w/b[1].n-a[1].w/a[1].n)
-      .map(([k,v])=>`<span style="color:var(--muted)">${k}</span> <b style="color:${v.w/v.n>=0.5?'var(--green)':'var(--red)'}">${(v.w/v.n*100).toFixed(0)}%</b> (${v.n}T)`)
-      .join(' &nbsp; ');
-
-    // Group by direction
-    const byDir = {};
-    closed.forEach(r => {
-      const dir = r.direction || 'unknown';
-      if (!byDir[dir]) byDir[dir] = {n:0,w:0};
-      byDir[dir].n++; if(r.outcome==='win') byDir[dir].w++;
-    });
-    const dirLines = Object.entries(byDir)
-      .filter(([,v])=>v.n>=2)
-      .map(([k,v])=>`<span style="color:var(--muted)">${k}</span> <b style="color:${v.w/v.n>=0.5?'var(--green)':'var(--red)'}">${(v.w/v.n*100).toFixed(0)}%</b> (${v.n}T)`)
-      .join(' &nbsp; ');
-
-    // Per symbol stats
-    const bySym = {};
-    closed.forEach(r => {
-      const sym = r.symbol || '?';
-      if (!bySym[sym]) bySym[sym] = {n:0,w:0,pnls:[]};
-      bySym[sym].n++; if(r.outcome==='win') bySym[sym].w++;
-      if(r.outcome_pnl_pct!=null) bySym[sym].pnls.push(r.outcome_pnl_pct);
-    });
-    const symLines = Object.entries(bySym)
-      .filter(([,v])=>v.n>=2)
-      .sort((a,b)=>b[1].n-a[1].n)
-      .map(([k,v])=>{
-        const wr2=(v.w/v.n*100).toFixed(0);
-        const avgPnl=v.pnls.length?v.pnls.reduce((a,b)=>a+b,0)/v.pnls.length:0;
+    // Symbol table from DB
+    const symLines = Object.entries(symPf)
+      .filter(([,v])=>v.trade_count>=1)
+      .sort((a,b)=>b[1].trade_count-a[1].trade_count)
+      .map(([sym,v])=>{
+        const wr2=(v.win_rate*100).toFixed(0);
+        const avgPnl=v.avg_pnl??0;
+        const c=wr2>=50?'var(--green)':'var(--red)';
         return `<div style="display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid rgba(255,255,255,.04)">
-          <span style="font-weight:700">${k}</span>
-          <span style="color:var(--muted)">${v.n}T &nbsp; WR:<b style="color:${wr2>=50?'var(--green)':'var(--red)'}">${wr2}%</b> &nbsp; avg:<b style="color:${avgPnl>=0?'var(--green)':'var(--red)'}">${avgPnl>=0?'+':''}${avgPnl.toFixed(1)}%</b></span>
+          <span style="font-weight:700;width:52px">${esc(sym)}</span>
+          <span style="color:var(--muted);font-size:10px">${v.trade_count}T</span>
+          <span>WR:<b style="color:${c}">${wr2}%</b></span>
+          <span>avg:<b style="color:${avgPnl>=0?'var(--green)':'var(--red)'}">${avgPnl>=0?'+':''}${avgPnl.toFixed(1)}%</b></span>
         </div>`;
       }).join('');
 
+    // Patterns — split into good/bad
+    const goodPats = pats.filter(p=>p.win_rate>=60&&p.n>=2).slice(0,5);
+    const badPats  = pats.filter(p=>p.win_rate<=40&&p.n>=2).slice(0,5);
+    const patBlock = (title,list,color) => list.length ? `
+      <div style="margin-bottom:6px">
+        <div style="font-size:10px;color:var(--muted);margin-bottom:2px">${title}</div>
+        ${list.map(p=>`<div style="font-size:10px;padding:1px 0">
+          <span style="color:${color};font-weight:700">${p.win_rate.toFixed(0)}%</span>
+          <span style="color:var(--dim)"> (${p.n}T)</span>
+          <span style="color:var(--fg);margin-left:4px">${esc(p.desc)}</span>
+        </div>`).join('')}
+      </div>` : '';
+
+    // Learned context as raw text summary
+    const ctxHtml = ctx ? `<div style="margin-top:6px;padding:6px 8px;background:rgba(255,255,255,.04);border-radius:3px;font-size:10px;color:var(--muted);white-space:pre-wrap;line-height:1.5">${esc(ctx)}</div>` : '';
+
     el.innerHTML = `
       <div style="padding:4px 0;border-bottom:1px solid var(--border);margin-bottom:8px">
-        <div style="font-size:10px;color:var(--muted);margin-bottom:2px">OVERALL (${closed.length} closed / ${entered.length} entered)</div>
-        <div style="font-size:13px;font-weight:700;color:${wr>=50?'var(--green)':'var(--red)'}">Win Rate: ${wr}%</div>
+        <div style="font-size:10px;color:var(--muted);margin-bottom:2px">OVERALL · ${closed} closed · ${entered} entered</div>
+        <div style="font-size:14px;font-weight:700;color:${wrColor}">Win Rate: ${wr}%</div>
       </div>
-      ${regLines ? `<div style="margin-bottom:8px"><div style="font-size:10px;color:var(--muted);margin-bottom:3px">BY REGIME</div><div style="font-size:11px">${regLines}</div></div>` : ''}
-      ${dirLines ? `<div style="margin-bottom:8px"><div style="font-size:10px;color:var(--muted);margin-bottom:3px">BY DIRECTION</div><div style="font-size:11px">${dirLines}</div></div>` : ''}
-      ${symLines ? `<div><div style="font-size:10px;color:var(--muted);margin-bottom:3px">BY SYMBOL (≥2 trades)</div>${symLines}</div>` : ''}
+      ${goodPats.length||badPats.length ? `<div style="margin-bottom:8px">
+        ${patBlock('TOP WIN CONDITIONS',goodPats,'var(--green)')}
+        ${patBlock('WEAK CONDITIONS',badPats,'var(--red)')}
+      </div>` : ''}
+      ${symLines ? `<div style="margin-bottom:8px"><div style="font-size:10px;color:var(--muted);margin-bottom:3px">BY SYMBOL</div>${symLines}</div>` : ''}
+      ${ctxHtml}
     `;
   } catch(e) {
     el.innerHTML = `<span style="color:var(--red)">Error: ${esc(e.message)}</span>`;

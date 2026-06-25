@@ -582,6 +582,18 @@ async def training_data(limit: int = 200):
     }
 
 
+@app.get("/api/model-insights")
+async def model_insights():
+    """Structured learning insights: patterns, symbol stats, calibration context."""
+    from . import training_store as ts
+    return {
+        "learned_context": ts.get_learned_context(min_samples=3),
+        "patterns":        ts.get_best_patterns(min_samples=2),
+        "symbol_perf":     ts.get_symbol_perf(min_trades=1),
+        "stats":           ts.get_stats(),
+    }
+
+
 @app.get("/api/sim/reset")
 async def sim_reset(api_key: str = ""):
     """

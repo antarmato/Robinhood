@@ -451,6 +451,37 @@ def get_learned_context(min_samples: int = 5) -> str:
                 lines.append("  Win rate by confidence: " +
                     " | ".join(f"{r[0]}: {int(r[2])}% ({r[1]}T)" for r in conf_rows))
 
+            # Recent trend: last 10 closed trades vs overall
+            cur.execute("""
+                SELECT COUNT(*) AS n,
+                       COUNT(*) FILTER (WHERE outcome='win') AS wins
+                FROM (
+                    SELECT outcome FROM scan_log
+                    WHERE decision='trade' AND outcome IS NOT NULL
+                    ORDER BY logged_at DESC LIMIT 10
+                ) sub
+            """)
+            rec = cur.fetchone()
+            if rec and rec[0] >= 5:
+                rec_wr = rec[1] / rec[0] * 100
+                trend_note = "↑improving" if rec_wr > wr else ("↓declining" if rec_wr < wr - 10 else "→stable")
+                lines.append(f"  Recent (last {rec[0]}T): {rec_wr:.0f}% WR {trend_note} vs {wr:.0f}% overall")
+
+            # Regime + direction combos
+            cur.execute("""
+                SELECT CONCAT(COALESCE(regime,'?'), '+', direction) AS combo,
+                       COUNT(*) AS n,
+                       ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr
+                FROM scan_log
+                WHERE decision='trade' AND outcome IS NOT NULL AND regime IS NOT NULL
+                GROUP BY 1 HAVING COUNT(*) >= 2
+                ORDER BY wr DESC LIMIT 8
+            """)
+            combo_rows = cur.fetchall()
+            if combo_rows:
+                lines.append("  Regime+direction combos: " +
+                    " | ".join(f"{r[0]} {int(r[2])}% ({r[1]}T)" for r in combo_rows))
+
             # Top predictive patterns
             patterns = get_best_patterns(min_samples=3)
             good = [p for p in patterns if p["win_rate"] >= 60 and p["n"] >= 3]
@@ -462,7 +493,7 @@ def get_learned_context(min_samples: int = 5) -> str:
                 lines.append("  LOW WIN patterns: " +
                     " | ".join(f"{p['desc']} {int(p['win_rate'])}%WR ({p['n']}T)" for p in bad[:4]))
 
-            lines.append("Use this data to calibrate your decision — raise the bar in underperforming regimes/symbols.")
+            lines.append("CALIBRATION RULE: Reduce confidence by 1-2 for any regime/symbol/pattern matching LOW WIN conditions. Increase by 1 for TOP WIN matches.")
             return "\n".join(lines)
 
     except Exception as e:

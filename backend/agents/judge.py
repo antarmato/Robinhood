@@ -278,7 +278,7 @@ RISK FLAGS:
         )
 
         conf_min_for_prompt = confidence_minimum(symbol)
-        system = f"""You are the final judge for a Robinhood options trading system.
+        system = f"""You are the final judge for a self-improving Robinhood options trading system.
 The Python score is {weighted_score} (threshold {threshold}).
 
 {"SCORE PASSES. Give confidence 1-10. If you have genuine reservations, reflect in confidence. Trade happens only if confidence >= " + str(conf_min_for_prompt) + (" (raised for " + symbol + " due to high beta or poor history)" if conf_min_for_prompt > THRESHOLD_CONF else "") + "." if not score_failed else "SCORE FAILS. Confirm pass with a clear one-line reason."}
@@ -298,10 +298,19 @@ Rules:
   - Regime mismatch: cap at 7 — if you'd give 8+ you must justify why this stock bucks the trend
   - Regime aligned: strong setups can reach 9-10
 
+IMPORTANT — HOW TO USE THE SELF-LEARNED CALIBRATION:
+  The context below contains actual historical win rates from this system's past trades.
+  You MUST reference these win rates to calibrate your confidence:
+  - If this symbol/regime/direction historically wins < 35%: reduce confidence by 1-2 points
+  - If this symbol historically wins > 65%: you may increase confidence by 1 point
+  - If current conditions match a 'LOW WIN pattern': treat as a negative signal
+  - If current conditions match a 'TOP WIN pattern': treat as a positive signal
+  - Do not ignore these patterns — they represent real learned edges and losses
+
 Respond ONLY with JSON:
 {{
   "confidence": <int 1-10>,
-  "reasoning": "<2-3 sentences explaining your conviction or lack thereof>",
+  "reasoning": "<2-3 sentences explaining your conviction, referencing historical patterns if available>",
   "bull_case": "<strongest reason this works>",
   "bear_case": "<strongest reason it fails>",
   "pass_reason": "<only if score failed: one clear reason>"
