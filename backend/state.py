@@ -1,17 +1,104 @@
 """
-State manager — persists system state, proposals, active trades, and exit signals.
+State manager — persists system state to PostgreSQL (DATABASE_URL) with
+a local JSON file fallback for development environments.
 """
 
 import json
 import logging
+import os
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
-STATE_FILE = Path("/app/data/state.json")
 
+# ── Storage backends ──────────────────────────────────────────────────────────
+
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+STATE_FILE   = Path("/app/data/state.json")
+
+# psycopg2 is optional — only needed when DATABASE_URL is set
+_pg_conn = None
+
+def _get_conn():
+    global _pg_conn
+    try:
+        if _pg_conn is None or _pg_conn.closed:
+            import psycopg2
+            import psycopg2.extras
+            _pg_conn = psycopg2.connect(DATABASE_URL)
+            _pg_conn.autocommit = True
+            _ensure_table(_pg_conn)
+        return _pg_conn
+    except Exception as e:
+        logger.error(f"DB connect failed: {e}")
+        _pg_conn = None
+        return None
+
+def _ensure_table(conn):
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS state_store (
+                id      INTEGER PRIMARY KEY DEFAULT 1,
+                data    JSONB NOT NULL,
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+
+def _db_load() -> Optional[dict]:
+    conn = _get_conn()
+    if not conn:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT data FROM state_store WHERE id = 1")
+            row = cur.fetchone()
+            return row[0] if row else None
+    except Exception as e:
+        logger.error(f"DB load failed: {e}")
+        return None
+
+def _db_save(data: dict):
+    conn = _get_conn()
+    if not conn:
+        return False
+    try:
+        import psycopg2.extras
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO state_store (id, data, updated_at)
+                VALUES (1, %s, NOW())
+                ON CONFLICT (id) DO UPDATE
+                    SET data = EXCLUDED.data,
+                        updated_at = NOW()
+            """, (json.dumps(data, default=str),))
+        return True
+    except Exception as e:
+        logger.error(f"DB save failed: {e}")
+        # Reset connection so next call reconnects
+        global _pg_conn
+        _pg_conn = None
+        return False
+
+def _file_load() -> Optional[dict]:
+    try:
+        if STATE_FILE.exists():
+            with open(STATE_FILE) as f:
+                return json.load(f)
+    except Exception as e:
+        logger.warning(f"File load failed: {e}")
+    return None
+
+def _file_save(data: dict):
+    try:
+        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(STATE_FILE, "w") as f:
+            json.dump(data, f, indent=2, default=str)
+    except Exception as e:
+        logger.error(f"File save failed: {e}")
+
+# ── Default state ─────────────────────────────────────────────────────────────
 
 def _default() -> dict:
     return {
@@ -30,37 +117,36 @@ def _default() -> dict:
         "last_afterhours_capture": None,
         "last_scan_results":       [],
         "last_scan_cycle":         0,
-        # ── Sim mode ────────────────────────────────────────────────────────────
-        "sim_positions":           [],   # all sim positions (open + closed)
-        "pnl_history":             [],   # equity curve data points
+        "sim_positions":           [],
+        "pnl_history":             [],
     }
 
+# ── State manager ─────────────────────────────────────────────────────────────
 
 class StateManager:
     def __init__(self):
+        self._use_db = bool(DATABASE_URL)
         self._s = self._load()
+        logger.info(f"StateManager init: backend={'postgres' if self._use_db else 'file'}")
 
     def _load(self) -> dict:
-        try:
-            if STATE_FILE.exists():
-                with open(STATE_FILE) as f:
-                    data = json.load(f)
-                d = _default()
-                d.update(data)
-                return d
-        except Exception as e:
-            logger.warning(f"State load failed: {e}")
+        raw = _db_load() if self._use_db else _file_load()
+        if raw:
+            d = _default()
+            d.update(raw)
+            return d
         return _default()
 
     def save(self):
-        try:
-            STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-            with open(STATE_FILE, "w") as f:
-                json.dump(self._s, f, indent=2, default=str)
-        except Exception as e:
-            logger.error(f"State save failed: {e}")
+        if self._use_db:
+            ok = _db_save(self._s)
+            if not ok:
+                # fallback write to file so we don't lose data
+                _file_save(self._s)
+        else:
+            _file_save(self._s)
 
-    # ── System ─────────────────────────────────────────────────────────────────
+    # ── System ────────────────────────────────────────────────────────────────
 
     @property
     def system_status(self) -> str:
@@ -85,7 +171,6 @@ class StateManager:
         self.save()
 
     def record_symbol_analysis(self, symbol: str, direction: str, analysis: dict, decision: str, score: float):
-        """Store per-symbol analysis snapshot so future cycles can see history."""
         if "symbol_history" not in self._s:
             self._s["symbol_history"] = {}
         hist = self._s["symbol_history"].setdefault(symbol, [])
@@ -107,7 +192,7 @@ class StateManager:
             "macd":        tech.get("macd_reading"),
         }
         hist.append(snap)
-        self._s["symbol_history"][symbol] = hist[-10:]  # keep last 10 per symbol
+        self._s["symbol_history"][symbol] = hist[-10:]
         self.save()
 
     def get_symbol_history(self, symbol: str) -> list:
@@ -119,7 +204,7 @@ class StateManager:
     def get_full_state(self) -> dict:
         return self._s.copy()
 
-    # ── Proposals ──────────────────────────────────────────────────────────────
+    # ── Proposals ─────────────────────────────────────────────────────────────
 
     @property
     def proposals(self) -> list[dict]:
@@ -141,17 +226,16 @@ class StateManager:
         return bool(self.get_pending_proposals())
 
     def resolve_proposal(self, proposal_id: str, action: str, order_info: dict = None):
-        """Mark a proposal as executed or rejected."""
         for p in self._s["proposals"]:
             if p.get("proposal_id") == proposal_id:
-                p["status"] = action  # "executed" | "rejected"
+                p["status"] = action
                 p["resolved_at"] = datetime.now().isoformat()
                 if order_info:
                     p["order_info"] = order_info
                 break
         self.save()
 
-    # ── Active trades (placed by Cowork artifact) ──────────────────────────────
+    # ── Active trades ──────────────────────────────────────────────────────────
 
     @property
     def active_trades(self) -> list[dict]:
@@ -163,7 +247,6 @@ class StateManager:
         self.save()
 
     def update_trade(self, trade_id: str, updates: dict):
-        """Patch fields on an active trade (e.g. high_water_pct, trailing_stop)."""
         for t in self._s["active_trades"]:
             if t.get("trade_id") == trade_id:
                 t.update(updates)
@@ -199,7 +282,7 @@ class StateManager:
     def get_pending_exit_signals(self) -> list[dict]:
         return [s for s in self._s["exit_signals"] if s.get("status") == "pending"]
 
-    # ── Market regime + pre-market context ─────────────────────────────────────
+    # ── Market regime ──────────────────────────────────────────────────────────
 
     @property
     def market_regime(self) -> dict:
@@ -229,15 +312,11 @@ class StateManager:
 
     def get_last_premarket_date(self) -> Optional[str]:
         ts = self._s.get("last_premarket_prep")
-        if ts:
-            return ts[:10]
-        return None
+        return ts[:10] if ts else None
 
     def get_last_afterhours_date(self) -> Optional[str]:
         ts = self._s.get("last_afterhours_capture")
-        if ts:
-            return ts[:10]
-        return None
+        return ts[:10] if ts else None
 
     def store_scan_results(self, results: list, cycle: int):
         self._s["last_scan_results"] = results
@@ -257,8 +336,7 @@ class StateManager:
             self._s["event_log"] = self._s["event_log"][-200:]
         self.save()
 
-
-    # ── Sim positions ───────────────────────────────────────────────────────────
+    # ── Sim positions ──────────────────────────────────────────────────────────
 
     def add_sim_position(self, pos: dict):
         pos.setdefault("position_id", str(uuid.uuid4()))
@@ -282,8 +360,7 @@ class StateManager:
         self.save()
 
     def close_sim_position(self, pos_id: str, exit_data: dict):
-        """Mark position closed, append PnL history point."""
-        pnl_dollars  = exit_data.get("pnl_dollars", 0.0)
+        pnl_dollars = exit_data.get("pnl_dollars", 0.0)
         symbol, direction, pnl_pct = "", "", 0.0
         for p in self._s.get("sim_positions", []):
             if p.get("position_id") == pos_id:
