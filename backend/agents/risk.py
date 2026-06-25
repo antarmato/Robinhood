@@ -21,6 +21,18 @@ logger = logging.getLogger(__name__)
 MAX_LOSS_DEFAULT = 100.0  # fallback if env var not set
 KELLY_CAP_MULTIPLIER = 2  # Kelly budget ≤ MAX_LOSS * 2
 
+# Sector group mapping — positions in the same group are correlated
+_SECTOR_GROUPS: dict[str, str] = {
+    "NVDA": "AI_semis", "AMD": "AI_semis", "SMCI": "AI_semis",
+    "MSTR": "crypto",   "COIN": "crypto",
+    "RIVN": "EV",       "TSLA": "EV",
+    "SOFI": "fintech",  "HOOD": "fintech", "SQ": "fintech", "PYPL": "fintech",
+    "IONQ": "quantum",
+    "PLTR": "govtech",
+    "ROKU": "streaming",
+    "UBER": "rideshare",
+}
+
 
 class RiskAgent(BaseAgent):
     def __init__(
@@ -82,16 +94,33 @@ class RiskAgent(BaseAgent):
         bull_open = direction_counts.get("bullish", 0)
         bear_open = direction_counts.get("bearish", 0)
         concentration_note = ""
+        risk_score = 8
+
         if bull_open >= 2 and bear_open == 0:
             concentration_note = " ⚠️ All-bull portfolio — zero hedge."
+            risk_score -= 1
         elif bear_open >= 2 and bull_open == 0:
             concentration_note = " ⚠️ All-bear portfolio — zero hedge."
+            risk_score -= 1
+
+        # Sector correlation check — same sector as existing open position?
+        sector = _SECTOR_GROUPS.get(symbol)
+        correlated_syms = []
+        if sector:
+            for p in current_positions:
+                open_sym = p.get("symbol", "")
+                if _SECTOR_GROUPS.get(open_sym) == sector:
+                    correlated_syms.append(open_sym)
+        if correlated_syms:
+            concentration_note += f" ⚠️ Correlated sector ({sector}) — {', '.join(correlated_syms)} already open."
+            risk_score -= 1
 
         await self._emit("sizing", {
             "symbol": symbol, "contracts": 1,
             "max_premium": max_premium, "total_max_loss": budget,
             "kelly_ready": kelly_ready, "kelly": kelly,
             "bull_open": bull_open, "bear_open": bear_open,
+            "sector": sector, "correlated": correlated_syms,
         })
 
         return {
@@ -101,7 +130,8 @@ class RiskAgent(BaseAgent):
             "limit_price":    max_premium,
             "total_max_loss": budget,
             "rejection_reason": None,
-            "score":          8 if not concentration_note else 7,
+            "score":          max(5, risk_score),
+            "current_price":  None,
             "summary": (
                 f"1 contract, max ${max_premium:.2f}/share (≤${budget:.0f} total). "
                 f"{len(current_positions)}/{MAX_POSITIONS} positions open "
