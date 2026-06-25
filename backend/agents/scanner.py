@@ -317,6 +317,33 @@ class ScannerAgent(BaseAgent):
             bw = bb_up - bb_low_val
             bb_pos = (price - bb_low_val) / bw if bw > 0 else 0.5
 
+            # ADX (Average Directional Index) — measures trend STRENGTH, not direction
+            # ADX > 25 = trending; ADX < 20 = ranging/choppy (bad for directional options)
+            adx_val = 20.0
+            try:
+                n_adx = 14
+                if len(df) >= n_adx * 2:
+                    h_ser = high if not isinstance(high, type(close)) or list(high.index) != list(close.index) else high
+                    l_ser = low  if not isinstance(low,  type(close)) or list(low.index)  != list(close.index) else low
+                    tr    = pd.concat([
+                        h_ser - l_ser,
+                        (h_ser - close.shift(1)).abs(),
+                        (l_ser - close.shift(1)).abs(),
+                    ], axis=1).max(axis=1)
+                    dm_plus  = (h_ser.diff()).where((h_ser.diff() > 0) & (h_ser.diff() > (-l_ser.diff())), 0.0)
+                    dm_minus = (-l_ser.diff()).where((-l_ser.diff() > 0) & (-l_ser.diff() > h_ser.diff()), 0.0)
+                    atr14  = tr.ewm(alpha=1/n_adx, adjust=False).mean()
+                    di_plus  = 100 * dm_plus.ewm(alpha=1/n_adx,  adjust=False).mean() / atr14.replace(0, np.nan)
+                    di_minus = 100 * dm_minus.ewm(alpha=1/n_adx, adjust=False).mean() / atr14.replace(0, np.nan)
+                    dx = (100 * (di_plus - di_minus).abs() / (di_plus + di_minus).replace(0, np.nan)).fillna(0)
+                    adx_series = dx.ewm(alpha=1/n_adx, adjust=False).mean()
+                    adx_val = float(adx_series.iloc[-1])
+                    adx_val = 20.0 if np.isnan(adx_val) else max(0.0, min(100.0, adx_val))
+            except Exception:
+                adx_val = 20.0
+            trending = adx_val >= 25.0    # trending market — directional plays more likely to work
+            choppy   = adx_val < 18.0     # ranging — options bleed theta with no direction
+
             # Detect BB squeeze (bands contracting) and breakout (price just crossed band)
             try:
                 bw_hist = (close.rolling(20).std() * 4 / close.rolling(20).mean()).tail(60).dropna()
@@ -334,7 +361,7 @@ class ScannerAgent(BaseAgent):
                 bb_bull_breakout = False
                 bb_bear_breakout = False
 
-            # Bull scoring (0-16)
+            # Bull scoring (0-18)
             bull = 0
             if above_ema20 and above_ema50: bull += 3
             elif above_ema20:               bull += 1
@@ -351,8 +378,10 @@ class ScannerAgent(BaseAgent):
             if 0.2 <= bb_pos <= 0.55 and above_ema20: bull += 1
             if squeeze and above_ema20:     bull += 1
             if bb_bull_breakout:            bull += 2   # momentum ignition above upper band
+            if trending and above_ema20:    bull += 1   # ADX confirms uptrend
+            if choppy:                      bull -= 1   # ranging — options bleed
 
-            # Bear scoring (0-16)
+            # Bear scoring (0-18)
             bear = 0
             if not above_ema20 and not above_ema50: bear += 3
             elif not above_ema20:           bear += 1
@@ -369,6 +398,8 @@ class ScannerAgent(BaseAgent):
             if 0.45 <= bb_pos <= 0.8 and not above_ema20: bear += 1
             if squeeze and not above_ema20: bear += 1
             if bb_bear_breakout:            bear += 2   # breakdown below lower band
+            if trending and not above_ema20: bear += 1  # ADX confirms downtrend
+            if choppy:                      bear -= 1   # ranging — options bleed
 
             best_dir   = "bullish" if bull >= bear else "bearish"
             best_score = max(bull, bear)
@@ -393,8 +424,11 @@ class ScannerAgent(BaseAgent):
                 "near_52w_high":    near_52w_high,
                 "near_52w_low":     near_52w_low,
                 "squeeze":          squeeze,
-                "bull_score":       bull,
-                "bear_score":       bear,
+                "adx":              round(adx_val, 1),
+                "trending":         trending,
+                "choppy":           choppy,
+                "bull_score":       max(0, bull),
+                "bear_score":       max(0, bear),
                 "best_direction":   best_dir,
                 "best_score":       best_score,
                 "rs_vs_group":      0.0,

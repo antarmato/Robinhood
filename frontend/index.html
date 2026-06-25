@@ -153,7 +153,8 @@ canvas{display:block}
 #trades-bottom{flex:0 0 260px;display:flex;border-top:2px solid var(--border);background:var(--bg);overflow:hidden}
 #tp-chart{width:340px;flex-shrink:0;border-right:1px solid var(--border);padding:10px 12px;display:flex;flex-direction:column}
 #tp-chart-title{font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);margin-bottom:6px;display:flex;align-items:center;gap:8px}
-#tp-chart-wrap{flex:1;min-height:0}
+#tp-chart-wrap{flex:1;min-height:0;position:relative}
+#tp-chart-wrap canvas{position:absolute;inset:0}
 #tp-stats{width:300px;flex-shrink:0;border-right:1px solid var(--border);padding:10px 12px;overflow-y:auto}
 #tp-stats-title{font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
 #tp-closed{flex:1;padding:10px 12px;overflow-y:auto;min-width:0}
@@ -357,6 +358,15 @@ canvas{display:block}
         <button id="diag-btn" class="btn btn-g" onclick="runDiagnostics()" style="flex:none;padding:2px 10px;font-size:10px;margin-left:auto">▶ Run</button>
       </div>
       <div id="diag-body" style="font-size:11px;color:var(--muted)">Click Run to test all connections.</div>
+    </div>
+    <div class="card" style="border-bottom:none;border-top:1px solid var(--border)">
+      <div class="card-title">
+        WHAT MODEL LEARNED
+        <button class="btn btn-g" onclick="loadLearningInsights()" style="flex:none;padding:2px 10px;font-size:10px;margin-left:auto">↻ Load</button>
+      </div>
+      <div id="learning-body" style="font-size:11px;color:var(--muted)">
+        Click Load to see what the model has learned from its trades.
+      </div>
     </div>
   </div>
 </div>
@@ -1151,14 +1161,95 @@ async function runDiagnostics() {
   btn.disabled=false; btn.textContent='▶ Run';
 }
 
+async function loadLearningInsights() {
+  const el = document.getElementById('learning-body');
+  if (!el) return;
+  el.innerHTML = '<span style="color:var(--muted)">Querying training DB...</span>';
+  try {
+    const r = await fetch('/api/training-data?limit=500');
+    const d = await r.json();
+    const rows = d.rows || [];
+    const stats = d.stats || {};
+
+    if (!rows.length) {
+      el.innerHTML = '<span style="color:var(--muted)">No training data yet — decisions are logged each cycle.</span>';
+      return;
+    }
+
+    const closed  = rows.filter(r => r.outcome);
+    const wins    = closed.filter(r => r.outcome === 'win');
+    const entered = rows.filter(r => r.decision === 'trade');
+    const wr = closed.length ? (wins.length / closed.length * 100).toFixed(0) : '—';
+
+    // Group by regime
+    const byRegime = {};
+    closed.forEach(r => {
+      const reg = r.regime || 'unknown';
+      if (!byRegime[reg]) byRegime[reg] = {n:0,w:0};
+      byRegime[reg].n++; if(r.outcome==='win') byRegime[reg].w++;
+    });
+    const regLines = Object.entries(byRegime)
+      .filter(([,v])=>v.n>=2)
+      .sort((a,b)=>b[1].w/b[1].n-a[1].w/a[1].n)
+      .map(([k,v])=>`<span style="color:var(--muted)">${k}</span> <b style="color:${v.w/v.n>=0.5?'var(--green)':'var(--red)'}">${(v.w/v.n*100).toFixed(0)}%</b> (${v.n}T)`)
+      .join(' &nbsp; ');
+
+    // Group by direction
+    const byDir = {};
+    closed.forEach(r => {
+      const dir = r.direction || 'unknown';
+      if (!byDir[dir]) byDir[dir] = {n:0,w:0};
+      byDir[dir].n++; if(r.outcome==='win') byDir[dir].w++;
+    });
+    const dirLines = Object.entries(byDir)
+      .filter(([,v])=>v.n>=2)
+      .map(([k,v])=>`<span style="color:var(--muted)">${k}</span> <b style="color:${v.w/v.n>=0.5?'var(--green)':'var(--red)'}">${(v.w/v.n*100).toFixed(0)}%</b> (${v.n}T)`)
+      .join(' &nbsp; ');
+
+    // Per symbol stats
+    const bySym = {};
+    closed.forEach(r => {
+      const sym = r.symbol || '?';
+      if (!bySym[sym]) bySym[sym] = {n:0,w:0,pnls:[]};
+      bySym[sym].n++; if(r.outcome==='win') bySym[sym].w++;
+      if(r.outcome_pnl_pct!=null) bySym[sym].pnls.push(r.outcome_pnl_pct);
+    });
+    const symLines = Object.entries(bySym)
+      .filter(([,v])=>v.n>=2)
+      .sort((a,b)=>b[1].n-a[1].n)
+      .map(([k,v])=>{
+        const wr2=(v.w/v.n*100).toFixed(0);
+        const avgPnl=v.pnls.length?v.pnls.reduce((a,b)=>a+b,0)/v.pnls.length:0;
+        return `<div style="display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid rgba(255,255,255,.04)">
+          <span style="font-weight:700">${k}</span>
+          <span style="color:var(--muted)">${v.n}T &nbsp; WR:<b style="color:${wr2>=50?'var(--green)':'var(--red)'}">${wr2}%</b> &nbsp; avg:<b style="color:${avgPnl>=0?'var(--green)':'var(--red)'}">${avgPnl>=0?'+':''}${avgPnl.toFixed(1)}%</b></span>
+        </div>`;
+      }).join('');
+
+    el.innerHTML = `
+      <div style="padding:4px 0;border-bottom:1px solid var(--border);margin-bottom:8px">
+        <div style="font-size:10px;color:var(--muted);margin-bottom:2px">OVERALL (${closed.length} closed / ${entered.length} entered)</div>
+        <div style="font-size:13px;font-weight:700;color:${wr>=50?'var(--green)':'var(--red)'}">Win Rate: ${wr}%</div>
+      </div>
+      ${regLines ? `<div style="margin-bottom:8px"><div style="font-size:10px;color:var(--muted);margin-bottom:3px">BY REGIME</div><div style="font-size:11px">${regLines}</div></div>` : ''}
+      ${dirLines ? `<div style="margin-bottom:8px"><div style="font-size:10px;color:var(--muted);margin-bottom:3px">BY DIRECTION</div><div style="font-size:11px">${dirLines}</div></div>` : ''}
+      ${symLines ? `<div><div style="font-size:10px;color:var(--muted);margin-bottom:3px">BY SYMBOL (≥2 trades)</div>${symLines}</div>` : ''}
+    `;
+  } catch(e) {
+    el.innerHTML = `<span style="color:var(--red)">Error: ${esc(e.message)}</span>`;
+  }
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 initChart();
 initChartTP();
 connect();
 refreshAll();
+loadLearningInsights();
 setInterval(refreshAll, 30000);
 setInterval(refreshSim, 15000);
 setInterval(refreshSymbolStats, 60000);
+setInterval(loadLearningInsights, 300000); // refresh learning panel every 5 min
 </script>
 </body>
 </html>
