@@ -504,18 +504,39 @@ async def diagnostics():
         except Exception as e:
             return {"ok": False, "detail": str(e)[:150], "latency_ms": round((time.time()-t0)*1000)}
 
-    hist_r, quotes_r, macro_r, ant_r, news_r = await _aio.gather(
+    async def _test_database():
+        t0 = time.time()
+        from . import state as _state_mod
+        db_url = os.getenv("DATABASE_URL", "")
+        if not db_url:
+            return {"ok": False, "detail": "DATABASE_URL not set — using file fallback", "latency_ms": 0}
+        try:
+            conn = _state_mod._get_conn()
+            if not conn:
+                return {"ok": False, "detail": "Connection failed", "latency_ms": round((time.time()-t0)*1000)}
+            with conn.cursor() as cur:
+                cur.execute("SELECT updated_at FROM state_store WHERE id=1")
+                row = cur.fetchone()
+            ms = round((time.time()-t0)*1000)
+            ts = str(row[0])[:19] if row else "empty (first boot)"
+            return {"ok": True, "detail": f"Postgres connected | last save: {ts}", "latency_ms": ms}
+        except Exception as e:
+            return {"ok": False, "detail": str(e)[:150], "latency_ms": round((time.time()-t0)*1000)}
+
+    hist_r, quotes_r, macro_r, ant_r, news_r, db_r = await _aio.gather(
         _test_alpaca_history(),
         _test_alpaca_quotes(),
         _test_alpaca_macro(),
         _test_anthropic(),
         _test_alpaca_news(),
+        _test_database(),
     )
     results["alpaca_history"]   = hist_r
     results["alpaca_quotes"]    = quotes_r
     results["alpaca_macro"]     = macro_r
     results["anthropic"]        = ant_r
     results["alpaca_news"]      = news_r
+    results["database"]         = db_r
     results["all_ok"] = all(
         v.get("ok", False)
         for v in results.values()
@@ -565,6 +586,7 @@ async def sim_reset(api_key: str = ""):
     cleared_closed = len([p for p in d.get("sim_positions", []) if p.get("status") == "closed"])
     d["sim_positions"] = []
     d["pnl_history"]   = []
+    s.save()
     await _broadcast("system", "sim_reset", {
         "message": f"Sim reset: cleared {cleared_open} open + {cleared_closed} closed positions"
     })
