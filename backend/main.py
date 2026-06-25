@@ -572,6 +572,16 @@ async def stats():
         "kelly_fraction": tracker.get_kelly_fraction(),
     }
 
+@app.get("/api/training-data")
+async def training_data(limit: int = 200):
+    """Full scan_log table — every decision with context and outcome."""
+    from . import training_store as ts
+    return {
+        "rows":  ts.get_recent(limit=limit),
+        "stats": ts.get_stats(),
+    }
+
+
 @app.get("/api/sim/reset")
 async def sim_reset(api_key: str = ""):
     """

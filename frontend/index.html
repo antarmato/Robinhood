@@ -132,6 +132,7 @@ canvas{display:block}
 
 /* ── Trades page ────────────────────────────────────────────────────────── */
 #page-trades{flex-direction:column;overflow:hidden}
+#trades-top{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
 #trades-toolbar{display:flex;align-items:center;gap:12px;padding:8px 14px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0;font-size:11px}
 #trades-toolbar select{background:var(--bg3);border:1px solid var(--border);color:var(--text);font-family:inherit;font-size:10px;padding:3px 6px;border-radius:3px}
 #trades-table-wrap{flex:1;overflow:auto}
@@ -147,6 +148,21 @@ canvas{display:block}
 .ttable tr.open-row td:first-child{box-shadow:inset 2px 0 0 var(--sim)}
 #trades-summary{display:flex;gap:20px;font-size:10px;color:var(--muted);margin-left:auto}
 #trades-summary span{color:var(--text);font-weight:700}
+
+/* ── Trades page bottom perf panel ─────────────────────────────────────── */
+#trades-bottom{flex:0 0 260px;display:flex;border-top:2px solid var(--border);background:var(--bg);overflow:hidden}
+#tp-chart{width:340px;flex-shrink:0;border-right:1px solid var(--border);padding:10px 12px;display:flex;flex-direction:column}
+#tp-chart-title{font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);margin-bottom:6px;display:flex;align-items:center;gap:8px}
+#tp-chart-wrap{flex:1;min-height:0}
+#tp-stats{width:300px;flex-shrink:0;border-right:1px solid var(--border);padding:10px 12px;overflow-y:auto}
+#tp-stats-title{font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+#tp-closed{flex:1;padding:10px 12px;overflow-y:auto;min-width:0}
+#tp-closed-title{font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);margin-bottom:8px;display:flex;align-items:center;gap:8px}
+#tp-closed-list .ct-row{padding:5px 0;font-size:11px}
+.tp-stat-row{display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.03);font-size:11px}
+.tp-stat-row:last-child{border-bottom:none}
+.tp-stat-k{color:var(--muted)}
+.tp-stat-v{font-weight:700}
 
 /* ── Trade detail modal ─────────────────────────────────────────────────── */
 #modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;display:none;align-items:center;justify-content:center}
@@ -347,28 +363,30 @@ canvas{display:block}
 
 <!-- ═══════════════════ PAGE: TRADES ═══════════════════ -->
 <div id="page-trades" class="page">
-  <div id="trades-toolbar">
-    <span style="font-weight:700;color:var(--muted);letter-spacing:1px;font-size:10px">FILTER</span>
-    <select id="filter-status" onchange="renderTradesTable()">
-      <option value="all">All trades</option>
-      <option value="closed">Closed only</option>
-      <option value="open">Open only</option>
-      <option value="win">Wins only</option>
-      <option value="loss">Losses only</option>
-    </select>
-    <select id="filter-symbol" onchange="renderTradesTable()">
-      <option value="all">All symbols</option>
-    </select>
-    <div id="trades-summary">
-      <span id="ts-count" style="color:var(--muted)">—</span> trades &nbsp;
-      P&L: <span id="ts-pnl">—</span> &nbsp;
-      WR: <span id="ts-wr">—</span>
+
+  <!-- Top half: sortable table -->
+  <div id="trades-top">
+    <div id="trades-toolbar">
+      <span style="font-weight:700;color:var(--muted);letter-spacing:1px;font-size:10px">FILTER</span>
+      <select id="filter-status" onchange="renderTradesTable()">
+        <option value="all">All trades</option>
+        <option value="closed">Closed only</option>
+        <option value="open">Open only</option>
+        <option value="win">Wins only</option>
+        <option value="loss">Losses only</option>
+      </select>
+      <select id="filter-symbol" onchange="renderTradesTable()">
+        <option value="all">All symbols</option>
+      </select>
+      <div id="trades-summary">
+        <span id="ts-count" style="color:var(--muted)">—</span> trades &nbsp;
+        P&L: <span id="ts-pnl">—</span> &nbsp;
+        WR: <span id="ts-wr">—</span>
+      </div>
     </div>
-  </div>
-  <div id="trades-table-wrap">
-    <table class="ttable">
-      <thead>
-        <tr>
+    <div id="trades-table-wrap">
+      <table class="ttable">
+        <thead><tr>
           <th onclick="sortTrades('symbol')" id="th-symbol">Symbol <span class="sort-arrow">↕</span></th>
           <th onclick="sortTrades('direction')">Dir <span class="sort-arrow">↕</span></th>
           <th onclick="sortTrades('option_type')">Type <span class="sort-arrow">↕</span></th>
@@ -383,12 +401,49 @@ canvas{display:block}
           <th onclick="sortTrades('weighted_score')">Score <span class="sort-arrow">↕</span></th>
           <th onclick="sortTrades('confidence')">Conf <span class="sort-arrow">↕</span></th>
           <th>Exit Reason</th>
-        </tr>
-      </thead>
-      <tbody id="trades-body">
-        <tr><td colspan="14" style="color:var(--muted);padding:16px 12px;text-align:center">No trade data yet</td></tr>
-      </tbody>
-    </table>
+        </tr></thead>
+        <tbody id="trades-body">
+          <tr><td colspan="14" style="color:var(--muted);padding:16px 12px;text-align:center">No trade data yet</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Bottom half: equity + stats + closed trades -->
+  <div id="trades-bottom">
+
+    <div id="tp-chart">
+      <div id="tp-chart-title">
+        EQUITY CURVE
+        <span id="tp-chart-count" style="font-weight:400;color:var(--muted);font-size:10px"></span>
+      </div>
+      <div id="tp-chart-wrap"><canvas id="tp-pnl-chart"></canvas></div>
+    </div>
+
+    <div id="tp-stats">
+      <div id="tp-stats-title">PERFORMANCE</div>
+      <div class="tp-stat-row"><span class="tp-stat-k">Total P&L</span><span class="tp-stat-v" id="tp-s-pnl">—</span></div>
+      <div class="tp-stat-row"><span class="tp-stat-k">Win Rate</span><span class="tp-stat-v" id="tp-s-wr">—</span></div>
+      <div class="tp-stat-row"><span class="tp-stat-k">Avg Win</span><span class="tp-stat-v v-g" id="tp-s-win">—</span></div>
+      <div class="tp-stat-row"><span class="tp-stat-k">Avg Loss</span><span class="tp-stat-v v-r" id="tp-s-loss">—</span></div>
+      <div class="tp-stat-row"><span class="tp-stat-k">Best Trade</span><span class="tp-stat-v v-g" id="tp-s-best">—</span></div>
+      <div class="tp-stat-row"><span class="tp-stat-k">Worst Trade</span><span class="tp-stat-v v-r" id="tp-s-worst">—</span></div>
+      <div class="tp-stat-row"><span class="tp-stat-k">Expectancy</span><span class="tp-stat-v" id="tp-s-expectancy">—</span></div>
+      <div class="tp-stat-row"><span class="tp-stat-k">Kelly f*</span><span class="tp-stat-v" id="tp-s-kelly" style="color:var(--muted)">—</span></div>
+      <div class="tp-stat-row"><span class="tp-stat-k">Max Drawdown</span><span class="tp-stat-v v-r" id="tp-s-maxdd">—</span></div>
+      <div class="tp-stat-row"><span class="tp-stat-k">Profit Factor</span><span class="tp-stat-v" id="tp-s-pf" style="color:var(--muted)">—</span></div>
+    </div>
+
+    <div id="tp-closed">
+      <div id="tp-closed-title">
+        CLOSED TRADES
+        <span style="font-weight:400;color:var(--muted);font-size:10px">click for details</span>
+      </div>
+      <div id="tp-closed-list">
+        <div style="color:var(--muted);font-size:11px">No closed trades yet</div>
+      </div>
+    </div>
+
   </div>
 </div>
 
@@ -404,6 +459,7 @@ canvas{display:block}
 // ── State ─────────────────────────────────────────────────────────────────────
 let ws         = null;
 let chart      = null;
+let chartTP    = null;  // trades page chart
 let lastScan   = null;
 let scanNextAt = null;
 let allTrades  = [];
@@ -490,6 +546,39 @@ function initChart() {
   });
 }
 
+function initChartTP() {
+  const canvas = document.getElementById('tp-pnl-chart');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  chartTP = new Chart(ctx, {
+    type: 'line',
+    data: { labels: [], datasets: [{
+      label: 'Cumulative P&L', data: [],
+      borderColor:'#22c55e', backgroundColor:'rgba(34,197,94,0.06)',
+      borderWidth:2, pointRadius:5, pointHoverRadius:7,
+      pointBackgroundColor:[], pointBorderColor:'transparent',
+      fill:true, tension:0.3,
+    }]},
+    options: {
+      responsive:true, maintainAspectRatio:false, animation:{duration:400},
+      plugins: {
+        legend:{display:false},
+        tooltip:{
+          callbacks:{
+            title: ctx => { const d=ctx[0].raw; const pct=d.pct!=null?` (${d.pct>=0?'+':''}${d.pct.toFixed(1)}%)`:''; return `${d.symbol} ${d.dir}${pct}`; },
+            label: ctx => { const d=ctx.raw; return ` Trade: $${d.trade>=0?'+':''}${d.trade.toFixed(2)} | Total: $${d.y>=0?'+':''}${d.y.toFixed(2)}`; }
+          },
+          backgroundColor:'#1a1a2e', borderColor:'#2a2a45', borderWidth:1,
+        }
+      },
+      scales:{
+        x:{ticks:{color:'#454568',font:{size:9}},grid:{color:'#1e1e38'}},
+        y:{ticks:{color:'#454568',font:{size:9},callback:v=>'$'+(v>=0?'+':'')+v.toFixed(0)},grid:{color:'#1e1e38'}}
+      }
+    }
+  });
+}
+
 function updateChart(history) {
   if (!chart || !history.length) return;
   const labels  = history.map((h,i)=>h.symbol?`${h.symbol} T${i+1}`:`T${i+1}`);
@@ -503,6 +592,18 @@ function updateChart(history) {
   chart.update('none');
   document.getElementById('chart-trade-count').textContent =
     history.length ? `${history.length} trade${history.length!==1?'s':''}` : '';
+
+  // Mirror to trades page chart
+  if (chartTP) {
+    chartTP.data.labels = labels;
+    const dsTP = chartTP.data.datasets[0];
+    dsTP.data = data; dsTP.pointBackgroundColor = ptColors;
+    dsTP.borderColor     = latest>=0?'#22c55e':'#ef4444';
+    dsTP.backgroundColor = latest>=0?'rgba(34,197,94,0.06)':'rgba(239,68,68,0.06)';
+    chartTP.update('none');
+    const tpCount = document.getElementById('tp-chart-count');
+    if (tpCount) tpCount.textContent = history.length ? `${history.length} trades` : '';
+  }
 }
 
 // ── WebSocket ─────────────────────────────────────────────────────────────────
@@ -734,6 +835,20 @@ function renderStats(s) {
   if (mddEl&&s.max_drawdown!=null) mddEl.textContent=s.max_drawdown>0?`-$${s.max_drawdown.toFixed(2)}`:'$0';
   const pfEl=document.getElementById('s-pf');
   if (pfEl&&cnt>=3&&los&&win) { const pf=(wr/100*win)/((1-wr/100)*Math.abs(los)); pfEl.textContent=pf.toFixed(2); pfEl.style.color=pf>1?'var(--green)':'var(--red)'; }
+
+  // Mirror to trades page stats panel
+  function tpSet(id,val){const el=document.getElementById(id);if(el)el.textContent=val;}
+  function tpCol(id,col){const el=document.getElementById(id);if(el)el.style.color=col;}
+  tpSet('tp-s-pnl',`${pnl>=0?'+':''}$${Math.abs(pnl).toFixed(2)}`); tpCol('tp-s-pnl',pnl>0?'var(--green)':pnl<0?'var(--red)':'var(--text)');
+  tpSet('tp-s-wr', cnt?`${wr.toFixed(0)}% · ${cnt} closed`:'—'); tpCol('tp-s-wr',wr>=50?'var(--green)':cnt?'var(--red)':'var(--text)');
+  tpSet('tp-s-win', win?`+$${win.toFixed(2)}`:'—');
+  tpSet('tp-s-loss', los?`$${los.toFixed(2)}`:'—');
+  tpSet('tp-s-best',  s.best_trade ?`+$${s.best_trade.toFixed(2)}`:'—');
+  tpSet('tp-s-worst', s.worst_trade?`$${s.worst_trade.toFixed(2)}`:'—');
+  if(s.expectancy_pct!=null){const ep=s.expectancy_pct;tpSet('tp-s-expectancy',ep>0?`+${ep.toFixed(1)}%`:`${ep.toFixed(1)}%`);tpCol('tp-s-expectancy',ep>0?'var(--green)':'var(--red)');}
+  if(s.kelly_fraction!=null)tpSet('tp-s-kelly',s.kelly_fraction>0?`${(s.kelly_fraction*100).toFixed(1)}%`:'—');
+  if(s.max_drawdown!=null)tpSet('tp-s-maxdd',s.max_drawdown>0?`-$${s.max_drawdown.toFixed(2)}`:'$0');
+  if(cnt>=3&&los&&win){const pf2=(wr/100*win)/((1-wr/100)*Math.abs(los));tpSet('tp-s-pf',pf2.toFixed(2));tpCol('tp-s-pf',pf2>1?'var(--green)':'var(--red)');}
 }
 
 async function refreshSymbolStats() {
@@ -757,7 +872,11 @@ async function refreshSymbolStats() {
 
 function renderClosedTrades(trades) {
   const el=document.getElementById('closed-list');
-  if (!trades.length) { el.innerHTML='<div style="color:var(--muted);font-size:11px">No closed trades yet</div>'; return; }
+  const elTP=document.getElementById('tp-closed-list');
+  if (!trades.length) {
+    const empty='<div style="color:var(--muted);font-size:11px">No closed trades yet</div>';
+    el.innerHTML=empty; if(elTP)elTP.innerHTML=empty; return;
+  }
   el.innerHTML = [...trades].reverse().map(t=>{
     const pnl=t.pnl_dollars??0, pnlPct=t.pnl_pct??0;
     const pnlC=pnl>0?'var(--green)':'var(--red)';
@@ -768,6 +887,23 @@ function renderClosedTrades(trades) {
     return `<div class="ct-row" onclick="openModal(${tJson})">
       <span class="ct-sym">${esc(t.symbol)}</span>
       <span class="ct-type" style="color:${t.direction==='bullish'?'var(--green)':'var(--red)'}">${typeStr}</span>
+      <span class="ct-reason">${esc(reason)}</span>
+      <span class="ct-pnl" style="color:${pnlC}">${pnlStr}</span>
+    </div>`;
+  }).join('');
+  // Trades page gets all trades (no cap), slightly larger font
+  if (elTP) elTP.innerHTML = [...trades].reverse().map(t=>{
+    const pnl=t.pnl_dollars??0,pnlPct=t.pnl_pct??0;
+    const pnlC=pnl>0?'var(--green)':'var(--red)';
+    const pnlStr=`${pnlPct>=0?'+':''}${pnlPct.toFixed(1)}% ($${pnl>=0?'+':''}${pnl.toFixed(2)})`;
+    const reason=(t.exit_reason||'').slice(0,50);
+    const typeStr=t.option_type?.toUpperCase()||'?';
+    const enteredAt=t.opened_at?fmtDateTime(t.opened_at):'';
+    const tJson=JSON.stringify(JSON.stringify(t));
+    return `<div class="ct-row" onclick="openModal(${tJson})" style="padding:5px 0">
+      <span class="ct-sym">${esc(t.symbol)}</span>
+      <span class="ct-type" style="color:${t.direction==='bullish'?'var(--green)':'var(--red)'}">${typeStr}</span>
+      <span style="color:var(--muted);font-size:10px;flex-shrink:0">${enteredAt}</span>
       <span class="ct-reason">${esc(reason)}</span>
       <span class="ct-pnl" style="color:${pnlC}">${pnlStr}</span>
     </div>`;
@@ -1017,6 +1153,7 @@ async function runDiagnostics() {
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 initChart();
+initChartTP();
 connect();
 refreshAll();
 setInterval(refreshAll, 30000);

@@ -34,6 +34,7 @@ from .state import get_state
 from .outcome_tracker import get_outcome_tracker
 from .market_regime import classify_regime
 from . import market_data as md
+from . import training_store as ts
 
 logger = logging.getLogger(__name__)
 
@@ -415,6 +416,20 @@ class Orchestrator:
 
         self.state.store_scan_results(scan_summary, cycle)
 
+        # Log full scan to training DB — maps symbol → position_id for entered trades
+        try:
+            position_id_map = {}
+            if best_result:
+                sym = best_result.get("symbol")
+                # Find the position we just opened
+                for p in self.state.get_sim_positions(status="open"):
+                    if p.get("symbol") == sym and p.get("cycle") == cycle:
+                        position_id_map[sym] = p["position_id"]
+                        break
+            ts.log_scan_results(cycle, scan_summary, self.state.market_regime, position_id_map)
+        except Exception as e:
+            logger.warning(f"Training store log failed: {e}")
+
     # ── Candidate analysis ─────────────────────────────────────────────────────
 
     async def _analyze_candidate(
@@ -758,6 +773,15 @@ class Orchestrator:
                     get_outcome_tracker().record_sim_close(closed_pos)
                 except Exception as e:
                     logger.warning(f"Outcome tracker record failed: {e}")
+
+                # Write outcome back to training DB
+                try:
+                    ts.update_outcome(
+                        pos_id, pnl_pct, pnl_dollars,
+                        days_held=days_held, exit_reason=exit_reason
+                    )
+                except Exception as e:
+                    logger.warning(f"Training store outcome update failed: {e}")
 
                 cumulative = self.state.cumulative_sim_pnl()
                 await self._emit("system", "sim_closed", {
