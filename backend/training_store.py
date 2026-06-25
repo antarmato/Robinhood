@@ -597,6 +597,31 @@ def get_learned_context(min_samples: int = 5) -> str:
                 lines.append("  LOW WIN patterns: " +
                     " | ".join(f"{p['desc']} {int(p['win_rate'])}%WR ({p['n']}T)" for p in bad[:4]))
 
+            # Exit reason analysis — which exits tend to preserve more value?
+            cur.execute("""
+                SELECT
+                    CASE
+                        WHEN outcome_exit_reason ILIKE '%trailing stop%' THEN 'trailing-stop'
+                        WHEN outcome_exit_reason ILIKE '%stop loss%'     THEN 'stop-loss'
+                        WHEN outcome_exit_reason ILIKE '%theta%'         THEN 'theta-exit'
+                        WHEN outcome_exit_reason ILIKE '%mini-peak%'     THEN 'mini-peak'
+                        WHEN outcome_exit_reason ILIKE '%stale%'         THEN 'stale-loser'
+                        WHEN outcome_exit_reason ILIKE '%expiry%'        THEN 'expiry'
+                        WHEN outcome_exit_reason ILIKE '%low-conf%'      THEN 'low-conf-tp'
+                        ELSE 'other' END AS exit_type,
+                    COUNT(*) AS n,
+                    ROUND(AVG(outcome_pnl_pct)::NUMERIC, 1) AS avg_pnl,
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr
+                FROM scan_log
+                WHERE decision='trade' AND outcome IS NOT NULL AND outcome_exit_reason IS NOT NULL
+                GROUP BY 1 HAVING COUNT(*) >= 2
+                ORDER BY avg_pnl DESC
+            """)
+            exit_rows = cur.fetchall()
+            if exit_rows:
+                lines.append("  Exit reason outcomes: " +
+                    " | ".join(f"{r[0]} avg{r[2]:+.0f}% {int(r[3])}%WR ({r[1]}T)" for r in exit_rows))
+
             lines.append("CALIBRATION RULE: Reduce confidence by 1-2 for any regime/symbol/pattern matching LOW WIN conditions. Increase by 1 for TOP WIN matches.")
             return "\n".join(lines)
 
