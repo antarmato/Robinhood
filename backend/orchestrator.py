@@ -897,6 +897,13 @@ class Orchestrator:
                     f"Stale-loser exit: {days_held}d held, "
                     f"max gain {new_high:+.0f}%, now {pnl_pct:+.1f}%"
                 )
+            elif days_held >= 15 and abs(pnl_pct) < 10.0 and new_high < 15.0:
+                # Dead money: 15+ days and still near flat — burning theta with no directional move.
+                # Cut the position to redeploy capital into a better setup.
+                exit_reason = (
+                    f"Dead-money exit: {days_held}d held, "
+                    f"max {new_high:+.0f}%, stuck at {pnl_pct:+.1f}% — theta decay"
+                )
             elif dte_left <= 7 and pnl_pct < 20.0:
                 # Final week: theta burns fast; close unless strongly profitable
                 exit_reason = f"Theta exit: {dte_left} DTE, P&L {pnl_pct:+.1f}% (final week)"
