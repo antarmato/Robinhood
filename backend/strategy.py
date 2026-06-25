@@ -36,16 +36,29 @@ def confidence_minimum(symbol: str) -> int:
     """
     Return the minimum confidence (1-10) required for this symbol.
     High-beta / crypto-proxy symbols require stronger conviction before entry.
-    Also queries training DB — if a symbol has ≥5 closed trades with <35% WR, raises bar to 7.
+    Also queries training DB — adjusts based on historical win rate AND expected value.
     """
     base = _SYMBOL_CONF_FLOOR.get(symbol, THRESHOLD_CONF)
     try:
         from .training_store import get_symbol_perf
         sym_stats = get_symbol_perf(min_trades=5).get(symbol)
-        if sym_stats and sym_stats.get("win_rate", 1.0) < 0.35:
-            base = max(base, 7)  # consistently losing — require high conviction
-        elif sym_stats and sym_stats.get("win_rate", 0.0) > 0.65:
-            base = max(THRESHOLD_CONF, base - 1)  # proven winner — lower bar slightly
+        if sym_stats:
+            wr      = sym_stats.get("win_rate", 0.5)
+            avg_pnl = sym_stats.get("avg_pnl", 0.0)
+            avg_win = sym_stats.get("avg_win", 0.0)
+            avg_los = sym_stats.get("avg_loss", 0.0)
+            # Expected value = WR * avg_win% - (1-WR) * |avg_loss%|
+            ev = wr * avg_win - (1 - wr) * abs(avg_los) if avg_win or avg_los else avg_pnl
+
+            if wr < 0.35 or ev < -10.0:
+                # Consistently losing or terrible EV — require strong conviction
+                base = max(base, 7)
+            elif wr < 0.45 or ev < -5.0:
+                # Below average — tighten slightly
+                base = max(base, 6)
+            elif wr > 0.65 and ev > 5.0:
+                # Proven profitable winner — lower bar slightly
+                base = max(THRESHOLD_CONF, base - 1)
     except Exception:
         pass
     return base
