@@ -40,14 +40,29 @@ def _compute_score(technical: dict, fundamental: dict, sentiment: dict, risk: di
       fund  × 1.5  (max 15) — catalyst/earnings safety
       sent  × 1.5  (max 15) — macro environment
       risk  × 1.0  (max 10) — always ~8, small contribution
-    No advocate term — fatal flaws are now handled before this call.
-    Threshold 38 means: need tech≥6 OR strong fund+sent with tech=5.
+    Signal consensus bonus/penalty (applied after weighting):
+      3/3 agents ≥ 7  → +3.0  (all green lights)
+      2/3 agents ≥ 7  → +1.0  (solid consensus)
+      0/3 agents ≥ 7  → -3.0  (weak across the board)
     """
     tech_s = float(technical.get("score", 5))
     fund_s = float(fundamental.get("score", 5))
     sent_s = float(sentiment.get("score", 5))
     risk_s = float(risk.get("score", 8))
-    return round(tech_s * 3.0 + fund_s * 1.5 + sent_s * 1.5 + risk_s * 1.0, 1)
+    base = tech_s * 3.0 + fund_s * 1.5 + sent_s * 1.5 + risk_s * 1.0
+
+    # Signal consensus: how many of the 3 main agents score ≥ 7?
+    strong_count = sum([tech_s >= 7, fund_s >= 7, sent_s >= 7])
+    if strong_count == 3:
+        consensus = 3.0    # all three aligned — highest conviction
+    elif strong_count == 2:
+        consensus = 1.0    # two of three — solid setup
+    elif strong_count == 1:
+        consensus = 0.0    # only one agent confident — neutral
+    else:
+        consensus = -3.0   # none of the three — weak across the board
+
+    return round(base + consensus, 1)
 
 
 class JudgeAgent(BaseAgent):
