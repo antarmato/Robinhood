@@ -104,6 +104,7 @@ def _ensure_schema(conn):
             "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS above_ema50 BOOLEAN",
             "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS adx FLOAT",
             "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS consensus_score INTEGER",
+            "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS vol_ratio FLOAT",
         ]:
             try:
                 cur.execute(col_ddl)
@@ -164,6 +165,7 @@ def log_scan_results(cycle: int, scan_summary: list, regime: dict, position_id_m
             (r.get("bear_case") or "")[:500],
             pos_id,
             consensus,
+            r.get("vol_ratio"),
         ))
 
     try:
@@ -177,9 +179,9 @@ def log_scan_results(cycle: int, scan_summary: list, regime: dict, position_id_m
                     above_ema200, above_ema20, above_ema50, adx,
                     momentum_60d, stoch_k, vwap20_pct, tech_fatal_flaw,
                     pass_reason, reasoning, bull_case, bear_case,
-                    position_id, consensus_score
+                    position_id, consensus_score, vol_ratio
                 ) VALUES (%s,%s,%s,%s, %s,%s,%s,%s,%s, %s,%s,%s, %s,%s,%s,%s,
-                          %s,%s,%s,%s, %s,%s,%s,%s, %s,%s,%s,%s, %s,%s)
+                          %s,%s,%s,%s, %s,%s,%s,%s, %s,%s,%s,%s, %s,%s,%s)
             """, rows)
         logger.info(f"TrainingStore: logged {len(rows)} rows for cycle {cycle}")
     except Exception as e:
@@ -357,6 +359,42 @@ def get_best_patterns(min_samples: int = 3) -> list:
             for row in cur.fetchall():
                 patterns.append({"desc": row[0], "n": int(row[1]), "win_rate": float(row[2])})
 
+            # Pattern 7: VIX level bucket
+            cur.execute("""
+                SELECT CONCAT(
+                    CASE WHEN vix < 16 THEN 'VIX<16(calm)'
+                         WHEN vix < 20 THEN 'VIX 16-20'
+                         WHEN vix < 25 THEN 'VIX 20-25'
+                         ELSE 'VIX≥25(fear)' END,
+                    ' + ', direction) AS pat,
+                    COUNT(*) AS n,
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr
+                FROM scan_log
+                WHERE decision='trade' AND outcome IS NOT NULL AND vix IS NOT NULL
+                GROUP BY 1 HAVING COUNT(*) >= %s
+                ORDER BY wr DESC LIMIT 8
+            """, (min_samples,))
+            for row in cur.fetchall():
+                patterns.append({"desc": row[0], "n": int(row[1]), "win_rate": float(row[2])})
+
+            # Pattern 8: Volume ratio (breakout vs quiet)
+            cur.execute("""
+                SELECT CONCAT(
+                    CASE WHEN vol_ratio >= 1.5 THEN 'vol≥1.5x(breakout)'
+                         WHEN vol_ratio >= 1.1 THEN 'vol 1.1-1.5x'
+                         WHEN vol_ratio >= 0.8 THEN 'vol normal'
+                         ELSE 'vol<0.8x(dry)' END,
+                    ' + ', direction) AS pat,
+                    COUNT(*) AS n,
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr
+                FROM scan_log
+                WHERE decision='trade' AND outcome IS NOT NULL AND vol_ratio IS NOT NULL
+                GROUP BY 1 HAVING COUNT(*) >= %s
+                ORDER BY wr DESC LIMIT 8
+            """, (min_samples,))
+            for row in cur.fetchall():
+                patterns.append({"desc": row[0], "n": int(row[1]), "win_rate": float(row[2])})
+
     except Exception as e:
         logger.warning(f"TrainingStore get_best_patterns failed: {e}")
 
@@ -368,7 +406,7 @@ def get_best_patterns(min_samples: int = 3) -> list:
         if k not in seen:
             seen.add(k)
             result.append(p)
-    return result[:10]
+    return result[:12]
 
 
 def get_learned_context(min_samples: int = 5) -> str:

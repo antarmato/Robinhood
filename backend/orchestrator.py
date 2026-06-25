@@ -391,6 +391,7 @@ class Orchestrator:
                 "above_ema20":     candidate.get("above_ema20"),
                 "above_ema50":     candidate.get("above_ema50"),
                 "adx":             tech.get("adx") or candidate.get("adx"),
+                "vol_ratio":       tech.get("vol_ratio") or candidate.get("vol_ratio"),
                 "proposal_generated": False,
             })
 

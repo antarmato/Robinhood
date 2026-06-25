@@ -377,15 +377,21 @@ class TechnicalAgent(BaseAgent):
 
             # ── 52W range position ────────────────────────────────────────────
             w52 = i.get("w52_pct", 50)
-            if w52 > 92:
-                score -= 0.75; signals.append("near 52W high — limited room")
+            vr  = i["vol_ratio"]
+            if w52 > 92 and vr >= 1.3:
+                score += 0.5;  signals.append(f"52W high breakout with volume ({vr:.1f}x)")
+            elif w52 > 92:
+                score -= 0.75; signals.append("near 52W high — limited room, low volume")
             elif w52 < 30 and above_ema50:
                 score += 0.5;  signals.append("low in 52W range, still in uptrend")
 
-            # ── BB overextension ──────────────────────────────────────────────
-            if i["bb_pct"] > 0.92:
-                score -= 1.0;  signals.append("near upper BB — stretched")
-            elif i["bb_pct"] < 0.3 and above_ema50:
+            # ── BB overextension / breakout ───────────────────────────────────
+            bb = i["bb_pct"]
+            if bb > 1.0 and vr >= 1.2:
+                score += 0.5;  signals.append("BB breakout with volume — momentum ignition")
+            elif bb > 0.92:
+                score -= 0.75; signals.append("near upper BB — extended without volume")
+            elif bb < 0.3 and above_ema50:
                 score += 0.5;  signals.append("pullback in uptrend")
 
             # ── Multi-timeframe alignment bonus ───────────────────────────────
@@ -497,16 +503,22 @@ class TechnicalAgent(BaseAgent):
                 score += 0.25  # stoch falling in sell zone
 
             # ── 52W range position ────────────────────────────────────────────
-            w52 = i.get("w52_pct", 50)
-            if w52 < 8:
-                score -= 0.75; signals.append("near 52W low — bounce risk")
+            w52  = i.get("w52_pct", 50)
+            vr_b = i["vol_ratio"]
+            if w52 < 8 and vr_b >= 1.3:
+                score += 0.5;  signals.append(f"52W low breakdown with volume ({vr_b:.1f}x) — momentum short")
+            elif w52 < 8:
+                score -= 0.75; signals.append("near 52W low — bounce risk, low volume")
             elif w52 > 70 and not above_ema50:
                 score += 0.5;  signals.append("high in 52W range, below EMAs")
 
-            # ── BB ────────────────────────────────────────────────────────────
-            if i["bb_pct"] < 0.08:
-                score -= 1.0;  signals.append("near lower BB — oversold")
-            elif i["bb_pct"] > 0.7 and not above_ema50:
+            # ── BB breakdown / oversold ───────────────────────────────────────
+            bb_b = i["bb_pct"]
+            if bb_b < 0.0 and vr_b >= 1.2:
+                score += 0.5;  signals.append("BB breakdown with volume — momentum short")
+            elif bb_b < 0.08:
+                score -= 0.75; signals.append("near lower BB — oversold, bounce risk")
+            elif bb_b > 0.7 and not above_ema50:
                 score += 0.5;  signals.append("overbought in downtrend")
 
             # ── Intraday timing (bearish) ─────────────────────────────────────
