@@ -566,6 +566,26 @@ def get_learned_context(min_samples: int = 5) -> str:
                 lines.append("  Regime+direction combos: " +
                     " | ".join(f"{r[0]} {int(r[2])}% ({r[1]}T)" for r in combo_rows))
 
+            # Time-of-day win rates (using logged_at → ET hour)
+            cur.execute("""
+                SELECT
+                    CASE
+                        WHEN EXTRACT(HOUR FROM logged_at AT TIME ZONE 'America/New_York') < 10 THEN 'pre-open(<10am)'
+                        WHEN EXTRACT(HOUR FROM logged_at AT TIME ZONE 'America/New_York') < 12 THEN 'morning(10-12)'
+                        WHEN EXTRACT(HOUR FROM logged_at AT TIME ZONE 'America/New_York') < 14 THEN 'midday(12-2)'
+                        ELSE 'afternoon(2pm+)' END AS tod,
+                    COUNT(*) AS n,
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr
+                FROM scan_log
+                WHERE decision='trade' AND outcome IS NOT NULL
+                GROUP BY 1 HAVING COUNT(*) >= 3
+                ORDER BY wr DESC
+            """)
+            tod_rows = cur.fetchall()
+            if tod_rows:
+                lines.append("  Win rate by time of day: " +
+                    " | ".join(f"{r[0]}: {int(r[2])}% ({r[1]}T)" for r in tod_rows))
+
             # Top predictive patterns
             patterns = get_best_patterns(min_samples=3)
             good = [p for p in patterns if p["win_rate"] >= 60 and p["n"] >= 3]
