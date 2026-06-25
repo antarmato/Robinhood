@@ -60,6 +60,22 @@ def classify_regime() -> dict:
             except Exception:
                 pass
 
+        # Sector ETF breadth: XLK (tech), XLF (financials), XLY (consumer disc)
+        # Up to 3 additional points for sector alignment
+        sector_breadth = 0
+        sector_total   = 0
+        for etf in ["XLK", "XLF", "XLY"]:
+            try:
+                df = md.get_historicals(etf, period="3mo")
+                if not df.empty and len(df) >= 21:
+                    c   = df["close"]
+                    e20 = c.ewm(span=20, adjust=False).mean()
+                    sector_total += 1
+                    if float(c.iloc[-1]) > float(e20.iloc[-1]):
+                        sector_breadth += 1
+            except Exception:
+                pass
+
         bull = 0
         bear = 0
 
@@ -78,6 +94,11 @@ def classify_regime() -> dict:
         elif breadth_bull >= 2: bull += 1
         elif breadth_bull == 0: bear += 2   # all three bearish — real deterioration
         else:                   bear += 1
+
+        # Sector breadth bonus (XLK + XLF + XLY above EMA20)
+        if sector_total > 0:
+            if sector_breadth == sector_total:  bull += 1   # all sectors bullish
+            elif sector_breadth == 0:           bear += 1   # all sectors bearish
 
         # 20-day return
         if spy_ret_20d > 4:    bull += 2
@@ -116,14 +137,16 @@ def classify_regime() -> dict:
             "spy_ret_20d":     round(spy_ret_20d, 2),
             "vix_level":       round(vix_level, 1),
             "vix_trend":       vix_trend,
-            "breadth":         breadth_bull,   # 0-3: how many indexes above EMA20
+            "breadth":         breadth_bull,      # 0-3: index breadth (SPY/QQQ/IWM)
+            "sector_breadth":  sector_breadth,    # 0-3: sector ETF breadth (XLK/XLF/XLY)
             "bull_points":     bull,
             "bear_points":     bear,
             "summary": (
                 f"SPY slope {spy_slope_5d:+.2f}%/5d | "
                 f"{'above' if spy_above_ema50 else 'below'} EMA50 | "
                 f"{'above' if spy_above_ema200 else 'below'} EMA200 | "
-                f"breadth {breadth_bull}/3 | "
+                f"idx breadth {breadth_bull}/3 | "
+                f"sector breadth {sector_breadth}/{sector_total} | "
                 f"20d ret {spy_ret_20d:+.1f}% | "
                 f"VIX {vix_level:.0f} {vix_trend}"
             ),
