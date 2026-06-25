@@ -451,6 +451,24 @@ def get_learned_context(min_samples: int = 5) -> str:
                 lines.append("  Win rate by confidence: " +
                     " | ".join(f"{r[0]}: {int(r[2])}% ({r[1]}T)" for r in conf_rows))
 
+            # Days held by outcome — tells us optimal hold duration
+            cur.execute("""
+                SELECT outcome,
+                       ROUND(AVG(outcome_days_held), 1) AS avg_days,
+                       ROUND(MIN(outcome_days_held), 0) AS min_days,
+                       ROUND(MAX(outcome_days_held), 0) AS max_days,
+                       COUNT(*) AS n
+                FROM scan_log
+                WHERE decision='trade' AND outcome IS NOT NULL
+                  AND outcome_days_held IS NOT NULL AND outcome_days_held > 0
+                GROUP BY outcome
+            """)
+            hold_rows = cur.fetchall()
+            if hold_rows:
+                hold_parts = [f"{r[0]}: avg {r[1]}d (range {r[2]}-{r[3]}d, {r[4]}T)"
+                              for r in hold_rows]
+                lines.append("  Hold duration: " + " | ".join(hold_parts))
+
             # Recent trend: last 10 closed trades vs overall
             cur.execute("""
                 SELECT COUNT(*) AS n,

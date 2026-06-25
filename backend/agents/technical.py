@@ -179,7 +179,8 @@ class TechnicalAgent(BaseAgent):
         ind["vwap20"] = float((tp20 * vol20).sum() / total_vol) if total_vol > 0 else float(close.iloc[-1])
         ind["vwap20_pct"] = (price - ind["vwap20"]) / ind["vwap20"] * 100  # % above/below VWAP
 
-        # ── Momentum (5d, 20d, 60d returns) ──────────────────────────────────
+        # ── Momentum (1d, 5d, 20d, 60d returns) ─────────────────────────────
+        ind["momentum_1d"]  = (float(close.iloc[-1]) - float(close.iloc[-2]))  / float(close.iloc[-2])  * 100 if len(close) >= 2  else 0.0
         ind["momentum_5d"]  = (float(close.iloc[-1]) - float(close.iloc[-5]))  / float(close.iloc[-5])  * 100 if len(close) >= 5  else 0.0
         ind["momentum_20d"] = (float(close.iloc[-1]) - float(close.iloc[-20])) / float(close.iloc[-20]) * 100 if len(close) >= 20 else 0.0
         ind["momentum_60d"] = (float(close.iloc[-1]) - float(close.iloc[-60])) / float(close.iloc[-60]) * 100 if len(close) >= 60 else 0.0
@@ -390,6 +391,17 @@ class TechnicalAgent(BaseAgent):
             if i.get("mtf_bull_aligned"):
                 score += 0.75; signals.append("MTF aligned bullish (5d/20d/60d)")
 
+            # ── Intraday timing (today's close vs yesterday's close) ──────────
+            m1d = i.get("momentum_1d", 0)
+            if m1d > 4.0 and rsi > 65:
+                score -= 1.0; signals.append(f"overextended: +{m1d:.1f}% today, RSI {rsi:.0f}")
+            elif m1d > 2.5:
+                score -= 0.5; signals.append(f"up {m1d:.1f}% today — stretched entry")
+            elif m1d < -3.0 and above_ema50:
+                score += 0.75; signals.append(f"pullback {m1d:.1f}% in uptrend — better entry")
+            elif m1d < -1.5 and above_ema50:
+                score += 0.25; signals.append(f"mild pullback {m1d:.1f}% in uptrend")
+
             trend = (
                 "strong_uptrend" if i["adx"] > 25 and above_ema50 else
                 "uptrend"        if above_ema20 and above_ema50 else
@@ -495,6 +507,17 @@ class TechnicalAgent(BaseAgent):
                 score -= 1.0;  signals.append("near lower BB — oversold")
             elif i["bb_pct"] > 0.7 and not above_ema50:
                 score += 0.5;  signals.append("overbought in downtrend")
+
+            # ── Intraday timing (bearish) ─────────────────────────────────────
+            m1d_b = i.get("momentum_1d", 0)
+            if m1d_b < -4.0 and rsi < 35:
+                score -= 1.0; signals.append(f"oversold: {m1d_b:.1f}% today, RSI {rsi:.0f} — risk of bounce")
+            elif m1d_b < -2.5:
+                score -= 0.5; signals.append(f"down {m1d_b:.1f}% today — chasing the drop")
+            elif m1d_b > 3.0 and not above_ema50:
+                score += 0.75; signals.append(f"dead-cat bounce {m1d_b:+.1f}% in downtrend — better put entry")
+            elif m1d_b > 1.5 and not above_ema50:
+                score += 0.25; signals.append(f"mild bounce {m1d_b:+.1f}% in downtrend")
 
             # ── Multi-timeframe alignment bonus ───────────────────────────────
             if i.get("mtf_bear_aligned"):
