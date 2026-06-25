@@ -143,7 +143,26 @@ class JudgeAgent(BaseAgent):
 
         sym_stats = tracker.get_symbol_stats(symbol)
 
+        # DB-level targeted pattern match for this specific setup
+        try:
+            tech_score_val = float(technical.get("score", 5))
+            above_ema200_val = technical.get("above_ema200")
+            adx_val = technical.get("adx")
+            regime_str = (market_regime or {}).get("regime")
+            db_similar = ts.get_similar_trade_stats(
+                symbol=symbol, direction=direction,
+                tech_score=tech_score_val, above_ema200=above_ema200_val,
+                adx=adx_val, regime=regime_str, min_samples=3
+            )
+        except Exception:
+            db_similar = None
+
         similar_block = ""
+        if db_similar:
+            similar_block += (
+                f"\nDB MATCH — This exact setup: {db_similar['n']} trades | "
+                f"win rate {db_similar['win_rate']:.0%} | avg P&L {db_similar['avg_pnl']:+.1f}%"
+            )
         if sym_stats:
             similar_block += (
                 f"\n{symbol} HISTORY ({sym_stats['trade_count']} trades): "

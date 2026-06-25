@@ -643,6 +643,73 @@ def get_symbol_perf(min_trades: int = 2) -> dict:
         return {}
 
 
+def get_similar_trade_stats(
+    symbol: str,
+    direction: str,
+    tech_score: float = None,
+    above_ema200: bool = None,
+    adx: float = None,
+    regime: str = None,
+    min_samples: int = 3,
+) -> dict | None:
+    """
+    Find historically similar setups to the current candidate and return their win rate.
+    Matches on the most specific combination available, falling back to broader filters.
+    Used to inject hyper-specific historical context into the Judge.
+    """
+    conn = _get_conn()
+    if not conn:
+        return None
+    try:
+        with conn.cursor() as cur:
+            # Try progressively broader queries until we get enough samples
+            filters_list = [
+                # Most specific: all 4 features
+                (
+                    "symbol=%s AND direction=%s AND tech_score>=%s AND above_ema200=%s AND adx>=%s AND regime=%s",
+                    [symbol, direction, (tech_score or 0) - 1, above_ema200, (adx or 0) - 5, regime]
+                ) if all(x is not None for x in [tech_score, above_ema200, adx, regime]) else None,
+                # Without adx constraint
+                (
+                    "symbol=%s AND direction=%s AND tech_score>=%s AND above_ema200=%s AND regime=%s",
+                    [symbol, direction, (tech_score or 0) - 1, above_ema200, regime]
+                ) if all(x is not None for x in [tech_score, above_ema200, regime]) else None,
+                # Symbol + direction + tech tier
+                (
+                    "symbol=%s AND direction=%s AND tech_score>=%s",
+                    [symbol, direction, (tech_score or 0) - 1]
+                ) if tech_score is not None else None,
+                # Symbol + direction only
+                (
+                    "symbol=%s AND direction=%s",
+                    [symbol, direction]
+                ),
+            ]
+            for filter_entry in filters_list:
+                if filter_entry is None:
+                    continue
+                where, params = filter_entry
+                cur.execute(f"""
+                    SELECT COUNT(*) AS n,
+                           COUNT(*) FILTER (WHERE outcome='win') AS wins,
+                           ROUND(AVG(outcome_pnl_pct)::NUMERIC, 1) AS avg_pnl
+                    FROM scan_log
+                    WHERE decision='trade' AND outcome IS NOT NULL AND {where}
+                """, params)
+                row = cur.fetchone()
+                if row and row[0] >= min_samples:
+                    n, wins, avg_pnl = row
+                    return {
+                        "n":        int(n),
+                        "win_rate": round(float(wins) / int(n), 3),
+                        "avg_pnl":  float(avg_pnl) if avg_pnl else 0.0,
+                        "filter":   where.replace("%s", "?"),
+                    }
+    except Exception as e:
+        logger.debug(f"get_similar_trade_stats failed: {e}")
+    return None
+
+
 def get_stats() -> dict:
     """Aggregate stats over all training data (for dashboard display)."""
     conn = _get_conn()
