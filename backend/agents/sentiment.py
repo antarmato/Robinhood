@@ -74,9 +74,10 @@ class SentimentAgent(BaseAgent):
             "news":           news,
             "summary": (
                 f"VIX {vix:.1f} ({vix_regime}) {vix_trend if vix_trend != 'flat' else ''}, "
-                f"breadth {components.get('breadth_green', 0)}/3 green, "
-                f"sector {'aligned' if sector_aligned else 'misaligned'}"
-                f"{news_note} — score {score}/10"
+                f"breadth {components.get('breadth_green', 0)}/3 green"
+                + (lambda c: f" SPY/QQQ {'+' if c >= 0 else ''}{c:.1f}%" if abs(c) >= 0.5 else "")(components.get("avg_market_chg", 0))
+                + f", sector {'aligned' if sector_aligned else 'misaligned'}"
+                + f"{news_note} — score {score}/10"
             ),
         }
         await self._emit("score", {"symbol": symbol, "score": score, "vix": vix,
@@ -126,6 +127,8 @@ class SentimentAgent(BaseAgent):
 
         # ── Breadth component ──────────────────────────────────────────────────
         green_count = macro.get("green_count", 0) if macro.get("data_ok") else None
+        spy_chg = macro.get("spy_change", 0)
+        qqq_chg = macro.get("qqq_change", 0)
         if green_count is not None:
             if direction == "bullish":
                 breadth_adj = {0: -1.0, 1: -0.5, 2: 0.5, 3: 1.0}.get(green_count, 0)
@@ -134,6 +137,31 @@ class SentimentAgent(BaseAgent):
             score += breadth_adj
             components["breadth_green"] = green_count
             components["breadth"] = f"{green_count}/3 indexes green"
+
+        # ── Intraday market magnitude ─────────────────────────────────────────
+        # The above only captures direction (green/red). Add magnitude bonus for
+        # strong market days that create real tailwind/headwind.
+        avg_market_chg = (spy_chg + qqq_chg) / 2 if macro.get("data_ok") else 0
+        components["avg_market_chg"] = round(avg_market_chg, 2)
+        if macro.get("data_ok") and abs(avg_market_chg) >= 0.5:
+            if direction == "bullish":
+                if avg_market_chg >= 1.5:
+                    score += 0.75; components["market_move"] = f"SPY/QQQ avg +{avg_market_chg:.1f}% — strong bull day"
+                elif avg_market_chg >= 0.5:
+                    score += 0.25; components["market_move"] = f"SPY/QQQ avg +{avg_market_chg:.1f}% — mild bull"
+                elif avg_market_chg <= -1.5:
+                    score -= 0.75; components["market_move"] = f"SPY/QQQ avg {avg_market_chg:.1f}% — risk-off day"
+                elif avg_market_chg <= -0.5:
+                    score -= 0.25; components["market_move"] = f"SPY/QQQ avg {avg_market_chg:.1f}% — mild headwind"
+            else:  # bearish
+                if avg_market_chg <= -1.5:
+                    score += 0.75; components["market_move"] = f"SPY/QQQ avg {avg_market_chg:.1f}% — strong risk-off tailwind"
+                elif avg_market_chg <= -0.5:
+                    score += 0.25; components["market_move"] = f"SPY/QQQ avg {avg_market_chg:.1f}% — mild put tailwind"
+                elif avg_market_chg >= 1.5:
+                    score -= 0.75; components["market_move"] = f"SPY/QQQ avg +{avg_market_chg:.1f}% — risk-on headwind for puts"
+                elif avg_market_chg >= 0.5:
+                    score -= 0.25; components["market_move"] = f"SPY/QQQ avg +{avg_market_chg:.1f}% — mild headwind for puts"
 
         # ── Sector component ──────────────────────────────────────────────────
         sector_aligned = True
