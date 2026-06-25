@@ -304,22 +304,34 @@ class Orchestrator:
 
         candidates = self._apply_portfolio_filters(candidates)
 
-        # ── Consecutive-loss circuit breaker ──────────────────────────────────
-        recent_closed = self.state.get_sim_positions(status="closed")[-5:]
+        # ── Consecutive-loss circuit breaker (tiered) ────────────────────────
+        recent_closed = self.state.get_sim_positions(status="closed")[-7:]
+        surcharge = 0.0
         if len(recent_closed) >= 3:
-            last3 = recent_closed[-3:]
-            if all(float(p.get("pnl_dollars", 0)) < 0 for p in last3):
+            # Count trailing losses from the end
+            trailing_losses = 0
+            for p in reversed(recent_closed):
+                if float(p.get("pnl_dollars", 0)) < 0:
+                    trailing_losses += 1
+                else:
+                    break
+            if trailing_losses >= 5:
+                surcharge = 6.0   # severe: skip all but exceptional setups
                 await self._emit("system", "info", {
                     "message": (
-                        "⚠️ 3 consecutive losses — circuit breaker: "
-                        "applying +3 threshold surcharge this cycle."
+                        f"🚨 {trailing_losses} consecutive losses — circuit breaker: "
+                        "+6 threshold surcharge. Only exceptional setups qualify."
                     )
                 })
-                self._streak_surcharge = 3.0
-            else:
-                self._streak_surcharge = 0.0
-        else:
-            self._streak_surcharge = 0.0
+            elif trailing_losses >= 3:
+                surcharge = 3.0   # moderate: tighten but don't stop
+                await self._emit("system", "info", {
+                    "message": (
+                        f"⚠️ {trailing_losses} consecutive losses — circuit breaker: "
+                        "+3 threshold surcharge this cycle."
+                    )
+                })
+        self._streak_surcharge = surcharge
 
         await self._emit("system", "info",
             {"message": f"Cycle {cycle}: {len(candidates)} candidate(s) — analyzing..."})
