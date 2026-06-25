@@ -252,10 +252,13 @@ class TechnicalAgent(BaseAgent):
 
         # ── Fatal flaw check ──────────────────────────────────────────────────
         rsi = i["rsi"]
+        adx = i.get("adx", 20.0)
         if direction == "bullish" and rsi > 78:
             fatal_flaw = f"RSI {rsi:.0f} — severely overbought, call buying chase risk"
         elif direction == "bearish" and rsi < 22:
             fatal_flaw = f"RSI {rsi:.0f} — severely oversold, put buying squeeze risk"
+        elif adx < 13.0:
+            fatal_flaw = f"ADX {adx:.0f} — extreme chop, no directional trend for options to profit"
 
         above_ema20  = price > i["ema20"]
         above_ema50  = price > i["ema50"]

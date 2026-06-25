@@ -251,13 +251,13 @@ canvas{display:block}
       </div>
       <div id="scan-table-wrap">
         <table>
-          <colgroup><col><col><col><col><col><col><col><col></colgroup>
+          <colgroup><col><col><col><col><col><col><col><col><col></colgroup>
           <thead><tr>
             <th>Symbol</th><th>Dir</th><th>Price</th>
-            <th>IV</th><th>RSI</th><th>Tech</th><th>Score</th><th>Status</th>
+            <th>IV</th><th>RSI</th><th>200d</th><th>Tech</th><th>Score</th><th>Status</th>
           </tr></thead>
           <tbody id="scan-body">
-            <tr><td colspan="8" style="color:var(--muted);padding:10px 12px">Waiting for first scan...</td></tr>
+            <tr><td colspan="9" style="color:var(--muted);padding:10px 12px">Waiting for first scan...</td></tr>
           </tbody>
         </table>
       </div>
@@ -753,7 +753,7 @@ function renderScan(data) {
   document.getElementById('ib-cands').textContent = total?`${analyzed} analyzed / ${total} scanned`:'—';
   if (at) document.getElementById('scan-time-lbl').textContent=`Cycle #${cycle} · ${at.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}`;
   const tbody = document.getElementById('scan-body');
-  if (!results.length) { tbody.innerHTML='<tr><td colspan="8" style="color:var(--muted);padding:10px 12px">No scan data yet</td></tr>'; return; }
+  if (!results.length) { tbody.innerHTML='<tr><td colspan="9" style="color:var(--muted);padding:10px 12px">No scan data yet</td></tr>'; return; }
   const sorted = [...results].sort((a,b)=>{
     const tier=r=>r.proposal_generated?3:(r._scanner_only?1:2);
     if (tier(a)!==tier(b)) return tier(b)-tier(a);
@@ -783,11 +783,18 @@ function renderScan(data) {
       r.bull_case?`Bull: ${r.bull_case}`:'', r.bear_case?`Bear: ${r.bear_case}`:'',
       r.news_headline?`News: ${r.news_headline}`:'',
     ].filter(Boolean).join('\n');
+    // EMA200 indicator — try scan_data first, then fall back to tech signal
+    const above200 = r._scanner_data?.above_ema200 ?? r.above_ema200;
+    const ema200Html = above200==null ? '<span style="color:var(--muted)">—</span>' :
+      above200 ? '<span style="color:var(--green);font-size:11px" title="Above 200-day EMA — long-term uptrend">▲</span>'
+               : '<span style="color:var(--red);font-size:11px"   title="Below 200-day EMA — long-term downtrend">▼</span>';
+
     return `<tr class="${rowCls}" title="${esc(tt)}">
       <td><strong>${esc(r.symbol)}</strong>${newsIcon}</td><td>${dirHtml}</td>
       <td>$${r.price?r.price.toFixed(2):'—'}</td>
       <td>${r.iv_rank!=null?Math.round(r.iv_rank):'—'}</td>
       <td>${r.rsi!=null?r.rsi.toFixed(0):'—'}</td>
+      <td style="text-align:center">${ema200Html}</td>
       <td>${techHtml}</td><td>${scoreHtml}</td><td>${statusHtml}</td>
     </tr>`;
   }).join('');
