@@ -361,6 +361,16 @@ async def get_sim():
     win_rate_frac = ot_stats.get("win_rate", 0)
     expectancy_pct = round(win_rate_frac * avg_win_pct - (1 - win_rate_frac) * avg_loss_pct, 1) if ot_stats else 0
 
+    # Rolling win rates for trend visualization
+    def _rolling_wr(n: int) -> float | None:
+        recent = closed[-n:] if len(closed) >= n else None
+        if not recent:
+            return None
+        w = sum(1 for p in recent if float(p.get("pnl_dollars", 0)) > 0)
+        return round(w / len(recent) * 100, 1)
+
+    overall_wr = round(len(wins) / len(closed) * 100, 1) if closed else 0
+
     return {
         "open_positions":  open_,
         "closed_positions": closed[-20:],  # last 20
@@ -369,7 +379,7 @@ async def get_sim():
             "total_pnl":       total_pnl,
             "total_trades":    len(closed),
             "open_count":      len(open_),
-            "win_rate":        round(len(wins) / len(closed) * 100, 1) if closed else 0,
+            "win_rate":        overall_wr,
             "avg_win":         round(sum(float(p.get("pnl_dollars", 0)) for p in wins)  / len(wins),   2) if wins   else 0,
             "avg_loss":        round(sum(float(p.get("pnl_dollars", 0)) for p in losses) / len(losses), 2) if losses else 0,
             "best_trade":      round(max((float(p.get("pnl_dollars", 0)) for p in closed), default=0), 2),
@@ -379,6 +389,9 @@ async def get_sim():
             "expectancy_pct":  expectancy_pct,
             "kelly_fraction":  ot_stats.get("kelly_fraction", 0),
             "max_drawdown":    round(max_dd, 2),
+            "recent_5_wr":     _rolling_wr(5),
+            "recent_10_wr":    _rolling_wr(10),
+            "recent_20_wr":    _rolling_wr(20),
         },
     }
 

@@ -434,6 +434,7 @@ canvas{display:block}
       <div id="tp-stats-title">PERFORMANCE</div>
       <div class="tp-stat-row"><span class="tp-stat-k">Total P&L</span><span class="tp-stat-v" id="tp-s-pnl">—</span></div>
       <div class="tp-stat-row"><span class="tp-stat-k">Win Rate</span><span class="tp-stat-v" id="tp-s-wr">—</span></div>
+      <div class="tp-stat-row" title="Rolling win rate: last 5 / 10 / 20 trades vs overall — shows learning trend"><span class="tp-stat-k">WR Trend</span><span class="tp-stat-v" id="tp-s-wrt" style="font-size:9px;letter-spacing:0">—</span></div>
       <div class="tp-stat-row"><span class="tp-stat-k">Avg Win</span><span class="tp-stat-v v-g" id="tp-s-win">—</span></div>
       <div class="tp-stat-row"><span class="tp-stat-k">Avg Loss</span><span class="tp-stat-v v-r" id="tp-s-loss">—</span></div>
       <div class="tp-stat-row"><span class="tp-stat-k">Best Trade</span><span class="tp-stat-v v-g" id="tp-s-best">—</span></div>
@@ -877,6 +878,22 @@ function renderStats(s) {
   if(s.kelly_fraction!=null)tpSet('tp-s-kelly',s.kelly_fraction>0?`${(s.kelly_fraction*100).toFixed(1)}%`:'—');
   if(s.max_drawdown!=null)tpSet('tp-s-maxdd',s.max_drawdown>0?`-$${s.max_drawdown.toFixed(2)}`:'$0');
   if(cnt>=3&&los&&win){const pf2=(wr/100*win)/((1-wr/100)*Math.abs(los));tpSet('tp-s-pf',pf2.toFixed(2));tpCol('tp-s-pf',pf2>1?'var(--green)':'var(--red)');}
+
+  // Win rate trend: last 5 / 10 / 20 trades — shows if model is improving
+  const wrtEl = document.getElementById('tp-s-wrt');
+  if (wrtEl) {
+    const r5=s.recent_5_wr, r10=s.recent_10_wr, r20=s.recent_20_wr;
+    if (r5!=null||r10!=null||r20!=null) {
+      const fmt = (v,ref) => {
+        if (v==null) return '—';
+        const c = ref!=null ? (v>ref+5?'var(--green)':v<ref-5?'var(--red)':'var(--text)') : 'var(--text)';
+        return `<span style="color:${c}">${v.toFixed(0)}%</span>`;
+      };
+      wrtEl.innerHTML = `${fmt(r5,wr)} 5T · ${fmt(r10,wr)} 10T · ${fmt(r20,wr)} 20T`;
+    } else {
+      wrtEl.textContent = '—';
+    }
+  }
 }
 
 async function refreshSymbolStats() {
