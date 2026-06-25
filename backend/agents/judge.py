@@ -261,6 +261,9 @@ class JudgeAgent(BaseAgent):
         # ── Self-learned calibration context ─────────────────────────────────
         learned_context = ts.get_learned_context(min_samples=5)
 
+        strong_count = sum([tech_s >= 7, fund_s >= 7, sent_s >= 7])
+        consensus_map = {3: "+3.0 (all aligned)", 2: "+1.0 (solid)", 1: "0.0 (one-sided)", 0: "-3.0 (weak)"}
+        consensus_label = consensus_map.get(strong_count, "0.0")
         context = f"""[{session} | Cycle {cycle} | {tod_note}]
 
 TRADE: {symbol} {direction.upper()} {option_type.upper()} @ ${price:.2f}
@@ -274,8 +277,9 @@ AGENT SCORES (Python-computed):
   Sentiment   {sent_s}/10: {sentiment.get('summary','')}
 
 COMPUTED SCORE: {weighted_score} / threshold {threshold}
-  tech({tech_s}×3={tech_s*3.0:.0f}) + fund({fund_s}×1.5={fund_s*1.5:.0f}) + sent({sent_s}×1.5={sent_s*1.5:.0f}) + risk(8×1={8.0:.0f}) = {weighted_score}
-  IV threshold reason: {iv_edge_label(iv_rank)}
+  tech({tech_s}×3={tech_s*3.0:.0f}) + fund({fund_s}×1.5={fund_s*1.5:.0f}) + sent({sent_s}×1.5={sent_s*1.5:.0f}) + risk(8×1=8)
+  + consensus bonus ({strong_count}/3 agents ≥7) = {consensus_label}
+  = {weighted_score}  |  IV threshold reason: {iv_edge_label(iv_rank)}
 {"✅ SCORE PASSES" if not score_failed else f"❌ SCORE FAILS ({weighted_score} < {threshold})"}
 
 RISK FLAGS:
