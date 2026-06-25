@@ -153,19 +153,57 @@ class FundamentalAgent(BaseAgent):
         elif beta < 0.5 and beta > 0:
             score -= 0.5;  notes.append(f"beta {beta:.1f} — low movement, poor for options")
 
-        # ── Short ratio — squeeze risk for puts ───────────────────────────────
+        # ── Short ratio — direction-aware ─────────────────────────────────────
+        # Bullish: high short = squeeze fuel (positive). Bearish: high short =
+        # crowded trade + oversold bounce risk (negative for puts).
         short_ratio = fund.get("short_ratio") or 0
         try:
             short_ratio = float(short_ratio)
         except (TypeError, ValueError):
             short_ratio = 0
 
-        if short_ratio > 12:
-            score -= 1.5; notes.append(f"short ratio {short_ratio:.1f} — extreme squeeze risk")
-        elif short_ratio > 8:
-            score -= 0.75; notes.append(f"short ratio {short_ratio:.1f} — squeeze risk")
-        elif short_ratio > 5:
-            score -= 0.25; notes.append(f"short ratio {short_ratio:.1f}")
+        if direction == "bullish":
+            # Short squeeze rocket fuel for calls
+            if short_ratio > 12:
+                score += 1.0;  notes.append(f"short ratio {short_ratio:.1f} — extreme squeeze fuel for calls")
+            elif short_ratio > 8:
+                score += 0.5;  notes.append(f"short ratio {short_ratio:.1f} — strong squeeze setup")
+            elif short_ratio > 5:
+                score += 0.25; notes.append(f"short ratio {short_ratio:.1f} — mild squeeze potential")
+        else:
+            # Bearish: crowded short = bounce risk for puts
+            if short_ratio > 12:
+                score -= 1.5; notes.append(f"short ratio {short_ratio:.1f} — extreme crowded short, bounce risk")
+            elif short_ratio > 8:
+                score -= 0.75; notes.append(f"short ratio {short_ratio:.1f} — crowded short, puts risky")
+            elif short_ratio > 5:
+                score -= 0.25; notes.append(f"short ratio {short_ratio:.1f} — moderate short interest")
+
+        # ── P/E ratio — valuation signal ─────────────────────────────────────
+        pe = fund.get("pe_ratio") or fund.get("trailingPE") or fund.get("forwardPE")
+        try:
+            pe = float(pe) if pe else None
+        except (TypeError, ValueError):
+            pe = None
+        if pe and pe > 0:
+            if direction == "bullish":
+                # Reasonable valuation = less downside risk on miss
+                if pe < 15:
+                    score += 0.5;  notes.append(f"P/E {pe:.0f} — value, lower downside")
+                elif pe < 25:
+                    score += 0.25; notes.append(f"P/E {pe:.0f} — fair value")
+                elif pe > 80:
+                    score -= 0.5;  notes.append(f"P/E {pe:.0f} — expensive, miss risk")
+                elif pe > 50:
+                    score -= 0.25; notes.append(f"P/E {pe:.0f} — elevated valuation")
+            else:
+                # Bearish: high P/E = overvalued, supports put thesis
+                if pe > 80:
+                    score += 0.5;  notes.append(f"P/E {pe:.0f} — overvalued, supports puts")
+                elif pe > 50:
+                    score += 0.25; notes.append(f"P/E {pe:.0f} — elevated, mild put support")
+                elif pe < 15:
+                    score -= 0.25; notes.append(f"P/E {pe:.0f} — value, headwind for puts")
 
         # ── 52-week price position (direction-aware) ──────────────────────────
         price = fund.get("current_price") or fund.get("price")
