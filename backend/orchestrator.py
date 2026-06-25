@@ -847,9 +847,27 @@ class Orchestrator:
             if stall_count >= 3 and trail_floor > initial_stop:
                 trail_floor = min(pnl_pct + 5.0, trail_floor + 10.0)
 
+            # Mini-peak reversal: had a nice gain (10-25%) and given most of it back.
+            # Lock in the remaining small gain rather than riding to the stop loss.
+            if 10.0 <= new_high < 25.0 and pnl_pct < 3.0 and pnl_pct > initial_stop:
+                trail_floor = max(trail_floor, 2.0)
+
+            # Confidence-based early take-profit: low-conviction trade hit 70%+ → close
+            entry_confidence = float(pos.get("confidence", 7))
+            if entry_confidence <= 5 and new_high >= 70.0 and pnl_pct >= 50.0:
+                trail_floor = max(trail_floor, 50.0)  # don't let a lucky low-conf trade give back to 0
+
             exit_reason = None
             if pnl_pct <= trail_floor:
-                if new_high < 25.0:
+                if trail_floor >= 50.0:
+                    exit_reason = (
+                        f"Low-conf take-profit: peak {new_high:+.0f}% → locking {pnl_pct:+.1f}%"
+                    )
+                elif trail_floor >= 2.0 and new_high < 25.0:
+                    exit_reason = (
+                        f"Mini-peak reversal: peak {new_high:+.1f}% → back to {pnl_pct:+.1f}%"
+                    )
+                elif new_high < 25.0:
                     exit_reason = (
                         f"Stop loss {pnl_pct:.1f}% "
                         f"(IV {iv_rank_pos:.0f} → floor {initial_stop:.0f}%)"
