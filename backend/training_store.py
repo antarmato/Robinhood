@@ -72,6 +72,9 @@ def _ensure_schema(conn):
                 vwap20_pct           FLOAT,
                 tech_fatal_flaw      TEXT,
 
+                -- Multi-agent consensus (0-3: how many of tech/fund/sent scored >= 7)
+                consensus_score      INTEGER,
+
                 -- LLM reasoning (for audit / fine-tuning)
                 pass_reason          TEXT,
                 reasoning            TEXT,
@@ -100,6 +103,7 @@ def _ensure_schema(conn):
             "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS above_ema20 BOOLEAN",
             "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS above_ema50 BOOLEAN",
             "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS adx FLOAT",
+            "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS consensus_score INTEGER",
         ]:
             try:
                 cur.execute(col_ddl)
@@ -124,6 +128,11 @@ def log_scan_results(cycle: int, scan_summary: list, regime: dict, position_id_m
     for r in scan_summary:
         sym    = r.get("symbol", "")
         pos_id = position_id_map.get(sym)
+        # Consensus: how many of tech/fund/sent scored >= 7
+        t_s = r.get("tech_score") or 0
+        f_s = r.get("fund_score") or 0
+        s_s = r.get("sent_score") or 0
+        consensus = sum([t_s >= 7, f_s >= 7, s_s >= 7]) if any([t_s, f_s, s_s]) else None
         rows.append((
             cycle,
             sym,
@@ -131,9 +140,9 @@ def log_scan_results(cycle: int, scan_summary: list, regime: dict, position_id_m
             r.get("decision", "pass"),
             r.get("weighted_score"),
             r.get("confidence"),
-            r.get("tech_score"),
-            r.get("fund_score"),
-            r.get("sent_score"),
+            t_s or None,
+            f_s or None,
+            s_s or None,
             r.get("price"),
             r.get("iv_rank"),
             r.get("rsi"),
@@ -154,6 +163,7 @@ def log_scan_results(cycle: int, scan_summary: list, regime: dict, position_id_m
             (r.get("bull_case") or "")[:500],
             (r.get("bear_case") or "")[:500],
             pos_id,
+            consensus,
         ))
 
     try:
@@ -167,9 +177,9 @@ def log_scan_results(cycle: int, scan_summary: list, regime: dict, position_id_m
                     above_ema200, above_ema20, above_ema50, adx,
                     momentum_60d, stoch_k, vwap20_pct, tech_fatal_flaw,
                     pass_reason, reasoning, bull_case, bear_case,
-                    position_id
+                    position_id, consensus_score
                 ) VALUES (%s,%s,%s,%s, %s,%s,%s,%s,%s, %s,%s,%s, %s,%s,%s,%s,
-                          %s,%s,%s,%s, %s,%s,%s,%s, %s,%s,%s,%s, %s)
+                          %s,%s,%s,%s, %s,%s,%s,%s, %s,%s,%s,%s, %s,%s)
             """, rows)
         logger.info(f"TrainingStore: logged {len(rows)} rows for cycle {cycle}")
     except Exception as e:
@@ -323,6 +333,24 @@ def get_best_patterns(min_samples: int = 3) -> list:
                 FROM scan_log
                 WHERE decision='trade' AND outcome IS NOT NULL
                   AND above_ema20 IS NOT NULL AND above_ema50 IS NOT NULL
+                GROUP BY 1 HAVING COUNT(*) >= %s
+                ORDER BY wr DESC LIMIT 8
+            """, (min_samples,))
+            for row in cur.fetchall():
+                patterns.append({"desc": row[0], "n": int(row[1]), "win_rate": float(row[2])})
+
+            # Pattern 6: Multi-agent consensus score
+            cur.execute("""
+                SELECT CONCAT(
+                    CASE WHEN consensus_score = 3 THEN '3/3 agents≥7'
+                         WHEN consensus_score = 2 THEN '2/3 agents≥7'
+                         WHEN consensus_score = 1 THEN '1/3 agents≥7'
+                         ELSE '0/3 agents≥7' END,
+                    ' + ', direction) AS pat,
+                    COUNT(*) AS n,
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr
+                FROM scan_log
+                WHERE decision='trade' AND outcome IS NOT NULL AND consensus_score IS NOT NULL
                 GROUP BY 1 HAVING COUNT(*) >= %s
                 ORDER BY wr DESC LIMIT 8
             """, (min_samples,))
