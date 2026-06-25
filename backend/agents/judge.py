@@ -25,7 +25,7 @@ except ImportError:
 
 from .base import BaseAgent, BroadcastFn
 from .. import market_data as md
-from ..strategy import score_threshold, iv_edge_label, trade_defaults, THRESHOLD_CONF
+from ..strategy import score_threshold, iv_edge_label, trade_defaults, THRESHOLD_CONF, confidence_minimum
 from ..outcome_tracker import get_outcome_tracker
 from .. import training_store as ts
 
@@ -277,10 +277,11 @@ RISK FLAGS:
             if regime_aligned else ""
         )
 
+        conf_min_for_prompt = confidence_minimum(symbol)
         system = f"""You are the final judge for a Robinhood options trading system.
 The Python score is {weighted_score} (threshold {threshold}).
 
-{"SCORE PASSES. Give confidence 1-10. If you have genuine reservations, reflect in confidence. Trade happens only if confidence >= " + str(THRESHOLD_CONF) + "." if not score_failed else "SCORE FAILS. Confirm pass with a clear one-line reason."}
+{"SCORE PASSES. Give confidence 1-10. If you have genuine reservations, reflect in confidence. Trade happens only if confidence >= " + str(conf_min_for_prompt) + (" (raised for " + symbol + " due to high beta or poor history)" if conf_min_for_prompt > THRESHOLD_CONF else "") + "." if not score_failed else "SCORE FAILS. Confirm pass with a clear one-line reason."}
 {regime_cap_note}
 
 Confidence calibration:
@@ -316,13 +317,15 @@ Respond ONLY with JSON:
         pass_reason = result.get("pass_reason", "")
 
         # ── Final decision (Python only) ──────────────────────────────────────
+        conf_min = confidence_minimum(symbol)
+
         if score_failed:
             decision    = "pass"
             pass_reason = pass_reason or f"Score {weighted_score} below threshold {threshold}"
             trade_proposal = None
-        elif confidence < THRESHOLD_CONF:
+        elif confidence < conf_min:
             decision    = "pass"
-            pass_reason = f"Confidence {confidence}/10 below minimum {THRESHOLD_CONF}"
+            pass_reason = f"Confidence {confidence}/10 below minimum {conf_min} for {symbol}"
             trade_proposal = None
         else:
             decision = "trade"
