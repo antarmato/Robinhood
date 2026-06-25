@@ -785,9 +785,18 @@ function renderScan(data) {
     const techHtml = r.tech_fatal_flaw?`<span style="color:var(--red)">FLAW</span>`:r._scanner_only?`<span style="color:var(--muted)">—</span>`:(r.tech_score!=null?r.tech_score.toFixed(1):'—');
     const scoreHtml = r.weighted_score!=null?`<span class="${r.weighted_score>50?'score-hi':''}">${r.weighted_score.toFixed(1)}</span>`:(r.bull_score!=null?`<span style="color:var(--muted);font-size:10px">b${r.bull_score}/a${r.bear_score}</span>`:'—');
     const newsIcon = r.news_score!=null?(r.news_score>0.1?' <span style="color:var(--green);font-size:10px">▲</span>':r.news_score<-0.1?' <span style="color:var(--red);font-size:10px">▼</span>':''):'';
-    const adxStr = r._scanner_data?.adx!=null ? ` | ADX:${r._scanner_data.adx.toFixed(0)}${r._scanner_data.trending?' trending':r._scanner_data.choppy?' CHOPPY':''}` : '';
+    const sd = r._scanner_data || {};
+    const adx = r.adx ?? sd.adx;
+    const adxStr = adx!=null ? ` | ADX:${adx.toFixed(0)}${adx>=25?' trending':adx<18?' CHOPPY':''}` : '';
+    const volR = r.vol_ratio ?? sd.volume_ratio;
+    const volStr = volR!=null ? ` | Vol:${volR.toFixed(1)}x` : '';
+    const ret1d = sd.pct_change ?? sd.ret_1d;
+    const ret1dStr = ret1d!=null ? ` | 1d:${ret1d>=0?'+':''}${ret1d.toFixed(1)}%` : '';
+    const emaCxt = [r.above_ema20!=null?`EMA20:${r.above_ema20?'▲':'▼'}`:null, r.above_ema50!=null?`EMA50:${r.above_ema50?'▲':'▼'}`:null].filter(Boolean).join(' ');
     const tt = [
-      r._scanner_only?`Scanner: bull=${r.bull_score} bear=${r.bear_score}${adxStr}`:(r.tech_score!=null?`Tech:${r.tech_score?.toFixed(1)} Fund:${r.fund_score?.toFixed(1)} Sent:${r.sent_score?.toFixed(1)}${adxStr}`:''),
+      r._scanner_only?`Scanner: bull=${r.bull_score} bear=${r.bear_score}${adxStr}${volStr}${ret1dStr}`
+                     :(r.tech_score!=null?`Tech:${r.tech_score?.toFixed(1)} Fund:${r.fund_score?.toFixed(1)} Sent:${r.sent_score?.toFixed(1)}${adxStr}${volStr}${ret1dStr}`:''),
+      emaCxt ? `EMA: ${emaCxt}` : '',
       r.pass_reason?`Reason: ${r.pass_reason}`:'', r.reasoning?`Judge: ${r.reasoning}`:'',
       r.bull_case?`Bull: ${r.bull_case}`:'', r.bear_case?`Bear: ${r.bear_case}`:'',
       r.news_headline?`News: ${r.news_headline}`:'',
