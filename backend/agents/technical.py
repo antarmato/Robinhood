@@ -67,6 +67,7 @@ class TechnicalAgent(BaseAgent):
             "vol_ratio":      round(ind["vol_ratio"], 2),
             "ema20_slope":    round(ind["ema20_slope"], 3),
             "rs_5d":          round(ind.get("rs_5d", 0), 2),
+            "momentum_1d":    round(ind.get("momentum_1d", 0), 2),
             "momentum_5d":    round(ind.get("momentum_5d", 0), 2),
             "momentum_60d":   round(ind.get("momentum_60d", 0), 2),
             "w52_pct":        round(ind.get("w52_pct", 50), 1),

@@ -177,6 +177,15 @@ class JudgeAgent(BaseAgent):
             pass  # clean — no flag needed
         if technical.get("vol_ratio", 1.0) < 0.7:
             risk_flags.append("Low volume — weak conviction")
+        m1d = technical.get("momentum_1d", 0)
+        if direction == "bullish" and m1d > 4.0:
+            risk_flags.append(f"Stock up {m1d:+.1f}% today — overextended entry, options expensive")
+        elif direction == "bullish" and m1d < -3.0:
+            risk_flags.append(f"Stock down {m1d:.1f}% today — potential pullback entry opportunity")
+        elif direction == "bearish" and m1d < -4.0:
+            risk_flags.append(f"Stock down {m1d:.1f}% today — chasing drop, bounce risk")
+        elif direction == "bearish" and m1d > 3.0:
+            risk_flags.append(f"Stock up {m1d:+.1f}% today — potential reversal entry for puts")
         bb_pct = technical.get("bb_pct", 0.5)
         if direction == "bullish":
             if bb_pct > 1.0:
