@@ -735,11 +735,19 @@ function setScanning(v) { document.getElementById('scan-spinner').style.display 
 function renderRegime(r) {
   const rColor = r.regime==='bull'?'var(--green)':r.regime==='bear'?'var(--red)':'var(--text)';
   const el = document.getElementById('ib-regime');
-  el.textContent = r.regime?(r.regime.toUpperCase()+(r.strength!=null?` (${r.strength})`:'')):'—';
-  el.style.color = rColor;
+  const ema200Ico = r.spy_above_ema200==null?'':(r.spy_above_ema200?' ▲200':'  ▼200');
+  const ema200Color = r.spy_above_ema200?'var(--green)':'var(--red)';
+  el.title = r.summary || '';
+  el.innerHTML = r.regime
+    ? `<span style="color:${rColor}">${r.regime.toUpperCase()}${r.strength!=null?` (${r.strength})`:''}</span>`
+      + (ema200Ico ? `<span style="color:${ema200Color};font-size:9px;margin-left:3px">${ema200Ico}</span>` : '')
+    : '—';
   const vix = r.vix_level!=null?r.vix_level.toFixed(1):(r.vix!=null?r.vix.toFixed(1):'—');
-  const vColor = r.vix_regime==='elevated'?'var(--yellow)':r.vix_regime==='extreme'?'var(--red)':'var(--text)';
-  const ve = document.getElementById('ib-vix'); ve.textContent=vix; ve.style.color=vColor;
+  const vColor = r.vix_level>25?'var(--red)':r.vix_level>18?'var(--yellow)':'var(--text)';
+  const ve = document.getElementById('ib-vix');
+  const trendIco = r.vix_trend==='rising'?' ↑':r.vix_trend==='falling'?' ↓':'';
+  const trendColor = r.vix_trend==='rising'?'var(--red)':r.vix_trend==='falling'?'var(--green)':'var(--muted)';
+  ve.innerHTML = `<span style="color:${vColor}">${vix}</span><span style="color:${trendColor};font-size:9px">${trendIco}</span>`;
   if (r.breadth!=null) {
     const be = document.getElementById('ib-breadth');
     be.textContent=`${r.breadth}/3`;

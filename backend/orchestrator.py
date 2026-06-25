@@ -773,11 +773,24 @@ class Orchestrator:
 
             directional_pnl = favorable_move * effective_delta
 
+            # Vega (IV) effect — key real-world modifier for options buyers:
+            #   Favorable moves → IV typically compresses (reduces option value)
+            #   Adverse moves   → IV expands (partially cushions the loss)
+            # Effect scales with IV rank: high-IV options have more vega to crush/expand.
+            # Approximate: 1% stock move at IV rank 50 = ~4% vega effect on option value.
+            iv_vega_factor = (iv_rank_pos / 100.0) * 0.08   # 0=no vega, 1=strong vega
+            if move_pct >= 0:
+                # IV compresses on favorable moves → subtract from option value
+                vega_pnl = -entry_opt * iv_vega_factor * move_pct * 2.0
+            else:
+                # IV expands on adverse moves → partially offset the directional loss
+                vega_pnl = entry_opt * iv_vega_factor * abs(move_pct) * 1.0
+
             # Sqrt-of-time theta: time value decays faster near expiry
             #   DTE=35 → factor 1.0  |  DTE=17 → 0.70  |  DTE=7 → 0.45  |  DTE=0 → 0
             dte_remaining = max(0, entry_dte - days_held)
             time_factor   = math.sqrt(dte_remaining / max(entry_dte, 1))
-            current_opt   = round(max(0.01, entry_opt * time_factor + directional_pnl), 4)
+            current_opt   = round(max(0.01, entry_opt * time_factor + directional_pnl + vega_pnl), 4)
 
             pnl_pct     = round((current_opt - entry_opt) / entry_opt * 100, 2)
             pnl_dollars = round((current_opt - entry_opt) * contracts * 100, 2)
