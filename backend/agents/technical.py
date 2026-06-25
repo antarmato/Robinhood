@@ -130,6 +130,22 @@ class TechnicalAgent(BaseAgent):
         ind["macd_hist"]  = float(hist.iloc[-1])
         ind["macd_hist2"] = float(hist.iloc[-2]) if len(hist) >= 2 else float(hist.iloc[-1])
 
+        # MACD histogram divergence (last 15 bars)
+        ind["macd_bull_div"] = False
+        ind["macd_bear_div"] = False
+        if len(close) >= 15 and len(hist) >= 15:
+            c_window = close.iloc[-15:]
+            h_window = hist.iloc[-15:]
+            mid = 7  # split: first half vs second half
+            if float(c_window.iloc[-1]) < float(c_window.iloc[:mid].min()):
+                # price made a new low in second half
+                if float(h_window.iloc[-1]) > float(h_window.iloc[:mid].min()):
+                    ind["macd_bull_div"] = True  # histogram didn't confirm lower low
+            if float(c_window.iloc[-1]) > float(c_window.iloc[:mid].max()):
+                # price made a new high in second half
+                if float(h_window.iloc[-1]) < float(h_window.iloc[:mid].max()):
+                    ind["macd_bear_div"] = True  # histogram didn't confirm higher high
+
         low14  = low.rolling(14).min()
         high14 = high.rolling(14).max()
         k_raw  = (close - low14) / (high14 - low14).replace(0, np.nan) * 100
@@ -324,13 +340,17 @@ class TechnicalAgent(BaseAgent):
             elif rsi < 35:
                 score -= 0.75
 
-            # ── MACD (max +1.5) ───────────────────────────────────────────────
+            # ── MACD (max +1.5 + divergence bonus) ───────────────────────────
             if i["macd_hist"] > 0 and i["macd_hist2"] <= 0:
                 score += 1.5;  signals.append("MACD bullish cross")
             elif i["macd_hist"] > 0:
                 score += 0.75; signals.append("MACD above zero")
             elif i["macd_hist"] < 0:
                 score -= 0.75
+            if i.get("macd_bull_div"):
+                score += 0.75; signals.append("MACD bullish divergence — momentum recovering")
+            elif i.get("macd_bear_div"):
+                score -= 0.75; signals.append("MACD bearish divergence — momentum weakening")
 
             # ── Relative strength vs SPY (key differentiator) ─────────────────
             rs = i.get("rs_5d", 0)
@@ -458,6 +478,10 @@ class TechnicalAgent(BaseAgent):
                 score += 0.75; signals.append("MACD below zero")
             elif i["macd_hist"] > 0:
                 score -= 0.75
+            if i.get("macd_bear_div"):
+                score += 0.75; signals.append("MACD bearish divergence — momentum weakening")
+            elif i.get("macd_bull_div"):
+                score -= 0.75; signals.append("MACD bullish divergence — bounce risk")
 
             # ── Relative strength vs SPY (bearish: underperformance is good) ──
             rs = i.get("rs_5d", 0)
