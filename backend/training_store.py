@@ -293,6 +293,42 @@ def get_best_patterns(min_samples: int = 3) -> list:
             for row in cur.fetchall():
                 patterns.append({"desc": row[0], "n": int(row[1]), "win_rate": float(row[2])})
 
+            # Pattern 4: ADX trending vs choppy
+            cur.execute("""
+                SELECT CONCAT(
+                    CASE WHEN adx >= 25 THEN 'ADX≥25(trending)'
+                         WHEN adx < 18  THEN 'ADX<18(choppy)'
+                         ELSE 'ADX neutral' END,
+                    ' + ', direction) AS pat,
+                    COUNT(*) AS n,
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr
+                FROM scan_log
+                WHERE decision='trade' AND outcome IS NOT NULL AND adx IS NOT NULL
+                GROUP BY 1 HAVING COUNT(*) >= %s
+                ORDER BY wr DESC LIMIT 8
+            """, (min_samples,))
+            for row in cur.fetchall():
+                patterns.append({"desc": row[0], "n": int(row[1]), "win_rate": float(row[2])})
+
+            # Pattern 5: EMA20/50 alignment
+            cur.execute("""
+                SELECT CONCAT(
+                    CASE WHEN above_ema20 AND above_ema50 THEN 'above both EMAs'
+                         WHEN NOT above_ema20 AND NOT above_ema50 THEN 'below both EMAs'
+                         WHEN above_ema20 THEN 'above EMA20 only'
+                         ELSE 'below EMA20 only' END,
+                    ' + ', direction) AS pat,
+                    COUNT(*) AS n,
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr
+                FROM scan_log
+                WHERE decision='trade' AND outcome IS NOT NULL
+                  AND above_ema20 IS NOT NULL AND above_ema50 IS NOT NULL
+                GROUP BY 1 HAVING COUNT(*) >= %s
+                ORDER BY wr DESC LIMIT 8
+            """, (min_samples,))
+            for row in cur.fetchall():
+                patterns.append({"desc": row[0], "n": int(row[1]), "win_rate": float(row[2])})
+
     except Exception as e:
         logger.warning(f"TrainingStore get_best_patterns failed: {e}")
 

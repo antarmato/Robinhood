@@ -783,8 +783,8 @@ function renderScan(data) {
       r.bull_case?`Bull: ${r.bull_case}`:'', r.bear_case?`Bear: ${r.bear_case}`:'',
       r.news_headline?`News: ${r.news_headline}`:'',
     ].filter(Boolean).join('\n');
-    // EMA200 indicator — try scan_data first, then fall back to tech signal
-    const above200 = r._scanner_data?.above_ema200 ?? r.above_ema200;
+    // EMA200 indicator — directly in scan_summary for all symbols
+    const above200 = r.above_ema200;
     const ema200Html = above200==null ? '<span style="color:var(--muted)">—</span>' :
       above200 ? '<span style="color:var(--green);font-size:11px" title="Above 200-day EMA — long-term uptrend">▲</span>'
                : '<span style="color:var(--red);font-size:11px"   title="Below 200-day EMA — long-term downtrend">▼</span>';
