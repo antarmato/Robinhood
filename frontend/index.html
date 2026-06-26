@@ -222,6 +222,7 @@ canvas{display:block}
       <input id="api-key" type="password" class="inp" placeholder="API key" style="width:110px;margin:0">
       <button id="btn-start" class="btn btn-g" onclick="startSystem()" style="flex:none;padding:4px 10px">▶ Start</button>
       <button id="btn-stop" class="btn btn-r" onclick="stopSystem()" disabled style="flex:none;padding:4px 10px">■ Stop</button>
+      <button id="btn-reset" class="btn" onclick="resetSim()" style="flex:none;padding:4px 10px;background:rgba(245,158,11,.12);color:var(--yellow);border:1px solid rgba(245,158,11,.3)">↺ Reset Sim</button>
     </div>
   </div>
 </div>
@@ -1181,6 +1182,10 @@ async function startSystem() {
 }
 async function stopSystem() {
   try { await fetch(`/api/system/stop?api_key=${encodeURIComponent(apiKey())}`,{method:'GET'}); setTimeout(refreshAll,800); } catch(e){console.error(e);}
+}
+async function resetSim() {
+  if (!confirm('Reset sim? This clears all positions and P&L history.')) return;
+  try { await fetch(`/api/sim/reset?api_key=${encodeURIComponent(apiKey())}`,{method:'GET'}); setTimeout(refreshAll,400); } catch(e){console.error(e);}
 }
 
 // ── Diagnostics ───────────────────────────────────────────────────────────────
