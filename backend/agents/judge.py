@@ -279,6 +279,7 @@ class JudgeAgent(BaseAgent):
 
         # ── Self-learned calibration context ─────────────────────────────────
         learned_context = ts.get_learned_context(min_samples=5)
+        learned_block = ("SELF-LEARNED CALIBRATION (from PostgreSQL training log):\n" + learned_context) if learned_context else ""
 
         strong_count = sum([tech_s >= 7, fund_s >= 7, sent_s >= 7])
         consensus_map = {3: "+3.0 (all aligned)", 2: "+1.0 (solid)", 1: "0.0 (one-sided)", 0: "-3.0 (weak)"}
@@ -305,7 +306,7 @@ RISK FLAGS:
 {chr(10).join(f'  • {f}' for f in risk_flags) if risk_flags else '  None identified'}
 {similar_block}
 {hist_block}
-{('SELF-LEARNED CALIBRATION (from PostgreSQL training log):\n' + learned_context) if learned_context else ''}"""
+{learned_block}"""
 
         regime_mismatch = False
         regime_aligned  = False
