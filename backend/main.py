@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from .orchestrator import get_orchestrator
 from .state import get_state
 from .outcome_tracker import get_outcome_tracker
+from . import training_store as ts
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -337,11 +338,10 @@ async def get_sim():
     closed = [p for p in positions if p.get("status") == "closed"]
     open_  = [p for p in positions if p.get("status") == "open"]
     wins   = [p for p in closed if float(p.get("pnl_dollars", 0)) > 0]
-    losses = [p for p in closed if float(p.get("pnl_dollars", 0)) <= 0]
+    losses = [p for p in closed if float(p.get("pnl_dollars", 0)) < 0]
 
     total_pnl = s.cumulative_sim_pnl()
-    from .outcome_tracker import get_outcome_tracker
-    ot_stats = get_outcome_tracker().get_stats()
+    ot_stats = ts.get_outcome_stats()
 
     # Max drawdown from equity curve (worst peak-to-trough)
     max_dd = 0.0
@@ -398,10 +398,8 @@ async def get_sim():
 
 @app.get("/api/symbol-stats")
 async def symbol_stats():
-    """Per-symbol win rate and avg P&L from the OutcomeTracker."""
-    from .outcome_tracker import get_outcome_tracker
-    stats = get_outcome_tracker().get_all_symbol_stats()
-    return {"symbol_stats": stats}
+    """Per-symbol win rate and avg P&L from training DB."""
+    return {"symbol_stats": ts.get_symbol_perf(min_trades=1)}
 
 
 @app.get("/api/diagnostics")
@@ -562,10 +560,10 @@ async def diagnostics():
 async def get_scan_results():
     s = get_state()
     full = s.get_full_state()
-    tracker = get_outcome_tracker()
+    sym_perf_map = ts.get_symbol_perf(min_trades=1)
     results = list(full.get("last_scan_results", []))
     for r in results:
-        sym_stats = tracker.get_symbol_stats(r.get("symbol", ""))
+        sym_stats = sym_perf_map.get(r.get("symbol", ""))
         if sym_stats:
             r["sym_perf"] = sym_stats
     return {
@@ -578,11 +576,11 @@ async def get_scan_results():
 @app.get("/api/stats")
 async def stats():
     """Trade statistics: win rate, Kelly fraction, expectancy."""
-    tracker = get_outcome_tracker()
+    ot = ts.get_outcome_stats()
     return {
-        "performance": tracker.get_stats(),
-        "kelly_ready": tracker.is_kelly_ready(),
-        "kelly_fraction": tracker.get_kelly_fraction(),
+        "performance":    ot,
+        "kelly_ready":    ot.get("kelly_ready", False),
+        "kelly_fraction": ot.get("kelly_fraction", 0),
     }
 
 @app.get("/api/training-data")

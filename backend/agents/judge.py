@@ -26,7 +26,6 @@ except ImportError:
 from .base import BaseAgent, BroadcastFn
 from .. import market_data as md
 from ..strategy import score_threshold, iv_edge_label, trade_defaults, THRESHOLD_CONF, confidence_minimum
-from ..outcome_tracker import get_outcome_tracker
 from .. import training_store as ts
 
 logger = logging.getLogger(__name__)
@@ -136,12 +135,10 @@ class JudgeAgent(BaseAgent):
         option_type = "call" if direction == "bullish" else "put"
         defaults    = trade_defaults()
 
-        # ── Outcome tracker context ───────────────────────────────────────────
-        tracker = get_outcome_tracker()
-        similar = tracker.get_similar_setups(iv_rank, direction)
-        stats   = tracker.get_stats()
-
-        sym_stats = tracker.get_symbol_stats(symbol)
+        # ── Outcome context from training DB (PostgreSQL — survives restarts) ──
+        similar   = ts.get_similar_iv_stats(iv_rank, direction)
+        stats     = ts.get_outcome_stats()
+        sym_stats = ts.get_symbol_perf(min_trades=2).get(symbol)
 
         # DB-level targeted pattern match for this specific setup
         try:

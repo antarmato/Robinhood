@@ -787,3 +787,80 @@ def get_stats() -> dict:
     except Exception as e:
         logger.error(f"TrainingStore get_stats failed: {e}")
         return {}
+
+
+def get_outcome_stats() -> dict:
+    """
+    Compute Kelly fraction, win rate, and expectancy from the training DB.
+    PostgreSQL-backed drop-in replacement for OutcomeTracker.get_stats().
+    """
+    conn = _get_conn()
+    if not conn:
+        return {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    COUNT(*)                                                  AS n,
+                    COUNT(*) FILTER (WHERE outcome='win')                     AS wins,
+                    AVG(outcome_pnl_pct) FILTER (WHERE outcome='win')         AS avg_win,
+                    ABS(AVG(outcome_pnl_pct) FILTER (WHERE outcome='loss'))   AS avg_loss
+                FROM scan_log
+                WHERE decision='trade' AND outcome IS NOT NULL
+            """)
+            row = cur.fetchone()
+            if not row or not row[0]:
+                return {"total_trades": 0, "kelly_ready": False}
+            n, wins, avg_win, avg_loss = row
+            n        = int(n)
+            avg_win  = float(avg_win  or 0)
+            avg_loss = float(avg_loss or 1)
+            win_rate = float(wins) / n
+            b        = avg_win / avg_loss if avg_loss > 0 else 1.0
+            kelly_raw = (b * win_rate - (1 - win_rate)) / b if b > 0 else 0.0
+            kelly    = max(0.0, min(0.25, kelly_raw))
+            return {
+                "total_trades":   n,
+                "win_rate":       round(win_rate, 3),
+                "avg_win_pct":    round(avg_win, 2),
+                "avg_loss_pct":   round(avg_loss, 2),
+                "kelly_fraction": round(kelly, 4),
+                "expectancy":     round(win_rate * avg_win - (1 - win_rate) * avg_loss, 2),
+                "kelly_ready":    n >= 10,
+            }
+    except Exception as e:
+        logger.error(f"TrainingStore get_outcome_stats failed: {e}")
+        return {}
+
+
+def get_similar_iv_stats(iv_rank: float, direction: str, min_samples: int = 3) -> dict | None:
+    """
+    Find closed trades with similar IV rank (±20) and same direction.
+    PostgreSQL-backed replacement for OutcomeTracker.get_similar_setups().
+    """
+    conn = _get_conn()
+    if not conn:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT COUNT(*) AS n,
+                       COUNT(*) FILTER (WHERE outcome='win') AS wins,
+                       ROUND(AVG(outcome_pnl_pct)::NUMERIC, 1) AS avg_pnl
+                FROM scan_log
+                WHERE decision='trade' AND outcome IS NOT NULL
+                  AND direction = %s
+                  AND iv_rank BETWEEN %s AND %s
+            """, (direction, iv_rank - 20, iv_rank + 20))
+            row = cur.fetchone()
+            if not row or row[0] < min_samples:
+                return None
+            n, wins, avg_pnl = row
+            return {
+                "count":    int(n),
+                "win_rate": round(float(wins) / int(n), 3),
+                "avg_pnl":  float(avg_pnl) if avg_pnl else 0.0,
+            }
+    except Exception as e:
+        logger.debug(f"get_similar_iv_stats failed: {e}")
+        return None

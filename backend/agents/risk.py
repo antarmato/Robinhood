@@ -15,7 +15,6 @@ import os
 from typing import Optional
 
 from .base import BaseAgent, BroadcastFn
-from ..outcome_tracker import get_outcome_tracker
 
 logger = logging.getLogger(__name__)
 MAX_LOSS_DEFAULT = 100.0  # fallback if env var not set
@@ -80,15 +79,15 @@ class RiskAgent(BaseAgent):
         budget = self._compute_budget()
         max_premium = round(budget / 100, 2)
 
-        tracker = get_outcome_tracker()
-        kelly_ready = tracker.is_kelly_ready()
-        kelly = tracker.get_kelly_fraction()
-        stats = tracker.get_stats()
+        from ..training_store import get_outcome_stats as _ts_oc
+        ot        = _ts_oc()
+        kelly_ready = ot.get("kelly_ready", False)
+        kelly     = ot.get("kelly_fraction", 0.0)
 
         sizing_note = (
             f"Kelly {kelly:.1%} × budget = ${budget:.0f}"
             if kelly_ready and kelly > 0
-            else f"Flat budget ${budget:.0f} (need {max(0, 10 - stats.get('total_trades', 0))} more closed trades for Kelly)"
+            else f"Flat budget ${budget:.0f} (need {max(0, 10 - ot.get('total_trades', 0))} more closed trades for Kelly)"
         )
 
         bull_open = direction_counts.get("bullish", 0)
@@ -140,13 +139,14 @@ class RiskAgent(BaseAgent):
         }
 
     def _compute_budget(self) -> float:
-        tracker = get_outcome_tracker()
+        from ..training_store import get_outcome_stats as _ts_oc
+        ot      = _ts_oc()
         env_max = float(os.getenv("MAX_LOSS_PER_TRADE", str(MAX_LOSS_DEFAULT)))
 
-        if not tracker.is_kelly_ready():
+        if not ot.get("kelly_ready", False):
             return env_max
 
-        kelly = tracker.get_kelly_fraction()
+        kelly = ot.get("kelly_fraction", 0.0)
 
         if kelly < 0:
             # Negative expectancy: reduce to 50% of flat budget as a warning signal

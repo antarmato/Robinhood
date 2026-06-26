@@ -276,17 +276,7 @@ class Orchestrator:
             regime = prior_regime or {}
 
         premarket = self.state.premarket_context
-        sym_perf  = get_outcome_tracker().get_all_symbol_stats()
-
-        # Merge training DB stats into sym_perf (DB wins over in-memory if both present,
-        # since it persists across restarts and has a larger sample)
-        try:
-            db_sym_rows = ts.get_symbol_perf()
-            for sym, db_perf in db_sym_rows.items():
-                if sym not in sym_perf or db_perf.get("trade_count", 0) > sym_perf.get(sym, {}).get("trade_count", 0):
-                    sym_perf[sym] = db_perf
-        except Exception as e:
-            logger.debug(f"DB sym_perf merge failed: {e}")
+        sym_perf  = ts.get_symbol_perf()
 
         scanner    = ScannerAgent(self.claude, self.watchlist, self._make_broadcast())
         candidates = await scanner.scan(
@@ -812,8 +802,7 @@ class Orchestrator:
 
             # Sqrt-of-time theta: time value decays faster near expiry
             #   DTE=35 → factor 1.0  |  DTE=17 → 0.70  |  DTE=7 → 0.45  |  DTE=0 → 0
-            dte_remaining = max(0, entry_dte - days_held)
-            time_factor   = math.sqrt(dte_remaining / max(entry_dte, 1))
+            time_factor   = math.sqrt(dte_left / max(entry_dte, 1))
             current_opt   = round(max(0.01, entry_opt * time_factor + directional_pnl + vega_pnl), 4)
 
             pnl_pct     = round((current_opt - entry_opt) / entry_opt * 100, 2)
