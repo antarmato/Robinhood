@@ -100,9 +100,9 @@ class ScannerAgent(BaseAgent):
             return []
 
         # ── IV rank filter ─────────────────────────────────────────────────────
-        # Hard-skip (IV > 60) only applies when TRADIER_TOKEN is set and we have
-        # real options IV data. Without Tradier, get_iv_rank_best() returns HV rank
-        # (historical vol proxy) — high HV ≠ expensive options, so don't filter on it.
+        # Soft penalty (graduated score deduction) instead of hard skip.
+        # Without Tradier, get_iv_rank_best() returns HV proxy — don't penalize it.
+        # Hard skip only applied above rank 85 (pathologically expensive).
         tradier_available = bool(os.getenv("TRADIER_TOKEN", ""))
 
         iv_passed = {}
@@ -110,16 +110,27 @@ class ScannerAgent(BaseAgent):
         for sym, d in scored.items():
             iv_rank = md.get_iv_rank_best(sym)
             d["iv_rank"] = round(iv_rank, 1)
-            if tradier_available and iv_rank > IV_RANK_HARD_SKIP:
+            # Hard skip only for extreme IV with real data (>85 = buying insurance at peak fear)
+            if tradier_available and iv_rank > 85:
                 iv_skipped.append(f"{sym}({iv_rank:.0f})")
+                continue
+            # iv_bonus: cheap IV adds score; expensive IV subtracts
+            # rank < 40 → positive bonus (max +3.0 at rank 0)
+            # rank 40–60 → 0 to −2  (elevated: mild penalty)
+            # rank 60–85 → −2 to −4 (expensive: meaningful penalty)
+            if iv_rank < 40:
+                iv_bonus = round((40.0 - iv_rank) / 40.0 * 3.0, 2)
+            elif iv_rank <= 60:
+                iv_bonus = round(-((iv_rank - 40.0) / 20.0) * 2.0, 2)
             else:
-                d["iv_bonus"] = round(max(0.0, (40.0 - iv_rank) / 40.0 * 3.0), 2)
-                iv_passed[sym] = d
+                iv_bonus = round(-2.0 - ((iv_rank - 60.0) / 25.0) * 2.0, 2)
+            d["iv_bonus"] = iv_bonus
+            iv_passed[sym] = d
 
         source = "real IV" if tradier_available else "HV proxy (no Tradier)"
         await self._emit("status",
             f"IV filter ({source}): {len(iv_passed)}/{len(scored)} passed "
-            f"(skipped: {', '.join(iv_skipped) if iv_skipped else 'none'})")
+            f"(hard-skipped rank>85: {', '.join(iv_skipped) if iv_skipped else 'none'})")
 
         if not iv_passed:
             await self._emit("status",

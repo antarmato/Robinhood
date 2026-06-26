@@ -39,10 +39,9 @@ def _compute_score(technical: dict, fundamental: dict, sentiment: dict, risk: di
       fund  × 1.5  (max 15) — catalyst/earnings safety
       sent  × 1.5  (max 15) — macro environment
       risk  × 1.0  (max 10) — always ~8, small contribution
-    Signal consensus bonus/penalty (applied after weighting):
-      3/3 agents ≥ 7  → +3.0  (all green lights)
-      2/3 agents ≥ 7  → +1.0  (solid consensus)
-      0/3 agents ≥ 7  → -3.0  (weak across the board)
+    Signal consensus bonus/penalty (graduated to remove 6.9→7.0 cliff):
+      strong (≥7.0): +1.5 each  mid (6.0–6.9): +0.5 each  weak (<6.0): −1.5 each
+      Capped ±3.0. Example: 3 mids → +1.5 (old: −3.0)
     """
     tech_s = float(technical.get("score", 5))
     fund_s = float(fundamental.get("score", 5))
@@ -50,16 +49,12 @@ def _compute_score(technical: dict, fundamental: dict, sentiment: dict, risk: di
     risk_s = float(risk.get("score", 8))
     base = tech_s * 3.0 + fund_s * 1.5 + sent_s * 1.5 + risk_s * 1.0
 
-    # Signal consensus: how many of the 3 main agents score ≥ 7?
-    strong_count = sum([tech_s >= 7, fund_s >= 7, sent_s >= 7])
-    if strong_count == 3:
-        consensus = 3.0    # all three aligned — highest conviction
-    elif strong_count == 2:
-        consensus = 1.0    # two of three — solid setup
-    elif strong_count == 1:
-        consensus = 0.0    # only one agent confident — neutral
-    else:
-        consensus = -3.0   # none of the three — weak across the board
+    # Graduated consensus: strong/mid/weak tiers instead of a hard ≥7 cliff
+    strong_count = sum([tech_s >= 7.0, fund_s >= 7.0, sent_s >= 7.0])
+    mid_count    = sum([6.0 <= tech_s < 7.0, 6.0 <= fund_s < 7.0, 6.0 <= sent_s < 7.0])
+    weak_count   = 3 - strong_count - mid_count
+    consensus = strong_count * 1.5 + mid_count * 0.5 - weak_count * 1.5
+    consensus = max(-3.0, min(3.0, consensus))
 
     return round(base + consensus, 1)
 

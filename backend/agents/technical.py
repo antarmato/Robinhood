@@ -130,21 +130,20 @@ class TechnicalAgent(BaseAgent):
         ind["macd_hist"]  = float(hist.iloc[-1])
         ind["macd_hist2"] = float(hist.iloc[-2]) if len(hist) >= 2 else float(hist.iloc[-1])
 
-        # MACD histogram divergence (last 15 bars)
+        # MACD histogram divergence — check 15-bar and 30-bar windows
         ind["macd_bull_div"] = False
         ind["macd_bear_div"] = False
-        if len(close) >= 15 and len(hist) >= 15:
-            c_window = close.iloc[-15:]
-            h_window = hist.iloc[-15:]
-            mid = 7  # split: first half vs second half
-            if float(c_window.iloc[-1]) < float(c_window.iloc[:mid].min()):
-                # price made a new low in second half
-                if float(h_window.iloc[-1]) > float(h_window.iloc[:mid].min()):
-                    ind["macd_bull_div"] = True  # histogram didn't confirm lower low
-            if float(c_window.iloc[-1]) > float(c_window.iloc[:mid].max()):
-                # price made a new high in second half
-                if float(h_window.iloc[-1]) < float(h_window.iloc[:mid].max()):
-                    ind["macd_bear_div"] = True  # histogram didn't confirm higher high
+        for window in [15, 30]:
+            if len(close) >= window and len(hist) >= window:
+                c_w = close.iloc[-window:]
+                h_w = hist.iloc[-window:]
+                mid = window // 2
+                if float(c_w.iloc[-1]) < float(c_w.iloc[:mid].min()):
+                    if float(h_w.iloc[-1]) > float(h_w.iloc[:mid].min()):
+                        ind["macd_bull_div"] = True
+                if float(c_w.iloc[-1]) > float(c_w.iloc[:mid].max()):
+                    if float(h_w.iloc[-1]) < float(h_w.iloc[:mid].max()):
+                        ind["macd_bear_div"] = True
 
         low14  = low.rolling(14).min()
         high14 = high.rolling(14).max()
@@ -228,6 +227,21 @@ class TechnicalAgent(BaseAgent):
                     ind["rs_20d"] = ind["momentum_20d"] - spy_20d
             except Exception:
                 pass
+
+        # Accumulation/distribution: last 5 bars — close position in daily range × volume
+        acc_days = dist_days = 0
+        recent5 = df.tail(5)
+        vol_avg_5 = float(volume.iloc[-21:-1].mean()) if len(volume) >= 21 else float(volume.mean())
+        for _, row in recent5.iterrows():
+            bar_range = row["high"] - row["low"]
+            if bar_range > 0 and row["volume"] > vol_avg_5 * 1.2:
+                close_pos = (row["close"] - row["low"]) / bar_range
+                if close_pos > 0.6:
+                    acc_days += 1   # closed in upper 40% of range on high volume
+                elif close_pos < 0.4:
+                    dist_days += 1  # closed in lower 40% of range on high volume
+        ind["acc_days"]  = acc_days
+        ind["dist_days"] = dist_days
 
         ind["price"] = price
         return ind
@@ -330,15 +344,17 @@ class TechnicalAgent(BaseAgent):
             elif slope < -0.4: score -= 0.75
             elif slope < -0.15:score -= 0.25
 
-            # ── RSI (max +1.5) ────────────────────────────────────────────────
-            if 45 <= rsi <= 65:
-                score += 1.5;  signals.append(f"RSI {rsi:.0f} bullish zone")
-            elif 35 <= rsi < 45 and above_ema50:
-                score += 0.75; signals.append(f"RSI {rsi:.0f} recovering")
+            # ── RSI (max +1.5, non-overlapping zones) ────────────────────────
+            if 50 <= rsi <= 65:
+                score += 1.5;  signals.append(f"RSI {rsi:.0f} bullish momentum zone")
+            elif 42 <= rsi < 50 and above_ema50:
+                score += 0.75; signals.append(f"RSI {rsi:.0f} recovering in uptrend")
+            elif 35 <= rsi < 42:
+                score += 0.25  # oversold but not confirmed
             elif rsi > 70:
                 score -= 1.5;  signals.append(f"RSI {rsi:.0f} overbought")
-            elif rsi < 35:
-                score -= 0.75
+            elif rsi < 35 and not above_ema50:
+                score -= 0.75  # oversold AND below trend — weak
 
             # ── MACD (max +1.5 + divergence bonus) ───────────────────────────
             if i["macd_hist"] > 0 and i["macd_hist2"] <= 0:
@@ -370,14 +386,20 @@ class TechnicalAgent(BaseAgent):
             elif accel < -2:
                 score -= 0.5;  signals.append("momentum decelerating")
 
-            # ── Volume ────────────────────────────────────────────────────────
+            # ── Volume + Accumulation/Distribution ────────────────────────────
             vr = i["vol_ratio"]
+            acc = i.get("acc_days", 0)
+            dist = i.get("dist_days", 0)
             if vr >= 2.0:
                 score += 1.0;  signals.append(f"volume {vr:.1f}x surge")
             elif vr >= 1.4:
                 score += 0.5;  signals.append(f"volume {vr:.1f}x above avg")
             elif vr < 0.6:
                 score -= 0.5;  signals.append("low volume")
+            if acc >= 2:
+                score += 0.5;  signals.append(f"{acc} accumulation days — buyers absorbing supply")
+            elif dist >= 2:
+                score -= 0.5;  signals.append(f"{dist} distribution days — sellers in control")
 
             # ── ADX trend strength (scaled) ───────────────────────────────────
             adx = i["adx"]
@@ -385,19 +407,27 @@ class TechnicalAgent(BaseAgent):
             elif adx > 25: score += 0.25
             elif adx < 15: score -= 0.5
 
-            # ── Stochastic oscillator ─────────────────────────────────────────
+            # ── Stochastic oscillator (with K/D crossover detection) ──────────
             sk = i.get("stoch_k", 50)
             sd = i.get("stoch_d", 50)
-            if sk < 25 and sd < 25:
+            if sk < 25 and sd < 25 and sk > sd:
+                score += 1.0;  signals.append(f"Stoch {sk:.0f} crossing up from oversold — bullish")
+            elif sk < 25 and sd < 25:
                 score += 0.75; signals.append(f"Stoch {sk:.0f}/{sd:.0f} oversold bounce zone")
+            elif sk > 75 and sd > 75 and sk < sd:
+                score -= 0.75; signals.append(f"Stoch {sk:.0f} crossing down from overbought")
             elif sk > 75 and sd > 75:
                 score -= 0.5;  signals.append(f"Stoch {sk:.0f}/{sd:.0f} overbought")
             elif 30 <= sk <= 60 and sk > sd:
                 score += 0.25  # stoch rising in healthy zone
 
+            # ── Mean reversion: oversold in uptrend ───────────────────────────
+            bb = i["bb_pct"]
+            if rsi < 38 and above_ema50 and bb < 0.2:
+                score += 0.75; signals.append(f"Mean reversion setup: RSI {rsi:.0f} oversold, above EMA50, near lower BB")
+
             # ── 52W range position ────────────────────────────────────────────
             w52 = i.get("w52_pct", 50)
-            vr  = i["vol_ratio"]
             if w52 > 92 and vr >= 1.3:
                 score += 0.5;  signals.append(f"52W high breakout with volume ({vr:.1f}x)")
             elif w52 > 92:
@@ -405,14 +435,15 @@ class TechnicalAgent(BaseAgent):
             elif w52 < 30 and above_ema50:
                 score += 0.5;  signals.append("low in 52W range, still in uptrend")
 
-            # ── BB overextension / breakout ───────────────────────────────────
-            bb = i["bb_pct"]
+            # ── BB overextension / breakout (symmetric rewards) ───────────────
             if bb > 1.0 and vr >= 1.2:
-                score += 0.5;  signals.append("BB breakout with volume — momentum ignition")
-            elif bb > 0.92:
-                score -= 0.75; signals.append("near upper BB — extended without volume")
+                score += 0.75; signals.append("BB breakout with volume — momentum ignition")
+            elif bb > 1.0:
+                score += 0.25; signals.append("BB breakout, light volume")
+            elif bb < 0.15 and above_ema50:
+                score += 0.75; signals.append("lower BB tag in uptrend — pullback entry")
             elif bb < 0.3 and above_ema50:
-                score += 0.5;  signals.append("pullback in uptrend")
+                score += 0.25; signals.append("pullback toward lower BB in uptrend")
 
             # ── Multi-timeframe alignment bonus ───────────────────────────────
             if i.get("mtf_bull_aligned"):
@@ -461,15 +492,17 @@ class TechnicalAgent(BaseAgent):
             elif slope > 0.4:  score -= 0.75
             elif slope > 0.15: score -= 0.25
 
-            # ── RSI ───────────────────────────────────────────────────────────
-            if 32 <= rsi <= 55:
-                score += 1.5;  signals.append(f"RSI {rsi:.0f} bearish zone")
-            elif 55 < rsi <= 65 and not above_ema50:
+            # ── RSI (non-overlapping bearish zones) ──────────────────────────
+            if 35 <= rsi <= 50:
+                score += 1.5;  signals.append(f"RSI {rsi:.0f} bearish momentum zone")
+            elif 50 < rsi <= 58 and not above_ema50:
                 score += 0.75; signals.append(f"RSI {rsi:.0f} overbought in downtrend")
+            elif 58 < rsi <= 65 and not above_ema50:
+                score += 0.25  # mildly extended
             elif rsi < 28:
-                score -= 1.5;  signals.append(f"RSI {rsi:.0f} oversold")
-            elif rsi > 65:
-                score -= 0.75
+                score -= 1.5;  signals.append(f"RSI {rsi:.0f} oversold — bounce risk")
+            elif rsi > 65 and above_ema50:
+                score -= 0.75  # strong bull momentum against short
 
             # ── MACD ──────────────────────────────────────────────────────────
             if i["macd_hist"] < 0 and i["macd_hist2"] >= 0:
@@ -501,14 +534,20 @@ class TechnicalAgent(BaseAgent):
             elif accel > 2:
                 score -= 0.5;  signals.append("downside momentum weakening")
 
-            # ── Volume ────────────────────────────────────────────────────────
+            # ── Volume + Accumulation/Distribution ────────────────────────────
             vr = i["vol_ratio"]
+            acc = i.get("acc_days", 0)
+            dist = i.get("dist_days", 0)
             if vr >= 2.0:
                 score += 1.0;  signals.append(f"volume {vr:.1f}x surge")
             elif vr >= 1.4:
                 score += 0.5;  signals.append(f"volume {vr:.1f}x above avg")
             elif vr < 0.6:
                 score -= 0.5;  signals.append("low volume")
+            if dist >= 2:
+                score += 0.5;  signals.append(f"{dist} distribution days — sellers dumping")
+            elif acc >= 2:
+                score -= 0.5;  signals.append(f"{acc} accumulation days — buyers absorbing, short harder")
 
             # ── ADX ───────────────────────────────────────────────────────────
             adx = i["adx"]
@@ -516,15 +555,24 @@ class TechnicalAgent(BaseAgent):
             elif adx > 25: score += 0.25
             elif adx < 15: score -= 0.5
 
-            # ── Stochastic oscillator ─────────────────────────────────────────
+            # ── Stochastic oscillator (with K/D crossover detection) ──────────
             sk = i.get("stoch_k", 50)
             sd = i.get("stoch_d", 50)
-            if sk > 75 and sd > 75:
+            if sk > 75 and sd > 75 and sk < sd:
+                score += 1.0;  signals.append(f"Stoch {sk:.0f} crossing down from overbought — bearish")
+            elif sk > 75 and sd > 75:
                 score += 0.75; signals.append(f"Stoch {sk:.0f}/{sd:.0f} overbought — put play")
+            elif sk < 25 and sd < 25 and sk > sd:
+                score -= 0.75; signals.append(f"Stoch {sk:.0f} crossing up from oversold — bounce risk")
             elif sk < 25 and sd < 25:
                 score -= 0.5;  signals.append(f"Stoch {sk:.0f}/{sd:.0f} oversold — bounce risk")
             elif 40 <= sk <= 70 and sk < sd:
                 score += 0.25  # stoch falling in sell zone
+
+            # ── Mean reversion: overbought in downtrend ───────────────────────
+            bb_b = i["bb_pct"]
+            if rsi > 62 and not above_ema50 and bb_b > 0.8:
+                score += 0.75; signals.append(f"Mean reversion setup: RSI {rsi:.0f} overbought, below EMA50, near upper BB")
 
             # ── 52W range position ────────────────────────────────────────────
             w52  = i.get("w52_pct", 50)
@@ -536,14 +584,15 @@ class TechnicalAgent(BaseAgent):
             elif w52 > 70 and not above_ema50:
                 score += 0.5;  signals.append("high in 52W range, below EMAs")
 
-            # ── BB breakdown / oversold ───────────────────────────────────────
-            bb_b = i["bb_pct"]
+            # ── BB breakdown / overextension (symmetric) ──────────────────────
             if bb_b < 0.0 and vr_b >= 1.2:
-                score += 0.5;  signals.append("BB breakdown with volume — momentum short")
-            elif bb_b < 0.08:
-                score -= 0.75; signals.append("near lower BB — oversold, bounce risk")
+                score += 0.75; signals.append("BB breakdown with volume — momentum short")
+            elif bb_b < 0.0:
+                score += 0.25; signals.append("BB breakdown, light volume")
+            elif bb_b > 0.85 and not above_ema50:
+                score += 0.75; signals.append("upper BB tag in downtrend — short entry")
             elif bb_b > 0.7 and not above_ema50:
-                score += 0.5;  signals.append("overbought in downtrend")
+                score += 0.25; signals.append("overbought in downtrend")
 
             # ── Intraday timing (bearish) ─────────────────────────────────────
             m1d_b = i.get("momentum_1d", 0)
