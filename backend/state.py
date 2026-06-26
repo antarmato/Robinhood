@@ -394,6 +394,15 @@ class StateManager:
     def get_pnl_history(self) -> list:
         return list(self._s.get("pnl_history", []))
 
+    def reset_sim(self) -> dict:
+        """Clear sim positions and P&L history. Training DB is untouched."""
+        cleared_open   = len([p for p in self._s.get("sim_positions", []) if p.get("status") == "open"])
+        cleared_closed = len([p for p in self._s.get("sim_positions", []) if p.get("status") == "closed"])
+        self._s["sim_positions"] = []
+        self._s["pnl_history"]   = []
+        self.save()
+        return {"cleared_open": cleared_open, "cleared_closed": cleared_closed}
+
 
 _state = StateManager()
 

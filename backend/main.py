@@ -616,12 +616,9 @@ async def sim_reset(api_key: str = ""):
     """
     _check_key(api_key)
     s = get_state()
-    d = s.get_full_state()
-    cleared_open   = len([p for p in d.get("sim_positions", []) if p.get("status") == "open"])
-    cleared_closed = len([p for p in d.get("sim_positions", []) if p.get("status") == "closed"])
-    d["sim_positions"] = []
-    d["pnl_history"]   = []
-    s.save()
+    result = s.reset_sim()
+    cleared_open   = result["cleared_open"]
+    cleared_closed = result["cleared_closed"]
     await _broadcast("system", "sim_reset", {
         "message": f"Sim reset: cleared {cleared_open} open + {cleared_closed} closed positions"
     })
