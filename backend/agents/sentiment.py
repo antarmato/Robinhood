@@ -109,19 +109,25 @@ class SentimentAgent(BaseAgent):
         score = 5.0
         components: dict = {}
 
-        # ── VIX component ──────────────────────────────────────────────────────
-        if vix < 15:
-            vix_adj = 1.5;   components["vix"] = f"low ({vix:.1f}) — calm, favor premium buyers"
-        elif vix <= 22:
-            vix_adj = 0.0;   components["vix"] = f"normal ({vix:.1f}) — no headwind"
-        elif vix <= 30:
-            vix_adj = -1.0;  components["vix"] = f"elevated ({vix:.1f}) — volatile, watch sizing"
-        else:
-            vix_adj = -2.5;  components["vix"] = f"extreme ({vix:.1f}) — high fear, skip"
-
-        # For put plays, high VIX is somewhat aligned (fear = bearish)
-        if direction == "bearish" and vix > 22:
-            vix_adj = max(0.0, vix_adj + 1.0)  # partial credit for bears in fearful market
+        # ── VIX component (direction-aware) ───────────────────────────────────
+        if direction == "bullish":
+            if vix < 15:
+                vix_adj = 1.5;   components["vix"] = f"low ({vix:.1f}) — calm, favor premium buyers"
+            elif vix <= 22:
+                vix_adj = 0.0;   components["vix"] = f"normal ({vix:.1f}) — no headwind"
+            elif vix <= 30:
+                vix_adj = -1.0;  components["vix"] = f"elevated ({vix:.1f}) — volatile, watch sizing"
+            else:
+                vix_adj = -2.5;  components["vix"] = f"extreme ({vix:.1f}) — high fear, skip"
+        else:  # bearish
+            if vix < 15:
+                vix_adj = -0.5;  components["vix"] = f"low ({vix:.1f}) — low fear, headwind for puts"
+            elif vix <= 22:
+                vix_adj = 0.0;   components["vix"] = f"normal ({vix:.1f}) — neutral for puts"
+            elif vix <= 30:
+                vix_adj = 0.0;   components["vix"] = f"elevated ({vix:.1f}) — fear rising, puts aligned"
+            else:
+                vix_adj = 1.5;   components["vix"] = f"extreme ({vix:.1f}) — high fear, put tailwind"
 
         score += vix_adj
 
@@ -139,11 +145,11 @@ class SentimentAgent(BaseAgent):
             components["breadth"] = f"{green_count}/3 indexes green"
 
         # ── Intraday market magnitude ─────────────────────────────────────────
-        # The above only captures direction (green/red). Add magnitude bonus for
-        # strong market days that create real tailwind/headwind.
+        # Skip when breadth already gave a 3/0 signal — same data, don't double-count.
         avg_market_chg = (spy_chg + qqq_chg) / 2 if macro.get("data_ok") else 0
         components["avg_market_chg"] = round(avg_market_chg, 2)
-        if macro.get("data_ok") and abs(avg_market_chg) >= 0.5:
+        full_breadth_signal = green_count in (0, 3)
+        if macro.get("data_ok") and not full_breadth_signal and abs(avg_market_chg) >= 0.5:
             if direction == "bullish":
                 if avg_market_chg >= 1.5:
                     score += 0.75; components["market_move"] = f"SPY/QQQ avg +{avg_market_chg:.1f}% — strong bull day"
@@ -171,14 +177,14 @@ class SentimentAgent(BaseAgent):
             primary_chg = sectors.get(primary_etf) if primary_etf else None
             if primary_chg is not None:
                 if direction == "bullish":
-                    if   primary_chg > 1.0:  score += 2.0; sector_aligned = True
-                    elif primary_chg > 0.0:  score += 1.0; sector_aligned = True
-                    elif primary_chg < -1.0: score -= 1.5; sector_aligned = False
+                    if   primary_chg > 1.0:  score += 1.5; sector_aligned = True
+                    elif primary_chg > 0.0:  score += 0.75; sector_aligned = True
+                    elif primary_chg < -1.0: score -= 1.25; sector_aligned = False
                     elif primary_chg < 0.0:  score -= 0.5; sector_aligned = False
                 else:  # bearish
-                    if   primary_chg < -1.0: score += 2.0; sector_aligned = True
-                    elif primary_chg < 0.0:  score += 1.0; sector_aligned = True
-                    elif primary_chg > 1.0:  score -= 1.5; sector_aligned = False
+                    if   primary_chg < -1.0: score += 1.5; sector_aligned = True
+                    elif primary_chg < 0.0:  score += 0.75; sector_aligned = True
+                    elif primary_chg > 1.0:  score -= 1.25; sector_aligned = False
                     elif primary_chg > 0.0:  score -= 0.5; sector_aligned = False
                 components["sector"] = f"{primary_etf} {primary_chg:+.2f}%"
             else:

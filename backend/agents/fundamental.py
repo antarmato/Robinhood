@@ -192,9 +192,11 @@ class FundamentalAgent(BaseAgent):
                     score += 0.5;  notes.append(f"P/E {pe:.0f} — value, lower downside")
                 elif pe < 25:
                     score += 0.25; notes.append(f"P/E {pe:.0f} — fair value")
+                elif pe <= 50:
+                    notes.append(f"P/E {pe:.0f} — growth multiple, acceptable")
                 elif pe > 80:
                     score -= 0.5;  notes.append(f"P/E {pe:.0f} — expensive, miss risk")
-                elif pe > 50:
+                else:
                     score -= 0.25; notes.append(f"P/E {pe:.0f} — elevated valuation")
             else:
                 # Bearish: high P/E = overvalued, supports put thesis
@@ -202,7 +204,9 @@ class FundamentalAgent(BaseAgent):
                     score += 0.5;  notes.append(f"P/E {pe:.0f} — overvalued, supports puts")
                 elif pe > 50:
                     score += 0.25; notes.append(f"P/E {pe:.0f} — elevated, mild put support")
-                elif pe < 15:
+                elif pe >= 15:
+                    notes.append(f"P/E {pe:.0f} — fair/moderate valuation")
+                else:
                     score -= 0.25; notes.append(f"P/E {pe:.0f} — value, headwind for puts")
 
         # ── 52-week price position (direction-aware) ──────────────────────────
@@ -238,8 +242,8 @@ class FundamentalAgent(BaseAgent):
             except (TypeError, ValueError):
                 pass
 
-        # ── Known high-risk symbols ───────────────────────────────────────────
-        if symbol in _HIGH_RISK:
+        # ── Known high-risk symbols (only if beta didn't already penalize heavily) ──
+        if symbol in _HIGH_RISK and beta < 1.9:
             score -= 0.5; notes.append("high-volatility / speculative")
 
         # ── Quality bonus ─────────────────────────────────────────────────────
