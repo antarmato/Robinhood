@@ -394,6 +394,10 @@ class Orchestrator:
                 "above_ema50":     candidate.get("above_ema50"),
                 "adx":             tech.get("adx") or candidate.get("adx"),
                 "vol_ratio":       tech.get("vol_ratio") or candidate.get("vol_ratio"),
+                "acc_days":        tech.get("acc_days"),
+                "dist_days":       tech.get("dist_days"),
+                "macd_bull_div":   tech.get("macd_bull_div"),
+                "macd_bear_div":   tech.get("macd_bear_div"),
                 "proposal_generated": False,
             })
 
@@ -848,6 +852,12 @@ class Orchestrator:
             # Stall tightening: 3+ declining checks → reduce the allowance by 10pts
             if stall_count >= 3 and trail_floor > initial_stop:
                 trail_floor = min(pnl_pct + 5.0, trail_floor + 10.0)
+
+            # DTE-aware trail tightening: theta accelerates in final 2 weeks.
+            # Raise the floor so we don't hold losers through rapid decay.
+            if dte_left <= 14 and trail_floor < 0:
+                dte_lift = max(0.0, (14 - dte_left) * 1.5)   # +1.5% per day under 14 DTE, max +21%
+                trail_floor = min(trail_floor + dte_lift, 0.0)  # lift toward breakeven, never above
 
             # Mini-peak reversal: had a nice gain (10-25%) and given most of it back.
             # Lock in the remaining small gain rather than riding to the stop loss.

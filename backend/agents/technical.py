@@ -78,6 +78,10 @@ class TechnicalAgent(BaseAgent):
             "vwap20_pct":     round(ind.get("vwap20_pct", 0), 2),
             "ema200":         round(ind.get("ema200", 0), 2),
             "above_ema200":   ind.get("price", 0) > ind.get("ema200", 0),
+            "acc_days":       ind.get("acc_days", 0),
+            "dist_days":      ind.get("dist_days", 0),
+            "macd_bull_div":  ind.get("macd_bull_div", False),
+            "macd_bear_div":  ind.get("macd_bear_div", False),
         }
         await self._emit("score", {"symbol": symbol, "score": score, "trend": trend,
                                     "signals": signals, "fatal_flaw": fatal_flaw})
