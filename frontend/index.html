@@ -150,11 +150,16 @@ canvas{display:block}
 #trades-summary span{color:var(--text);font-weight:700}
 
 /* ── Trades page live P&L chart ──────────────────────────────────────── */
-#trades-pnl-section{flex:0 0 190px;display:flex;flex-direction:column;border-top:1px solid var(--border);background:var(--bg);overflow:hidden}
-#trades-pnl-hdr{display:flex;align-items:center;gap:8px;padding:5px 12px;font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0}
-#trades-pnl-total{margin-left:auto;font-size:11px;font-weight:700}
-#trades-pnl-wrap{flex:1;min-height:0;position:relative;padding:6px 10px}
-#trades-pnl-wrap canvas{position:absolute;inset:6px 10px}
+#trades-pnl-section{flex:0 0 230px;display:flex;flex-direction:column;border-top:1px solid var(--border);background:var(--bg);overflow:hidden}
+#trades-pnl-hdr{display:flex;align-items:center;gap:6px;padding:5px 12px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0}
+.pnl-tab{background:transparent;border:none;color:var(--muted);font-family:inherit;font-size:10px;font-weight:700;letter-spacing:1px;padding:2px 7px;cursor:pointer;border-radius:3px;transition:color .15s}
+.pnl-tab:hover{color:var(--text)}
+.pnl-tab.active{color:var(--text);background:rgba(255,255,255,.06)}
+#pnl-sep{width:1px;height:12px;background:var(--border);margin:0 2px}
+#pnl-hover-info{font-size:13px;font-weight:700;transition:color .1s;letter-spacing:0}
+#trades-pnl-count{font-size:10px;color:var(--muted);margin-left:2px}
+#trades-pnl-wrap{flex:1;min-height:0;position:relative;padding:4px 12px 2px}
+#trades-pnl-wrap canvas{position:absolute;inset:4px 12px 2px}
 
 /* ── Trades page bottom perf panel ─────────────────────────────────────── */
 #trades-bottom{flex:0 0 260px;display:flex;border-top:2px solid var(--border);background:var(--bg);overflow:hidden}
@@ -441,12 +446,14 @@ canvas{display:block}
     </div>
   </div>
 
-  <!-- Live P&L bar chart -->
+  <!-- Live P&L chart -->
   <div id="trades-pnl-section">
     <div id="trades-pnl-hdr">
-      LIVE P&amp;L
-      <span id="trades-pnl-count" style="font-weight:400;color:var(--muted);font-size:10px"></span>
-      <span id="trades-pnl-total"></span>
+      <button class="pnl-tab active" data-view="1D" onclick="setPnlView('1D')">1D</button>
+      <button class="pnl-tab" data-view="1M" onclick="setPnlView('1M')">1M</button>
+      <span id="pnl-sep"></span>
+      <span id="pnl-hover-info"></span>
+      <span id="trades-pnl-count"></span>
     </div>
     <div id="trades-pnl-wrap"><canvas id="trades-pnl-canvas"></canvas></div>
   </div>
@@ -508,6 +515,8 @@ let lastScan   = null;
 let scanNextAt = null;
 let allTrades           = [];
 let allCombinedHistory  = [];
+let daySnapshots        = [];   // {t: ms, v: totalPnl} — intraday P&L points
+let pnlView             = '1D';
 let sortKey             = 'opened_at';
 let sortAsc    = false;
 const SCAN_INTERVAL = 30 * 60;
@@ -667,78 +676,150 @@ function initChartTP() {
   });
 }
 
+function setPnlView(v) {
+  pnlView = v;
+  document.querySelectorAll('.pnl-tab').forEach(b => b.classList.toggle('active', b.dataset.view === v));
+  updatePnlChart();
+}
+
+function pushDaySnapshot(closedPnl, openPositions) {
+  const unrealized = (openPositions || []).reduce((s, p) => s + (parseFloat(p.last_pnl_dollars) || 0), 0);
+  const total = Math.round((closedPnl + unrealized) * 100) / 100;
+  daySnapshots.push({ t: Date.now(), v: total });
+  if (daySnapshots.length > 500) daySnapshots.shift();
+  if (pnlView === '1D' && chartPnl) updatePnlChart();
+}
+
+function _pnlInfo(text, color) {
+  const el = document.getElementById('pnl-hover-info');
+  if (el) { el.textContent = text; el.style.color = color || 'var(--text)'; }
+}
+
 function initPnlChart() {
   const canvas = document.getElementById('trades-pnl-canvas');
   if (!canvas || chartPnl) return;
-  const ctx = canvas.getContext('2d');
-  chartPnl = new Chart(ctx, {
+
+  const crosshairPlugin = {
+    id: 'pnlCrosshair',
+    beforeDraw(chart) {
+      const {ctx: c, chartArea, tooltip} = chart;
+      if (!tooltip._active?.length || !chartArea) return;
+      const x = tooltip._active[0].element.x;
+      c.save();
+      c.beginPath(); c.moveTo(x, chartArea.top); c.lineTo(x, chartArea.bottom);
+      c.lineWidth = 1; c.strokeStyle = 'rgba(221,224,240,0.18)'; c.stroke();
+      c.restore();
+    }
+  };
+
+  const baselinePlugin = {
+    id: 'pnlBaseline',
+    beforeDraw(chart) {
+      const {ctx: c, chartArea, scales: {y}} = chart;
+      if (!chartArea || !y) return;
+      const zy = y.getPixelForValue(0);
+      if (zy < chartArea.top || zy > chartArea.bottom) return;
+      c.save();
+      c.setLineDash([3, 6]);
+      c.beginPath(); c.moveTo(chartArea.left, zy); c.lineTo(chartArea.right, zy);
+      c.strokeStyle = 'rgba(255,255,255,0.1)'; c.lineWidth = 1; c.stroke();
+      c.restore();
+    }
+  };
+
+  chartPnl = new Chart(canvas.getContext('2d'), {
     type: 'line',
+    plugins: [crosshairPlugin, baselinePlugin],
     data: { labels: [], datasets: [{
-      label: 'Cumulative P&L', data: [],
-      borderColor: '#22c55e', borderWidth: 2,
-      pointRadius: 4, pointHoverRadius: 6,
-      pointBackgroundColor: [], pointBorderColor: 'transparent',
-      fill: true, tension: 0.35,
+      data: [], borderWidth: 1.5, borderColor: '#22c55e',
+      pointRadius: 0, pointHoverRadius: 4,
+      pointHoverBackgroundColor: '#22c55e', pointHoverBorderColor: '#07070f', pointHoverBorderWidth: 2,
+      fill: true, tension: 0.2,
       backgroundColor: (ctx2) => {
-        const chart = ctx2.chart;
+        const {chart} = ctx2;
         const {ctx: c, chartArea} = chart;
         if (!chartArea) return 'transparent';
-        const latest = chart.data.datasets[0].data.slice(-1)[0]?.y ?? 0;
-        const grad = c.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
-        if (latest >= 0) {
-          grad.addColorStop(0, 'rgba(34,197,94,0.25)');
-          grad.addColorStop(1, 'rgba(34,197,94,0.01)');
-        } else {
-          grad.addColorStop(0, 'rgba(239,68,68,0.25)');
-          grad.addColorStop(1, 'rgba(239,68,68,0.01)');
-        }
-        return grad;
-      },
+        const vals = chart.data.datasets[0].data;
+        const last = vals[vals.length - 1] ?? 0;
+        const g = c.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+        if (last >= 0) { g.addColorStop(0, 'rgba(34,197,94,0.28)'); g.addColorStop(1, 'rgba(34,197,94,0.0)'); }
+        else           { g.addColorStop(0, 'rgba(239,68,68,0.0)');  g.addColorStop(1, 'rgba(239,68,68,0.28)'); }
+        return g;
+      }
     }]},
     options: {
-      responsive: true, maintainAspectRatio: false, animation: { duration: 350 },
+      responsive: true, maintainAspectRatio: false, animation: { duration: 150 },
+      interaction: { mode: 'index', intersect: false },
       plugins: {
         legend: { display: false },
         tooltip: {
-          callbacks: {
-            title: ctx2 => { const d = ctx2[0].raw; return `${d.symbol || '—'} ${d.dir || ''}`; },
-            label: ctx2 => { const d = ctx2.raw; const pct = d.pct != null ? ` (${d.pct >= 0 ? '+' : ''}${d.pct.toFixed(1)}%)` : ''; return ` Trade: $${d.trade >= 0 ? '+' : ''}${d.trade.toFixed(2)}${pct}  |  Total: $${d.y >= 0 ? '+' : ''}${d.y.toFixed(2)}`; }
-          },
-          backgroundColor: '#1a1a2e', borderColor: '#2a2a45', borderWidth: 1,
+          enabled: false,
+          external: ({ chart, tooltip }) => {
+            const vals = chart.data.datasets[0].data;
+            if (!tooltip.opacity || !tooltip.dataPoints?.length) {
+              const last = vals[vals.length - 1];
+              _pnlInfo(last != null ? `${last >= 0 ? '+' : ''}$${Math.abs(last).toFixed(2)}` : '—',
+                       last > 0 ? 'var(--green)' : last < 0 ? 'var(--red)' : 'var(--text)');
+              return;
+            }
+            const dp = tooltip.dataPoints[0];
+            const v = dp.raw;
+            _pnlInfo(`${v >= 0 ? '+' : ''}$${Math.abs(v).toFixed(2)}  ·  ${dp.label}`,
+                     v >= 0 ? 'var(--green)' : 'var(--red)');
+          }
         }
       },
       scales: {
-        x: { ticks: { color: '#454568', font: { size: 9 }, maxTicksLimit: 8, maxRotation: 0 }, grid: { color: '#1e1e38' } },
-        y: { ticks: { color: '#454568', font: { size: 9 }, callback: v => `$${v >= 0 ? '+' : ''}${v.toFixed(0)}` }, grid: { color: '#1e1e38' } }
+        x: { ticks: { color: '#454568', font: { size: 9 }, maxTicksLimit: 6, maxRotation: 0 }, grid: { display: false }, border: { display: false } },
+        y: { display: false }
       }
     }
   });
 }
 
-function updatePnlChart(trades) {
+function updatePnlChart() {
   if (!chartPnl) initPnlChart();
   if (!chartPnl) return;
-  const history = allCombinedHistory;
   const ds = chartPnl.data.datasets[0];
-  if (!history || !history.length) {
-    chartPnl.data.labels = []; ds.data = []; ds.pointBackgroundColor = [];
-    chartPnl.update('none');
-    const c = document.getElementById('trades-pnl-count'); if (c) c.textContent = '';
-    const t = document.getElementById('trades-pnl-total'); if (t) t.textContent = '';
-    return;
+  let labels, vals;
+
+  if (pnlView === '1D') {
+    if (!daySnapshots.length) {
+      chartPnl.data.labels = []; ds.data = []; chartPnl.update('none');
+      _pnlInfo('—', 'var(--muted)');
+      const c = document.getElementById('trades-pnl-count'); if (c) c.textContent = '';
+      return;
+    }
+    labels = daySnapshots.map(s => {
+      const d = new Date(s.t);
+      return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York', hour12: false });
+    });
+    vals = daySnapshots.map(s => s.v);
+  } else {
+    const history = allCombinedHistory;
+    if (!history.length) {
+      chartPnl.data.labels = []; ds.data = []; chartPnl.update('none');
+      _pnlInfo('—', 'var(--muted)');
+      const c = document.getElementById('trades-pnl-count'); if (c) c.textContent = '';
+      return;
+    }
+    labels = history.map(h => {
+      const d = h.timestamp ? new Date(h.timestamp) : null;
+      return d ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—';
+    });
+    vals = history.map(h => h.cumulative_pnl);
   }
-  const labels = history.map((h, i) => h.symbol ? `${h.symbol} T${i + 1}` : `T${i + 1}`);
-  const data   = history.map(h => ({ x: h.timestamp, y: h.cumulative_pnl, trade: h.trade_pnl, pct: h.trade_pnl_pct, symbol: h.symbol || '—', dir: h.direction || '' }));
-  const ptColors = history.map(h => h.outcome === 'win' ? '#22c55e' : '#ef4444');
-  const latest = history[history.length - 1]?.cumulative_pnl ?? 0;
+
+  const latest = vals[vals.length - 1] ?? 0;
   chartPnl.data.labels = labels;
-  ds.data = data; ds.pointBackgroundColor = ptColors;
+  ds.data = vals;
   ds.borderColor = latest >= 0 ? '#22c55e' : '#ef4444';
+  ds.pointHoverBackgroundColor = latest >= 0 ? '#22c55e' : '#ef4444';
   chartPnl.update('none');
+
+  _pnlInfo(`${latest >= 0 ? '+' : ''}$${Math.abs(latest).toFixed(2)}`, latest > 0 ? 'var(--green)' : latest < 0 ? 'var(--red)' : 'var(--text)');
   const cEl = document.getElementById('trades-pnl-count');
-  if (cEl) cEl.textContent = `${history.length} trade${history.length !== 1 ? 's' : ''}`;
-  const tEl = document.getElementById('trades-pnl-total');
-  if (tEl) { tEl.textContent = `${latest >= 0 ? '+' : ''}$${Math.abs(latest).toFixed(2)}`; tEl.style.color = latest > 0 ? 'var(--green)' : latest < 0 ? 'var(--red)' : 'var(--text)'; }
+  if (cEl) cEl.textContent = pnlView === '1D' ? `${daySnapshots.length} pts` : `${(allCombinedHistory||[]).length} trades`;
 }
 
 function updateChart(history) {
@@ -872,6 +953,8 @@ async function refreshSim() {
     const closed = (allData.closed_positions||[]).map(p=>({...p, status:'closed'}));
     allTrades = [...open, ...closed];
     allCombinedHistory = allData.combined_history||[];
+    // Push intraday snapshot for live 1D chart
+    pushDaySnapshot(data.stats?.total_pnl ?? 0, allData.open_positions || []);
     updateSymbolFilter();
     if (document.getElementById('page-trades').classList.contains('active')) renderTradesTable();
   } catch(e) { console.error(e); }
