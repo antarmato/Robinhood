@@ -396,6 +396,64 @@ async def get_sim():
     }
 
 
+@app.get("/api/sim/prices")
+async def get_sim_prices():
+    """Live price refresh for open positions — called by frontend every 30s."""
+    import asyncio as _aio
+    from . import market_data as _md
+    s = get_state()
+    open_positions = [p for p in s.get_sim_positions() if p.get("status") == "open"]
+    if not open_positions:
+        return {"updates": [], "total_unrealized_pnl": 0.0}
+
+    symbols = list(set(p["symbol"] for p in open_positions))
+    loop = _aio.get_event_loop()
+    try:
+        batch = await loop.run_in_executor(None, lambda: _md.get_batch_quotes(symbols))
+    except Exception:
+        return {"updates": [], "error": "price fetch failed"}
+
+    updates = []
+    total_unrealized = 0.0
+    for pos in open_positions:
+        symbol      = pos["symbol"]
+        current     = float(batch.get(symbol, 0))
+        if not current:
+            continue
+        entry_stock = float(pos.get("entry_stock_price", current))
+        entry_opt   = float(pos.get("entry_option_price", 1.0))
+        delta       = float(pos.get("delta", 0.25))
+        direction   = pos.get("direction", "bullish")
+        iv_rank_pos = float(pos.get("iv_rank", 50.0))
+        contracts   = int(pos.get("contracts", 1))
+
+        if direction == "bullish":
+            favorable_move = current - entry_stock
+        else:
+            favorable_move = entry_stock - current
+        move_pct = favorable_move / max(entry_stock, 0.01)
+
+        effective_delta = min(0.80, delta + move_pct * 0.35) if move_pct >= 0 else max(0.05, delta + move_pct * 0.15)
+        directional_pnl = favorable_move * effective_delta
+        iv_vega = (iv_rank_pos / 100.0) * 0.08
+        vega_pnl = (-entry_opt * iv_vega * move_pct * 2.0) if move_pct >= 0 else (entry_opt * iv_vega * abs(move_pct) * 1.5)
+
+        current_opt = max(0.01, entry_opt + directional_pnl + vega_pnl)
+        pnl_pct     = ((current_opt - entry_opt) / entry_opt) * 100.0
+        pnl_dollars = (current_opt - entry_opt) * contracts * 100
+
+        total_unrealized += pnl_dollars
+        updates.append({
+            "position_id":   pos["position_id"],
+            "symbol":        symbol,
+            "current_price": round(current, 2),
+            "pnl_pct":       round(pnl_pct, 1),
+            "pnl_dollars":   round(pnl_dollars, 2),
+        })
+
+    return {"updates": updates, "total_unrealized_pnl": round(total_unrealized, 2)}
+
+
 @app.get("/api/symbol-stats")
 async def symbol_stats():
     """Per-symbol win rate and avg P&L from training DB."""
