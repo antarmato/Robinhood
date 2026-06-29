@@ -506,8 +506,9 @@ let chartTP    = null;  // trades page chart
 let chartPnl   = null;  // trades page live P&L bar chart
 let lastScan   = null;
 let scanNextAt = null;
-let allTrades  = [];
-let sortKey    = 'opened_at';
+let allTrades           = [];
+let allCombinedHistory  = [];
+let sortKey             = 'opened_at';
 let sortAsc    = false;
 const SCAN_INTERVAL = 30 * 60;
 const _tradeStore = {};  // id → trade object; avoids all HTML quoting issues in onclick
@@ -669,22 +670,46 @@ function initChartTP() {
 function initPnlChart() {
   const canvas = document.getElementById('trades-pnl-canvas');
   if (!canvas || chartPnl) return;
-  chartPnl = new Chart(canvas.getContext('2d'), {
-    type: 'bar',
-    data: { labels: [], datasets: [{ label: 'P&L ($)', data: [], backgroundColor: [], borderRadius: 3, borderSkipped: false }] },
+  const ctx = canvas.getContext('2d');
+  chartPnl = new Chart(ctx, {
+    type: 'line',
+    data: { labels: [], datasets: [{
+      label: 'Cumulative P&L', data: [],
+      borderColor: '#22c55e', borderWidth: 2,
+      pointRadius: 4, pointHoverRadius: 6,
+      pointBackgroundColor: [], pointBorderColor: 'transparent',
+      fill: true, tension: 0.35,
+      backgroundColor: (ctx2) => {
+        const chart = ctx2.chart;
+        const {ctx: c, chartArea} = chart;
+        if (!chartArea) return 'transparent';
+        const latest = chart.data.datasets[0].data.slice(-1)[0]?.y ?? 0;
+        const grad = c.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+        if (latest >= 0) {
+          grad.addColorStop(0, 'rgba(34,197,94,0.25)');
+          grad.addColorStop(1, 'rgba(34,197,94,0.01)');
+        } else {
+          grad.addColorStop(0, 'rgba(239,68,68,0.25)');
+          grad.addColorStop(1, 'rgba(239,68,68,0.01)');
+        }
+        return grad;
+      },
+    }]},
     options: {
-      indexAxis: 'y',
-      responsive: true, maintainAspectRatio: false, animation: { duration: 300 },
+      responsive: true, maintainAspectRatio: false, animation: { duration: 350 },
       plugins: {
         legend: { display: false },
         tooltip: {
-          callbacks: { label: ctx => ` $${ctx.raw >= 0 ? '+' : ''}${ctx.raw.toFixed(2)}` },
+          callbacks: {
+            title: ctx2 => { const d = ctx2[0].raw; return `${d.symbol || '—'} ${d.dir || ''}`; },
+            label: ctx2 => { const d = ctx2.raw; const pct = d.pct != null ? ` (${d.pct >= 0 ? '+' : ''}${d.pct.toFixed(1)}%)` : ''; return ` Trade: $${d.trade >= 0 ? '+' : ''}${d.trade.toFixed(2)}${pct}  |  Total: $${d.y >= 0 ? '+' : ''}${d.y.toFixed(2)}`; }
+          },
           backgroundColor: '#1a1a2e', borderColor: '#2a2a45', borderWidth: 1,
         }
       },
       scales: {
-        x: { ticks: { color: '#454568', font: { size: 9 }, callback: v => `$${v >= 0 ? '+' : ''}${v.toFixed(0)}` }, grid: { color: '#1e1e38' }, border: { color: '#1e1e38' } },
-        y: { ticks: { color: '#dde0f0', font: { size: 10, family: "'SF Mono','Fira Code',monospace" } }, grid: { display: false } }
+        x: { ticks: { color: '#454568', font: { size: 9 }, maxTicksLimit: 8, maxRotation: 0 }, grid: { color: '#1e1e38' } },
+        y: { ticks: { color: '#454568', font: { size: 9 }, callback: v => `$${v >= 0 ? '+' : ''}${v.toFixed(0)}` }, grid: { color: '#1e1e38' } }
       }
     }
   });
@@ -693,29 +718,27 @@ function initPnlChart() {
 function updatePnlChart(trades) {
   if (!chartPnl) initPnlChart();
   if (!chartPnl) return;
+  const history = allCombinedHistory;
   const ds = chartPnl.data.datasets[0];
-  if (!trades || !trades.length) {
-    chartPnl.data.labels = []; ds.data = []; ds.backgroundColor = [];
+  if (!history || !history.length) {
+    chartPnl.data.labels = []; ds.data = []; ds.pointBackgroundColor = [];
     chartPnl.update('none');
     const c = document.getElementById('trades-pnl-count'); if (c) c.textContent = '';
     const t = document.getElementById('trades-pnl-total'); if (t) t.textContent = '';
     return;
   }
-  const sorted = [...trades].sort((a, b) => {
-    const av = a.status === 'open' ? (a.last_pnl_dollars ?? 0) : (a.pnl_dollars ?? 0);
-    const bv = b.status === 'open' ? (b.last_pnl_dollars ?? 0) : (b.pnl_dollars ?? 0);
-    return av - bv;
-  });
-  chartPnl.data.labels = sorted.map(t => t.status === 'open' ? `${t.symbol || '—'} ◉` : (t.symbol || '—'));
-  const vals = sorted.map(t => t.status === 'open' ? (t.last_pnl_dollars ?? 0) : (t.pnl_dollars ?? 0));
-  ds.data = vals;
-  ds.backgroundColor = vals.map(v => v > 0 ? 'rgba(34,197,94,0.75)' : v < 0 ? 'rgba(239,68,68,0.75)' : 'rgba(99,102,241,0.4)');
+  const labels = history.map((h, i) => h.symbol ? `${h.symbol} T${i + 1}` : `T${i + 1}`);
+  const data   = history.map(h => ({ x: h.timestamp, y: h.cumulative_pnl, trade: h.trade_pnl, pct: h.trade_pnl_pct, symbol: h.symbol || '—', dir: h.direction || '' }));
+  const ptColors = history.map(h => h.outcome === 'win' ? '#22c55e' : '#ef4444');
+  const latest = history[history.length - 1]?.cumulative_pnl ?? 0;
+  chartPnl.data.labels = labels;
+  ds.data = data; ds.pointBackgroundColor = ptColors;
+  ds.borderColor = latest >= 0 ? '#22c55e' : '#ef4444';
   chartPnl.update('none');
-  const total = vals.reduce((s, v) => s + v, 0);
   const cEl = document.getElementById('trades-pnl-count');
-  if (cEl) cEl.textContent = `${trades.length} trade${trades.length !== 1 ? 's' : ''}`;
+  if (cEl) cEl.textContent = `${history.length} trade${history.length !== 1 ? 's' : ''}`;
   const tEl = document.getElementById('trades-pnl-total');
-  if (tEl) { tEl.textContent = `${total >= 0 ? '+' : ''}$${Math.abs(total).toFixed(2)}`; tEl.style.color = total > 0 ? 'var(--green)' : total < 0 ? 'var(--red)' : 'var(--text)'; }
+  if (tEl) { tEl.textContent = `${latest >= 0 ? '+' : ''}$${Math.abs(latest).toFixed(2)}`; tEl.style.color = latest > 0 ? 'var(--green)' : latest < 0 ? 'var(--red)' : 'var(--text)'; }
 }
 
 function updateChart(history) {
@@ -834,8 +857,8 @@ async function refreshAll() {
 
 async function refreshSim() {
   try {
-    const r = await fetch('/api/sim');
-    const data = await r.json();
+    const [simR, allR] = await Promise.all([fetch('/api/sim'), fetch('/api/trades/all')]);
+    const [data, allData] = await Promise.all([simR.json(), allR.json()]);
     renderPositions(data.open_positions||[]);
     renderStats(data.stats||{});
     renderClosedTrades(data.closed_positions||[]);
@@ -844,10 +867,11 @@ async function refreshSim() {
     setPnlBar(pnl);
     document.getElementById('ib-open').textContent = (data.open_positions||[]).length;
 
-    // Merge open + closed for trades page
-    const open   = (data.open_positions||[]).map(p=>({...p, status:'open'}));
-    const closed = (data.closed_positions||[]).map(p=>({...p, status:'closed'}));
+    // Trades page uses the full merged history (all sessions)
+    const open   = (allData.open_positions||[]).map(p=>({...p, status:'open'}));
+    const closed = (allData.closed_positions||[]).map(p=>({...p, status:'closed'}));
     allTrades = [...open, ...closed];
+    allCombinedHistory = allData.combined_history||[];
     updateSymbolFilter();
     if (document.getElementById('page-trades').classList.contains('active')) renderTradesTable();
   } catch(e) { console.error(e); }
@@ -1160,7 +1184,7 @@ function renderTradesTable() {
   document.getElementById('ts-wr').style.color=wr>=50?'var(--green)':wr<50&&wr!=null?'var(--red)':'var(--text)';
 
   const tbody=document.getElementById('trades-body');
-  if (!trades.length) { tbody.innerHTML='<tr><td colspan="16" style="color:var(--muted);padding:16px 12px;text-align:center">No trades match filter</td></tr>'; updatePnlChart([]); return; }
+  if (!trades.length) { tbody.innerHTML='<tr><td colspan="16" style="color:var(--muted);padding:16px 12px;text-align:center">No trades match filter</td></tr>'; updatePnlChart(); return; }
 
   tbody.innerHTML = trades.map(t=>{
     const isOpen=t.status==='open';
@@ -1175,28 +1199,29 @@ function renderTradesTable() {
     const exitPrice=isOpen?null:(t.exit_stock_price??t.last_stock_price??null);
     const currentPrice=isOpen?(t.last_stock_price??null):null;
     _tradeStore[t.position_id] = t;
+    const isDb = t.source === 'db';
     const chk = !isOpen ? `<td style="padding:4px 6px" onclick="event.stopPropagation()"><input type="checkbox" class="trade-chk" data-id="${esc(t.position_id||'')}" onchange="onTradeCheck()" style="cursor:pointer;accent-color:var(--accent)"></td>` : `<td style="padding:4px 6px"></td>`;
-    return `<tr class="${rowCls}" onclick="clickTrade('${esc(t.position_id||'')}')" style="cursor:pointer">
+    return `<tr class="${rowCls}" onclick="clickTrade('${esc(t.position_id||'')}')" style="cursor:pointer;${isDb?'opacity:.85':''}">
       ${chk}
-      <td><strong>${esc(t.symbol||'—')}</strong></td>
+      <td><strong>${esc(t.symbol||'—')}</strong>${isDb?` <span style="font-size:9px;color:var(--muted);font-weight:400">hist</span>`:''}</td>
       <td style="color:${dirC}">${t.direction==='bullish'?'▲':'▼'}</td>
       <td style="color:${dirC}">${typeStr}</td>
       <td><span class="tag ${isOpen?'tag-sim':pnl$>0?'tag-approved':'tag-flaw'}">${isOpen?'OPEN':pnl$>0?'WIN':'LOSS'}</span></td>
       <td style="color:var(--muted)">${enteredAt}</td>
       <td style="color:var(--muted)">${exitedAt}</td>
-      <td>$${t.entry_stock_price?.toFixed(2)??'—'}</td>
-      <td>${isOpen?(currentPrice!=null?`<span style="color:var(--sim)" class="live-price-${esc(t.position_id||'')}">${'$'+currentPrice.toFixed(2)}</span>`:'<span style="color:var(--muted)">live…</span>'):(exitPrice!=null?'$'+exitPrice.toFixed(2):'—')}</td>
+      <td>${isDb?'—':`$${t.entry_stock_price?.toFixed(2)??'—'}`}</td>
+      <td>${isOpen?(currentPrice!=null?`<span style="color:var(--sim)" class="live-price-${esc(t.position_id||'')}">${'$'+currentPrice.toFixed(2)}</span>`:'<span style="color:var(--muted)">live…</span>'):(isDb?'—':(exitPrice!=null?'$'+exitPrice.toFixed(2):'—'))}</td>
       <td style="color:${pnlC};font-weight:700" class="${isOpen?'live-pnl-pct-'+esc(t.position_id||''):''}">${pnlPct>=0?'+':''}${pnlPct.toFixed(1)}%</td>
       <td style="color:${pnlC};font-weight:700" class="${isOpen?'live-pnl-d-'+esc(t.position_id||''):''}">${pnl$>=0?'+':''}$${Math.abs(pnl$).toFixed(2)}</td>
       <td style="color:var(--muted)">${t.days_held??0}d</td>
       <td>${t.weighted_score!=null?t.weighted_score.toFixed(1):'—'}</td>
       <td style="color:var(--muted)">${t.confidence!=null?t.confidence+'/10':'—'}</td>
-      <td style="color:var(--yellow);font-weight:700">$${((t.total_cost??((t.entry_option_price??1.0)*(t.contracts??1)*100))).toFixed(0)}</td>
+      <td style="color:var(--yellow);font-weight:700">${isDb?'—':`$${((t.total_cost??((t.entry_option_price??1.0)*(t.contracts??1)*100))).toFixed(0)}`}</td>
       <td style="color:var(--muted);max-width:160px;overflow:hidden;text-overflow:ellipsis">${esc((t.exit_reason||'').slice(0,60))}</td>
     </tr>`;
   }).join('');
 
-  updatePnlChart(trades);
+  updatePnlChart();
 }
 
 // ── Trade detail modal ─────────────────────────────────────────────────────────

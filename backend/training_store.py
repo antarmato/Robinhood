@@ -1057,3 +1057,75 @@ def get_similar_iv_stats(iv_rank: float, direction: str, min_samples: int = 3) -
     except Exception as e:
         logger.debug(f"get_similar_iv_stats failed: {e}")
         return None
+
+
+def get_all_closed_trades(exclude_position_ids: set = None) -> list:
+    """
+    Return all closed trade rows from scan_log formatted like sim_positions.
+    Used to show historical trades in the UI that survive sim resets.
+    Optionally exclude position_ids already present in sim_positions.
+    """
+    conn = _get_conn()
+    if not conn:
+        return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT position_id, symbol, direction, decision,
+                       weighted_score, confidence, tech_score, fund_score, sent_score,
+                       outcome, outcome_pnl_pct, outcome_pnl_dollars,
+                       outcome_days_held, outcome_exit_reason, outcome_closed_at, logged_at
+                FROM scan_log
+                WHERE decision = 'trade' AND outcome IS NOT NULL AND position_id IS NOT NULL
+                ORDER BY outcome_closed_at ASC NULLS LAST
+            """)
+            rows = []
+            exclude = exclude_position_ids or set()
+            for r in cur.fetchall():
+                pid = r[0]
+                if pid in exclude:
+                    continue
+                pnl_d = float(r[11] or 0)
+                pnl_p = float(r[10] or 0)
+                rows.append({
+                    "position_id":       pid,
+                    "symbol":            r[1] or "—",
+                    "direction":         r[2] or "bullish",
+                    "option_type":       "call" if r[2] == "bullish" else "put",
+                    "status":            "closed",
+                    "source":            "db",
+                    "pnl_dollars":       round(pnl_d, 2),
+                    "pnl_pct":           round(pnl_p, 2),
+                    "weighted_score":    float(r[4]) if r[4] is not None else None,
+                    "confidence":        int(r[5]) if r[5] is not None else None,
+                    "tech_score":        float(r[6]) if r[6] is not None else None,
+                    "fund_score":        float(r[7]) if r[7] is not None else None,
+                    "sent_score":        float(r[8]) if r[8] is not None else None,
+                    "days_held":         int(r[12]) if r[12] is not None else None,
+                    "exit_reason":       r[13] or "",
+                    "closed_at":         r[14].isoformat() if r[14] else None,
+                    "opened_at":         r[15].isoformat() if r[15] else None,
+                })
+            return rows
+    except Exception as e:
+        logger.error(f"get_all_closed_trades failed: {e}")
+        return []
+
+
+def delete_scan_log_trades(position_ids: list) -> int:
+    """Hard-delete scan_log rows by position_id. Returns number removed."""
+    conn = _get_conn()
+    if not conn or not position_ids:
+        return 0
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM scan_log WHERE position_id = ANY(%s)",
+                (list(position_ids),)
+            )
+            removed = cur.rowcount
+        logger.info(f"delete_scan_log_trades: removed {removed} rows")
+        return removed
+    except Exception as e:
+        logger.error(f"delete_scan_log_trades failed: {e}")
+        return 0

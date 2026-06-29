@@ -725,16 +725,79 @@ class DeletePositionsRequest(BaseModel):
 
 @app.post("/api/sim/delete-positions")
 async def sim_delete_positions(req: DeletePositionsRequest):
-    """Delete specific sim positions by position_id."""
+    """Delete specific positions from both sim_positions and scan_log."""
     _check_key(req.api_key)
     if not req.position_ids:
         return {"status": "ok", "removed": 0}
     s = get_state()
-    removed = s.delete_sim_positions(req.position_ids)
+    removed_sim = s.delete_sim_positions(req.position_ids)
+    removed_db  = ts.delete_scan_log_trades(req.position_ids)
+    removed = removed_sim + removed_db
     await _broadcast("system", "positions_deleted", {
         "message": f"Deleted {removed} position{'s' if removed != 1 else ''}"
     })
-    return {"status": "ok", "removed": removed}
+    return {"status": "ok", "removed": removed, "sim": removed_sim, "db": removed_db}
+
+
+@app.get("/api/trades/all")
+async def get_all_trades():
+    """
+    Return ALL trades across sessions: current sim_positions + historical scan_log records.
+    The scan_log survives sim resets, so this shows the complete trade history.
+    """
+    s = get_state()
+    sim_positions = s.get_sim_positions()
+    sim_ids = {p.get("position_id") for p in sim_positions if p.get("position_id")}
+
+    # Historical trades from scan_log (excluding any already in sim_positions)
+    db_trades = ts.get_all_closed_trades(exclude_position_ids=sim_ids)
+
+    # Build a unified pnl_history for the equity curve
+    # Combine db_trades + sim closed positions, sorted by close date
+    all_closed = []
+    for t in db_trades:
+        all_closed.append({
+            "closed_at":  t.get("closed_at") or "",
+            "pnl_dollars": t.get("pnl_dollars", 0),
+            "pnl_pct":    t.get("pnl_pct", 0),
+            "symbol":     t.get("symbol", ""),
+            "direction":  t.get("direction", ""),
+            "position_id": t.get("position_id", ""),
+            "source":     "db",
+        })
+    for p in sim_positions:
+        if p.get("status") == "closed":
+            all_closed.append({
+                "closed_at":  p.get("closed_at") or "",
+                "pnl_dollars": float(p.get("pnl_dollars", 0)),
+                "pnl_pct":    float(p.get("pnl_pct", 0)),
+                "symbol":     p.get("symbol", ""),
+                "direction":  p.get("direction", ""),
+                "position_id": p.get("position_id", ""),
+                "source":     "sim",
+            })
+    all_closed.sort(key=lambda x: x["closed_at"])
+
+    cumulative = 0.0
+    combined_history = []
+    for t in all_closed:
+        cumulative += float(t["pnl_dollars"])
+        combined_history.append({
+            "timestamp":      t["closed_at"],
+            "cumulative_pnl": round(cumulative, 2),
+            "trade_pnl":      round(float(t["pnl_dollars"]), 2),
+            "trade_pnl_pct":  round(float(t["pnl_pct"]), 2),
+            "outcome":        "win" if float(t["pnl_dollars"]) > 0 else "loss",
+            "symbol":         t["symbol"],
+            "direction":      t["direction"],
+        })
+
+    return {
+        "open_positions":    [p for p in sim_positions if p.get("status") == "open"],
+        "closed_positions":  [p for p in sim_positions if p.get("status") == "closed"] + db_trades,
+        "db_trades":         db_trades,
+        "combined_history":  combined_history,
+    }
 
 
 # ── WebSocket ──────────────────────────────────────────────────────────────────
