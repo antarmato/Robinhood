@@ -1341,9 +1341,10 @@ async function refreshPrices() {
     const r = await fetch('/api/sim/prices');
     const data = await r.json();
     const updates = data.updates || [];
+    console.log('[refreshPrices] updates:', updates.length, updates);
     if (!updates.length) return;
 
-    // Patch allTrades in-place so next renderTradesTable is up-to-date
+    // Patch allTrades in-place
     for (const u of updates) {
       const t = allTrades.find(x => x.position_id === u.position_id);
       if (t) {
@@ -1351,24 +1352,20 @@ async function refreshPrices() {
         t.last_pnl_pct     = u.pnl_pct;
         t.last_pnl_dollars = u.pnl_dollars;
       }
-      // Patch trades table cells without full re-render
-      const pnlC = u.pnl_dollars > 0 ? 'var(--green)' : u.pnl_dollars < 0 ? 'var(--red)' : 'var(--muted)';
-      const priceEl = document.querySelector(`.live-price-${CSS.escape(u.position_id || '')}`);
-      if (priceEl) { priceEl.textContent = '$' + u.current_price.toFixed(2); }
-      const pnlPctEl = document.querySelector(`.live-pnl-pct-${CSS.escape(u.position_id || '')}`);
-      if (pnlPctEl) { pnlPctEl.textContent = (u.pnl_pct >= 0 ? '+' : '') + u.pnl_pct.toFixed(1) + '%'; pnlPctEl.style.color = pnlC; }
-      const pnlDEl = document.querySelector(`.live-pnl-d-${CSS.escape(u.position_id || '')}`);
-      if (pnlDEl) { pnlDEl.textContent = (u.pnl_dollars >= 0 ? '+' : '') + '$' + Math.abs(u.pnl_dollars).toFixed(2); pnlDEl.style.color = pnlC; }
     }
 
-    // Update open positions panel (re-renders with fresh last_pnl_pct)
-    const openTrades = allTrades.filter(t => t.status === 'open');
-    renderPositions(openTrades);
+    // Re-render open positions panel (dashboard)
+    renderPositions(allTrades.filter(t => t.status === 'open'));
 
-    // Update P&L bar with closed pnl + live unrealized
+    // Re-render trades table if it's currently visible
+    if (document.getElementById('page-trades').classList.contains('active')) {
+      renderTradesTable();
+    }
+
+    // Update P&L bar: closed realized + live unrealized
     const closedPnl = allTrades.filter(t => t.status === 'closed').reduce((s, t) => s + (t.pnl_dollars ?? 0), 0);
     setPnlBar(closedPnl + (data.total_unrealized_pnl ?? 0));
-  } catch(e) { /* silently ignore price refresh failures */ }
+  } catch(e) { console.error('[refreshPrices] failed:', e); }
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
@@ -1379,7 +1376,8 @@ refreshAll();
 loadLearningInsights();
 setInterval(refreshAll, 30000);
 setInterval(refreshSim, 15000);
-setInterval(refreshPrices, 30000);  // live price updates for open positions
+setInterval(refreshPrices, 10000);  // live price updates for open positions every 10s
+setTimeout(refreshPrices, 3000);    // first price refresh 3s after boot
 setInterval(refreshSymbolStats, 60000);
 setInterval(loadLearningInsights, 300000); // refresh learning panel every 5 min
 </script>
