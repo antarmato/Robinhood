@@ -1125,13 +1125,33 @@ function openModal(jsonStr) {
     </div>
 
     <div class="modal-section">
+      <div class="modal-section-title">Option Details</div>
+      ${(()=>{
+        const dte = t.entry_dte ?? 35;
+        const dteLabel = dte<=28 ? 'Short-term (28 DTE) — high conviction setup' : dte>=42 ? 'Extended (42 DTE) — more time to be right' : 'Standard (35 DTE)';
+        const iv4 = t.iv_rank ?? 50;
+        const stopPct = iv4>=70?-20:iv4>=50?-28:iv4>=30?-38:-50;
+        const profitTarget = '+100%';
+        const optDir = t.direction==='bullish'?'Call (profits if stock rises)':'Put (profits if stock falls)';
+        return `
+        <div class="modal-kv"><span class="modal-kv-k">Instrument</span><span class="modal-kv-v" style="color:${t.direction==='bullish'?'var(--green)':'var(--red)'}">${esc(t.option_type?.toUpperCase()||'—')} option — ${optDir}</span></div>
+        <div class="modal-kv"><span class="modal-kv-k">Strike</span><span class="modal-kv-v">~0.25 delta (slightly OTM at entry)</span></div>
+        <div class="modal-kv"><span class="modal-kv-k">Expiration</span><span class="modal-kv-v">${dteLabel}</span></div>
+        <div class="modal-kv"><span class="modal-kv-k">Cost / Max loss</span><span class="modal-kv-v" style="color:var(--yellow)">$${((t.entry_option_price??1.0)*(t.contracts??1)*100).toFixed(0)} (option premium)</span></div>
+        <div class="modal-kv"><span class="modal-kv-k">Stop loss</span><span class="modal-kv-v" style="color:var(--red)">${stopPct}% of premium (IV-adjusted)</span></div>
+        <div class="modal-kv"><span class="modal-kv-k">Profit target</span><span class="modal-kv-v" style="color:var(--green)">${profitTarget} of premium (trailing stop activates at +25%)</span></div>
+        `;
+      })()}
+    </div>
+
+    <div class="modal-section">
       <div class="modal-section-title">Trade Details</div>
       <div class="modal-kv"><span class="modal-kv-k">Days held</span><span class="modal-kv-v">${t.days_held??0}d</span></div>
-      <div class="modal-kv"><span class="modal-kv-k">DTE at entry</span><span class="modal-kv-v">${t.entry_dte??'—'}</span></div>
+      <div class="modal-kv"><span class="modal-kv-k">DTE at entry</span><span class="modal-kv-v">${t.entry_dte??'—'} days to expiration</span></div>
       <div class="modal-kv"><span class="modal-kv-k">IV Rank at entry</span><span class="modal-kv-v">${t.iv_rank!=null?Math.round(t.iv_rank)+'%':'—'}</span></div>
       <div class="modal-kv"><span class="modal-kv-k">Peak P&L</span><span class="modal-kv-v" style="color:var(--green)">${hwm>0?'+'+hwm.toFixed(1)+'%':'—'}</span></div>
       ${!isOpen?`<div class="modal-kv"><span class="modal-kv-k">Exit reason</span><span class="modal-kv-v" style="color:var(--muted)">${esc(t.exit_reason||'—')}</span></div>`:''}
-      <div class="modal-kv"><span class="modal-kv-k">Status</span><span class="modal-kv-v">${isOpen?'Open':'Closed'}</span></div>
+      <div class="modal-kv"><span class="modal-kv-k">Status</span><span class="modal-kv-v">${isOpen?'<span style="color:var(--sim)">Open — monitoring daily</span>':'Closed'}</span></div>
     </div>
 
     ${(t.entry_regime||t.entry_adx!=null||t.entry_above_ema200!=null||t.entry_rsi!=null)?`
