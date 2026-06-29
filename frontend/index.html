@@ -78,9 +78,9 @@ tr:last-child td{border-bottom:none}
 #pos-section{flex-shrink:0}
 #pos-table-wrap{overflow:auto;flex:1;max-height:160px}
 .ptable{width:100%;border-collapse:collapse;table-layout:fixed}
-.ptable col:nth-child(1){width:78px}.ptable col:nth-child(2){width:40px}
-.ptable col:nth-child(3){width:70px}.ptable col:nth-child(4){width:70px}
-.ptable col:nth-child(5){width:66px}.ptable col:nth-child(6){width:auto}
+.ptable col:nth-child(1){width:72px}.ptable col:nth-child(2){width:38px}
+.ptable col:nth-child(3){width:66px}.ptable col:nth-child(4){width:66px}
+.ptable col:nth-child(5){width:80px}.ptable col:nth-child(6){width:58px}.ptable col:nth-child(7){width:auto}
 .pnl-pos{color:var(--green);font-weight:700}
 .pnl-neg{color:var(--red);font-weight:700}
 .pnl-zero{color:var(--muted)}
@@ -273,12 +273,12 @@ canvas{display:block}
       </div>
       <div id="pos-table-wrap">
         <table class="ptable">
-          <colgroup><col><col><col><col><col><col></colgroup>
+          <colgroup><col><col><col><col><col><col><col></colgroup>
           <thead><tr>
-            <th>Symbol</th><th>Type</th><th>Entry $</th><th>Current $</th><th>P&L</th><th>Day</th>
+            <th>Symbol</th><th>Type</th><th>Entry $</th><th>Current $</th><th>P&L</th><th>Cost</th><th>Day</th>
           </tr></thead>
           <tbody id="pos-body">
-            <tr><td colspan="6" style="color:var(--muted);padding:8px 12px">No open positions yet</td></tr>
+            <tr><td colspan="7" style="color:var(--muted);padding:8px 12px">No open positions yet</td></tr>
           </tbody>
         </table>
       </div>
@@ -832,7 +832,7 @@ function renderScan(data) {
 function renderPositions(positions) {
   const tbody=document.getElementById('pos-body'), lbl=document.getElementById('pos-count-lbl');
   lbl.textContent = positions.length?`${positions.length} open · $${positions.length*100} at risk`:'';
-  if (!positions.length) { tbody.innerHTML='<tr><td colspan="6" style="color:var(--muted);padding:8px 12px">No open positions</td></tr>'; return; }
+  if (!positions.length) { tbody.innerHTML='<tr><td colspan="7" style="color:var(--muted);padding:8px 12px">No open positions</td></tr>'; return; }
   tbody.innerHTML = positions.map(p=>{
     const pnl=p.last_pnl_pct??0, pnl$=p.last_pnl_dollars??0;
     const days=p.days_held??0, dte=p.dte_left??(p.entry_dte?p.entry_dte-days:35-days);
@@ -842,6 +842,7 @@ function renderPositions(positions) {
     const hwm=p.high_water_pnl_pct??0, hwmStr=hwm>0?` ↑${hwm.toFixed(0)}%pk`:'';
     const iv4pos = p.iv_rank??50;
     const initStop = iv4pos>=70?-20:iv4pos>=50?-28:iv4pos>=30?-38:-50;
+    const cost = ((p.entry_option_price??1.0) * (p.contracts??1) * 100);
     function trailFloor(pk){if(pk>=150)return pk-35;if(pk>=100)return pk-30;if(pk>=50)return Math.max(0,pk-25);if(pk>=25)return 0;return initStop;}
     const floor=trailFloor(hwm), floorStr=hwm>=25?` floor:${floor.toFixed(0)}%`:'';
     const tt=[
@@ -857,6 +858,7 @@ function renderPositions(positions) {
       <td>$${p.entry_stock_price?.toFixed(2)??'—'}</td>
       <td>$${p.last_stock_price?.toFixed(2)??'—'}</td>
       <td class="${pnlCls}">${pnlStr}${hwmStr}</td>
+      <td style="color:var(--yellow);font-weight:700">$${cost.toFixed(0)}</td>
       <td style="color:var(--muted)">D${days}/${dte}dte${p.confidence?` c${p.confidence}`:''}${floorStr}</td>
     </tr>`;
   }).join('');
