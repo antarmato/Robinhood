@@ -421,10 +421,11 @@ canvas{display:block}
           <th onclick="sortTrades('days_held')">Days <span class="sort-arrow">↕</span></th>
           <th onclick="sortTrades('weighted_score')">Score <span class="sort-arrow">↕</span></th>
           <th onclick="sortTrades('confidence')">Conf <span class="sort-arrow">↕</span></th>
+          <th onclick="sortTrades('total_cost')">Cost <span class="sort-arrow">↕</span></th>
           <th>Exit Reason</th>
         </tr></thead>
         <tbody id="trades-body">
-          <tr><td colspan="14" style="color:var(--muted);padding:16px 12px;text-align:center">No trade data yet</td></tr>
+          <tr><td colspan="15" style="color:var(--muted);padding:16px 12px;text-align:center">No trade data yet</td></tr>
         </tbody>
       </table>
     </div>
@@ -1032,7 +1033,7 @@ function renderTradesTable() {
   document.getElementById('ts-wr').style.color=wr>=50?'var(--green)':wr<50&&wr!=null?'var(--red)':'var(--text)';
 
   const tbody=document.getElementById('trades-body');
-  if (!trades.length) { tbody.innerHTML='<tr><td colspan="14" style="color:var(--muted);padding:16px 12px;text-align:center">No trades match filter</td></tr>'; return; }
+  if (!trades.length) { tbody.innerHTML='<tr><td colspan="15" style="color:var(--muted);padding:16px 12px;text-align:center">No trades match filter</td></tr>'; return; }
 
   tbody.innerHTML = trades.map(t=>{
     const isOpen=t.status==='open';
@@ -1061,6 +1062,7 @@ function renderTradesTable() {
       <td style="color:var(--muted)">${t.days_held??0}d</td>
       <td>${t.weighted_score!=null?t.weighted_score.toFixed(1):'—'}</td>
       <td style="color:var(--muted)">${t.confidence!=null?t.confidence+'/10':'—'}</td>
+      <td style="color:var(--yellow);font-weight:700">$${((t.total_cost??((t.entry_option_price??1.0)*(t.contracts??1)*100))).toFixed(0)}</td>
       <td style="color:var(--muted);max-width:160px;overflow:hidden;text-overflow:ellipsis">${esc((t.exit_reason||'').slice(0,60))}</td>
     </tr>`;
   }).join('');
