@@ -70,6 +70,7 @@ class Orchestrator:
         self.scan_interval     = int(os.getenv("SCAN_INTERVAL_MINUTES", "30")) * 60
         self.monitor_interval  = int(os.getenv("MONITOR_INTERVAL_MINUTES", "15")) * 60
         self._force_scan       = False   # set True to trigger immediate scan
+        self._wake_event: asyncio.Event | None = None  # wakes the loop immediately
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -103,8 +104,22 @@ class Orchestrator:
 
     # ── Main loop ──────────────────────────────────────────────────────────────
 
+    async def _interruptible_sleep(self, seconds: float):
+        """Sleep up to `seconds` but return immediately when _wake_event fires."""
+        if self._wake_event is None:
+            await asyncio.sleep(seconds)
+            return
+        try:
+            await asyncio.wait_for(self._wake_event.wait(), timeout=seconds)
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            self._wake_event.clear()
+
     async def _main_loop(self):
         logger.info("Orchestrator starting.")
+        # Create event inside the running loop so it binds to the correct loop.
+        self._wake_event = asyncio.Event()
         # Use wall-clock time (time.time()) so backend and frontend stay in sync.
         last_scan      = 0.0
         last_monitor   = 0.0
@@ -121,7 +136,7 @@ class Orchestrator:
                         and self._is_trading_day()
                         and self.state.get_last_afterhours_date() != today):
                     await self._run_afterhours_capture()
-                    await asyncio.sleep(60)
+                    await self._interruptible_sleep(60)
                     continue
 
                 # ── Off-hours idle ────────────────────────────────────────────
@@ -137,7 +152,8 @@ class Orchestrator:
                         wait_msg = "Market closed — idle until 9:00am ET tomorrow."
                         sleep_s  = 3600
                     await self._emit("system", "info", {"message": wait_msg})
-                    await asyncio.sleep(max(sleep_s, 60))
+                    # Interruptible so the loop wakes quickly on restart/force.
+                    await self._interruptible_sleep(max(sleep_s, 60))
                     continue
 
                 # ── Pre-market prep (9:00-9:30am, once per day) ──────────────
@@ -188,7 +204,8 @@ class Orchestrator:
                                 {"message": f"📊 {open_count}/{self.MAX_OPEN_POSITIONS} open — scanning for new entries..."})
                         await self._run_scan_cycle()
 
-                await asyncio.sleep(30)
+                # Wait up to 30s — wakes instantly if trigger_scan() is called.
+                await self._interruptible_sleep(30)
 
             except asyncio.CancelledError:
                 break
@@ -199,9 +216,9 @@ class Orchestrator:
                 if "credit balance" in err_str.lower() or "billing" in err_str.lower():
                     await self._emit("system", "error",
                         {"message": "API credits exhausted — pausing 30 min."})
-                    await asyncio.sleep(1800)
+                    await self._interruptible_sleep(1800)
                 else:
-                    await asyncio.sleep(60)
+                    await self._interruptible_sleep(60)
 
     # ── Pre-market prep ────────────────────────────────────────────────────────
 
@@ -727,8 +744,10 @@ class Orchestrator:
         )
 
     def trigger_scan(self):
-        """Force an immediate scan on the next loop tick (within 30s)."""
+        """Force an immediate scan — wakes the loop within milliseconds."""
         self._force_scan = True
+        if self._wake_event is not None:
+            self._wake_event.set()
 
     # ── Monitor ────────────────────────────────────────────────────────────────
 
