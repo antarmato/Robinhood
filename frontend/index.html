@@ -489,6 +489,12 @@ let allTrades  = [];
 let sortKey    = 'opened_at';
 let sortAsc    = false;
 const SCAN_INTERVAL = 30 * 60;
+const _tradeStore = {};  // id → trade object; avoids all HTML quoting issues in onclick
+
+function clickTrade(id) {
+  const t = _tradeStore[id];
+  if (t) openModal(t);
+}
 
 const COLORS = {
   Scanner:'#60a5fa', Technical:'#34d399', Fundamental:'#fbbf24',
@@ -853,7 +859,8 @@ function renderPositions(positions) {
       `Entry DTE: ${p.entry_dte??35} | Days held: ${days} | IV rank: ${Math.round(iv4pos)}`,
       hwm>=25?`Trail stop floor: ${floor.toFixed(0)}% (peak ${hwm.toFixed(0)}%)`:`Initial stop: ${initStop}% (IV ${Math.round(iv4pos)})`,
     ].join('\n');
-    return `<tr title="${esc(tt)}" onclick='openModal(${JSON.stringify(JSON.stringify(p))})' style="cursor:pointer">
+    _tradeStore[p.position_id] = p;
+    return `<tr title="${esc(tt)}" onclick="clickTrade('${esc(p.position_id)}')" style="cursor:pointer">
       <td><strong>${esc(p.symbol)}</strong></td>
       <td style="color:${p.direction==='bullish'?'var(--green)':'var(--red)'}">${typeStr}</td>
       <td>$${p.entry_stock_price?.toFixed(2)??'—'}</td>
@@ -951,8 +958,8 @@ function renderClosedTrades(trades) {
     const pnlStr=`${pnlPct>=0?'+':''}${pnlPct.toFixed(1)}% ($${pnl>=0?'+':''}${pnl.toFixed(2)})`;
     const reason=(t.exit_reason||'').slice(0,40);
     const typeStr=t.option_type?.toUpperCase()||'?';
-    const tJson=JSON.stringify(JSON.stringify(t));
-    return `<div class="ct-row" onclick="openModal(${tJson})">
+    _tradeStore[t.position_id] = t;
+    return `<div class="ct-row" onclick="clickTrade('${esc(t.position_id)}')" >
       <span class="ct-sym">${esc(t.symbol)}</span>
       <span class="ct-type" style="color:${t.direction==='bullish'?'var(--green)':'var(--red)'}">${typeStr}</span>
       <span class="ct-reason">${esc(reason)}</span>
@@ -967,8 +974,8 @@ function renderClosedTrades(trades) {
     const reason=(t.exit_reason||'').slice(0,50);
     const typeStr=t.option_type?.toUpperCase()||'?';
     const enteredAt=t.opened_at?fmtDateTime(t.opened_at):'';
-    const tJson=JSON.stringify(JSON.stringify(t));
-    return `<div class="ct-row" onclick="openModal(${tJson})" style="padding:5px 0">
+    _tradeStore[t.position_id] = t;
+    return `<div class="ct-row" onclick="clickTrade('${esc(t.position_id)}')" style="padding:5px 0">
       <span class="ct-sym">${esc(t.symbol)}</span>
       <span class="ct-type" style="color:${t.direction==='bullish'?'var(--green)':'var(--red)'}">${typeStr}</span>
       <span style="color:var(--muted);font-size:10px;flex-shrink:0">${enteredAt}</span>
@@ -1047,8 +1054,8 @@ function renderTradesTable() {
     const typeStr=t.option_type?.toUpperCase()||'?';
     const exitPrice=isOpen?null:(t.exit_stock_price??t.last_stock_price??null);
     const currentPrice=isOpen?(t.last_stock_price??null):null;
-    const tJson=JSON.stringify(JSON.stringify(t));
-    return `<tr class="${rowCls}" onclick="openModal(${tJson})" data-pos-id="${esc(t.position_id||'')}">
+    _tradeStore[t.position_id] = t;
+    return `<tr class="${rowCls}" onclick="clickTrade('${esc(t.position_id||'')}')" style="cursor:pointer">
       <td><strong>${esc(t.symbol||'—')}</strong></td>
       <td style="color:${dirC}">${t.direction==='bullish'?'▲':'▼'}</td>
       <td style="color:${dirC}">${typeStr}</td>
