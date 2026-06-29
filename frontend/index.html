@@ -1372,7 +1372,6 @@ async function refreshPrices() {
     const r = await fetch('/api/sim/prices');
     const data = await r.json();
     const updates = data.updates || [];
-    console.log('[refreshPrices] updates:', updates.length, updates);
     if (!updates.length) return;
 
     // Patch allTrades in-place
