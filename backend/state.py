@@ -134,6 +134,9 @@ class StateManager:
         if raw:
             d = _default()
             d.update(raw)
+            # Task is never alive after a restart — always start stopped
+            if d.get("system_status") == "running":
+                d["system_status"] = "stopped"
             return d
         return _default()
 

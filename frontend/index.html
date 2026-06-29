@@ -939,7 +939,7 @@ async function refreshAll() {
     const [sR, stR, scR] = await Promise.all([fetch('/api/status'),fetch('/api/stats'),fetch('/api/scan-results')]);
     const [status, stats, scan] = await Promise.all([sR.json(),stR.json(),scR.json()]);
     setStatus(status.system_status); setCycle(status.cycle_count||0);
-    if (status.last_scan) { lastScan=new Date(status.last_scan); scanNextAt=lastScan.getTime()+SCAN_INTERVAL*1000; }
+    if (status.last_scan) { lastScan=new Date(status.last_scan); const _next=lastScan.getTime()+SCAN_INTERVAL*1000; if (_next > Date.now()) scanNextAt=_next; }
     const sessEl = document.getElementById('ib-session');
     if (sessEl&&status.session) { sessEl.textContent=status.session; sessEl.style.color=status.market_open?'var(--green)':'var(--muted)'; }
     renderScan(scan);
