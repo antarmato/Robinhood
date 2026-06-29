@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Alpha · Sim Mode</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -150,16 +151,16 @@ canvas{display:block}
 #trades-summary span{color:var(--text);font-weight:700}
 
 /* ── Trades page live P&L chart ──────────────────────────────────────── */
-#trades-pnl-section{flex:0 0 230px;display:flex;flex-direction:column;border-top:1px solid var(--border);background:var(--bg);overflow:hidden}
-#trades-pnl-hdr{display:flex;align-items:center;gap:6px;padding:5px 12px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0}
-.pnl-tab{background:transparent;border:none;color:var(--muted);font-family:inherit;font-size:10px;font-weight:700;letter-spacing:1px;padding:2px 7px;cursor:pointer;border-radius:3px;transition:color .15s}
+#trades-pnl-section{flex:0 0 260px;display:flex;flex-direction:column;border-top:1px solid var(--border);background:var(--bg);overflow:hidden}
+#trades-pnl-hdr{display:flex;align-items:center;gap:8px;padding:6px 14px;background:var(--bg);border-bottom:1px solid var(--border);flex-shrink:0}
+.pnl-tab{background:transparent;border:none;color:var(--muted);font-family:inherit;font-size:10px;font-weight:700;letter-spacing:1.5px;padding:3px 8px;cursor:pointer;border-radius:3px;transition:all .15s;text-transform:uppercase}
 .pnl-tab:hover{color:var(--text)}
-.pnl-tab.active{color:var(--text);background:rgba(255,255,255,.06)}
-#pnl-sep{width:1px;height:12px;background:var(--border);margin:0 2px}
-#pnl-hover-info{font-size:13px;font-weight:700;transition:color .1s;letter-spacing:0}
-#trades-pnl-count{font-size:10px;color:var(--muted);margin-left:2px}
-#trades-pnl-wrap{flex:1;min-height:0;position:relative;padding:4px 12px 2px}
-#trades-pnl-wrap canvas{position:absolute;inset:4px 12px 2px}
+.pnl-tab.active{color:var(--text);background:rgba(255,255,255,.07)}
+#pnl-sep{width:1px;height:14px;background:var(--border);flex-shrink:0}
+#pnl-hover-info{font-size:15px;font-weight:700;transition:color .08s;letter-spacing:-0.3px;min-width:120px}
+#trades-pnl-count{font-size:10px;color:var(--muted)}
+#trades-pnl-wrap{flex:1;min-height:0;overflow:hidden;padding:6px 8px 4px}
+#trades-pnl-container{width:100%;height:100%}
 
 /* ── Trades page bottom perf panel ─────────────────────────────────────── */
 #trades-bottom{flex:0 0 260px;display:flex;border-top:2px solid var(--border);background:var(--bg);overflow:hidden}
@@ -455,7 +456,7 @@ canvas{display:block}
       <span id="pnl-hover-info"></span>
       <span id="trades-pnl-count"></span>
     </div>
-    <div id="trades-pnl-wrap"><canvas id="trades-pnl-canvas"></canvas></div>
+    <div id="trades-pnl-wrap"><div id="trades-pnl-container"></div></div>
   </div>
 
   <!-- Bottom half: equity + stats + closed trades -->
@@ -676,6 +677,8 @@ function initChartTP() {
   });
 }
 
+let _pnlLatest = null;
+
 function setPnlView(v) {
   pnlView = v;
   document.querySelectorAll('.pnl-tab').forEach(b => b.classList.toggle('active', b.dataset.view === v));
@@ -695,131 +698,138 @@ function _pnlInfo(text, color) {
   if (el) { el.textContent = text; el.style.color = color || 'var(--text)'; }
 }
 
+function _fmtPnlTime(unixSec) {
+  const d = new Date(unixSec * 1000);
+  return pnlView === '1D'
+    ? d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York', hour12: false })
+    : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
 function initPnlChart() {
-  const canvas = document.getElementById('trades-pnl-canvas');
-  if (!canvas || chartPnl) return;
+  if (chartPnl) return;
+  const container = document.getElementById('trades-pnl-container');
+  if (!container || !window.LightweightCharts) return;
 
-  const crosshairPlugin = {
-    id: 'pnlCrosshair',
-    beforeDraw(chart) {
-      const {ctx: c, chartArea, tooltip} = chart;
-      if (!tooltip._active?.length || !chartArea) return;
-      const x = tooltip._active[0].element.x;
-      c.save();
-      c.beginPath(); c.moveTo(x, chartArea.top); c.lineTo(x, chartArea.bottom);
-      c.lineWidth = 1; c.strokeStyle = 'rgba(221,224,240,0.18)'; c.stroke();
-      c.restore();
-    }
-  };
-
-  const baselinePlugin = {
-    id: 'pnlBaseline',
-    beforeDraw(chart) {
-      const {ctx: c, chartArea, scales: {y}} = chart;
-      if (!chartArea || !y) return;
-      const zy = y.getPixelForValue(0);
-      if (zy < chartArea.top || zy > chartArea.bottom) return;
-      c.save();
-      c.setLineDash([3, 6]);
-      c.beginPath(); c.moveTo(chartArea.left, zy); c.lineTo(chartArea.right, zy);
-      c.strokeStyle = 'rgba(255,255,255,0.1)'; c.lineWidth = 1; c.stroke();
-      c.restore();
-    }
-  };
-
-  chartPnl = new Chart(canvas.getContext('2d'), {
-    type: 'line',
-    plugins: [crosshairPlugin, baselinePlugin],
-    data: { labels: [], datasets: [{
-      data: [], borderWidth: 1.5, borderColor: '#22c55e',
-      pointRadius: 0, pointHoverRadius: 4,
-      pointHoverBackgroundColor: '#22c55e', pointHoverBorderColor: '#07070f', pointHoverBorderWidth: 2,
-      fill: true, tension: 0.2,
-      backgroundColor: (ctx2) => {
-        const {chart} = ctx2;
-        const {ctx: c, chartArea} = chart;
-        if (!chartArea) return 'transparent';
-        const vals = chart.data.datasets[0].data;
-        const last = vals[vals.length - 1] ?? 0;
-        const g = c.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
-        if (last >= 0) { g.addColorStop(0, 'rgba(34,197,94,0.28)'); g.addColorStop(1, 'rgba(34,197,94,0.0)'); }
-        else           { g.addColorStop(0, 'rgba(239,68,68,0.0)');  g.addColorStop(1, 'rgba(239,68,68,0.28)'); }
-        return g;
-      }
-    }]},
-    options: {
-      responsive: true, maintainAspectRatio: false, animation: { duration: 150 },
-      interaction: { mode: 'index', intersect: false },
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          enabled: false,
-          external: ({ chart, tooltip }) => {
-            const vals = chart.data.datasets[0].data;
-            if (!tooltip.opacity || !tooltip.dataPoints?.length) {
-              const last = vals[vals.length - 1];
-              _pnlInfo(last != null ? `${last >= 0 ? '+' : ''}$${Math.abs(last).toFixed(2)}` : '—',
-                       last > 0 ? 'var(--green)' : last < 0 ? 'var(--red)' : 'var(--text)');
-              return;
-            }
-            const dp = tooltip.dataPoints[0];
-            const v = dp.raw;
-            _pnlInfo(`${v >= 0 ? '+' : ''}$${Math.abs(v).toFixed(2)}  ·  ${dp.label}`,
-                     v >= 0 ? 'var(--green)' : 'var(--red)');
-          }
-        }
+  const LC = LightweightCharts;
+  const lwChart = LC.createChart(container, {
+    autoSize: true,
+    layout: {
+      background: { type: 'solid', color: 'transparent' },
+      textColor: '#454568',
+      fontFamily: "'SF Mono','Fira Code',monospace",
+      fontSize: 10,
+    },
+    grid: { vertLines: { visible: false }, horzLines: { visible: false } },
+    crosshair: {
+      mode: LC.CrosshairMode.Normal,
+      vertLine: {
+        width: 1,
+        color: 'rgba(221,224,240,0.25)',
+        style: LC.LineStyle.Solid,
+        labelVisible: false,
       },
-      scales: {
-        x: { ticks: { color: '#454568', font: { size: 9 }, maxTicksLimit: 6, maxRotation: 0 }, grid: { display: false }, border: { display: false } },
-        y: { display: false }
-      }
+      horzLine: { visible: false, labelVisible: false },
+    },
+    rightPriceScale: { visible: false },
+    leftPriceScale:  { visible: false },
+    timeScale: {
+      borderVisible: false,
+      fixLeftEdge: true,
+      fixRightEdge: true,
+      barSpacing: 6,
+      tickMarkFormatter: (t) => _fmtPnlTime(t),
+    },
+    handleScroll: false,
+    handleScale: false,
+    kineticScroll: { touch: false, mouse: false },
+  });
+
+  const series = lwChart.addAreaSeries({
+    lineColor: '#22c55e',
+    topColor: 'rgba(34,197,94,0.25)',
+    bottomColor: 'rgba(34,197,94,0.0)',
+    lineWidth: 1.5,
+    crosshairMarkerVisible: true,
+    crosshairMarkerRadius: 4,
+    crosshairMarkerBorderColor: '#07070f',
+    crosshairMarkerBackgroundColor: '#22c55e',
+    crosshairMarkerBorderWidth: 2,
+    priceLineVisible: false,
+    lastValueVisible: false,
+  });
+
+  lwChart.subscribeCrosshairMove(param => {
+    if (!param.time || !param.point || param.point.x < 0) {
+      if (_pnlLatest != null)
+        _pnlInfo(`${_pnlLatest >= 0 ? '+' : ''}$${Math.abs(_pnlLatest).toFixed(2)}`,
+                 _pnlLatest > 0 ? 'var(--green)' : _pnlLatest < 0 ? 'var(--red)' : 'var(--text)');
+      return;
+    }
+    const pt = param.seriesData.get(series);
+    if (pt) {
+      const v = pt.value;
+      _pnlInfo(`${v >= 0 ? '+' : ''}$${Math.abs(v).toFixed(2)}  ·  ${_fmtPnlTime(param.time)}`,
+               v >= 0 ? 'var(--green)' : 'var(--red)');
     }
   });
+
+  chartPnl = { lwChart, series };
 }
 
 function updatePnlChart() {
   if (!chartPnl) initPnlChart();
   if (!chartPnl) return;
-  const ds = chartPnl.data.datasets[0];
-  let labels, vals;
+  const { lwChart, series } = chartPnl;
 
+  let raw = [];
   if (pnlView === '1D') {
-    if (!daySnapshots.length) {
-      chartPnl.data.labels = []; ds.data = []; chartPnl.update('none');
-      _pnlInfo('—', 'var(--muted)');
-      const c = document.getElementById('trades-pnl-count'); if (c) c.textContent = '';
-      return;
-    }
-    labels = daySnapshots.map(s => {
-      const d = new Date(s.t);
-      return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York', hour12: false });
-    });
-    vals = daySnapshots.map(s => s.v);
+    raw = daySnapshots.map(s => ({ time: Math.floor(s.t / 1000), value: s.v }));
   } else {
-    const history = allCombinedHistory;
-    if (!history.length) {
-      chartPnl.data.labels = []; ds.data = []; chartPnl.update('none');
-      _pnlInfo('—', 'var(--muted)');
-      const c = document.getElementById('trades-pnl-count'); if (c) c.textContent = '';
-      return;
-    }
-    labels = history.map(h => {
-      const d = h.timestamp ? new Date(h.timestamp) : null;
-      return d ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—';
-    });
-    vals = history.map(h => h.cumulative_pnl);
+    raw = (allCombinedHistory || [])
+      .filter(h => h.timestamp)
+      .map(h => ({ time: Math.floor(new Date(h.timestamp).getTime() / 1000), value: h.cumulative_pnl }));
   }
 
-  const latest = vals[vals.length - 1] ?? 0;
-  chartPnl.data.labels = labels;
-  ds.data = vals;
-  ds.borderColor = latest >= 0 ? '#22c55e' : '#ef4444';
-  ds.pointHoverBackgroundColor = latest >= 0 ? '#22c55e' : '#ef4444';
-  chartPnl.update('none');
+  // Deduplicate + sort (LWC requires unique ascending timestamps)
+  const seen = new Set();
+  const data = raw.filter(d => { if (seen.has(d.time)) return false; seen.add(d.time); return true; })
+                  .sort((a, b) => a.time - b.time);
 
-  _pnlInfo(`${latest >= 0 ? '+' : ''}$${Math.abs(latest).toFixed(2)}`, latest > 0 ? 'var(--green)' : latest < 0 ? 'var(--red)' : 'var(--text)');
   const cEl = document.getElementById('trades-pnl-count');
-  if (cEl) cEl.textContent = pnlView === '1D' ? `${daySnapshots.length} pts` : `${(allCombinedHistory||[]).length} trades`;
+
+  if (!data.length) {
+    // Auto-fallback: if 1D has no data yet, silently show 1M
+    if (pnlView === '1D' && (allCombinedHistory||[]).length) {
+      pnlView = '1M';
+      document.querySelectorAll('.pnl-tab').forEach(b => b.classList.toggle('active', b.dataset.view === '1M'));
+      updatePnlChart();
+      return;
+    }
+    series.setData([]);
+    _pnlInfo('—', 'var(--muted)');
+    if (cEl) cEl.textContent = 'no data';
+    return;
+  }
+
+  const latest = data[data.length - 1].value;
+  _pnlLatest = latest;
+
+  const isUp = latest >= 0;
+  series.applyOptions({
+    lineColor:  isUp ? '#22c55e' : '#ef4444',
+    topColor:   isUp ? 'rgba(34,197,94,0.28)'  : 'rgba(239,68,68,0.0)',
+    bottomColor:isUp ? 'rgba(34,197,94,0.0)'   : 'rgba(239,68,68,0.28)',
+    crosshairMarkerBackgroundColor: isUp ? '#22c55e' : '#ef4444',
+  });
+
+  series.setData(data);
+  lwChart.timeScale().fitContent();
+
+  _pnlInfo(`${latest >= 0 ? '+' : ''}$${Math.abs(latest).toFixed(2)}`,
+           latest > 0 ? 'var(--green)' : latest < 0 ? 'var(--red)' : 'var(--text)');
+  if (cEl) cEl.textContent = pnlView === '1D'
+    ? `${data.length} pt${data.length !== 1 ? 's' : ''}`
+    : `${data.length} trade${data.length !== 1 ? 's' : ''}`;
 }
 
 function updateChart(history) {
