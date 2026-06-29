@@ -149,6 +149,13 @@ canvas{display:block}
 #trades-summary{display:flex;gap:20px;font-size:10px;color:var(--muted);margin-left:auto}
 #trades-summary span{color:var(--text);font-weight:700}
 
+/* ── Trades page live P&L chart ──────────────────────────────────────── */
+#trades-pnl-section{flex:0 0 190px;display:flex;flex-direction:column;border-top:1px solid var(--border);background:var(--bg);overflow:hidden}
+#trades-pnl-hdr{display:flex;align-items:center;gap:8px;padding:5px 12px;font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0}
+#trades-pnl-total{margin-left:auto;font-size:11px;font-weight:700}
+#trades-pnl-wrap{flex:1;min-height:0;position:relative;padding:6px 10px}
+#trades-pnl-wrap canvas{position:absolute;inset:6px 10px}
+
 /* ── Trades page bottom perf panel ─────────────────────────────────────── */
 #trades-bottom{flex:0 0 260px;display:flex;border-top:2px solid var(--border);background:var(--bg);overflow:hidden}
 #tp-chart{width:340px;flex-shrink:0;border-right:1px solid var(--border);padding:10px 12px;display:flex;flex-direction:column}
@@ -400,6 +407,7 @@ canvas{display:block}
       <select id="filter-symbol" onchange="renderTradesTable()">
         <option value="all">All symbols</option>
       </select>
+      <button id="btn-delete-selected" onclick="deleteSelectedTrades()" style="display:none;flex:none;padding:3px 10px;background:rgba(239,68,68,.12);color:var(--red);border:1px solid rgba(239,68,68,.3);font-family:inherit;font-size:10px;font-weight:700;cursor:pointer;border-radius:3px">✕ Delete Selected (<span id="delete-count">0</span>)</button>
       <div id="trades-summary">
         <span id="ts-count" style="color:var(--muted)">—</span> trades &nbsp;
         P&L: <span id="ts-pnl">—</span> &nbsp;
@@ -409,6 +417,7 @@ canvas{display:block}
     <div id="trades-table-wrap">
       <table class="ttable">
         <thead><tr>
+          <th style="width:28px;padding:4px 6px"><input type="checkbox" id="chk-all" onchange="toggleSelectAll(this.checked)" style="cursor:pointer;accent-color:var(--accent)"></th>
           <th onclick="sortTrades('symbol')" id="th-symbol">Symbol <span class="sort-arrow">↕</span></th>
           <th onclick="sortTrades('direction')">Dir <span class="sort-arrow">↕</span></th>
           <th onclick="sortTrades('option_type')">Type <span class="sort-arrow">↕</span></th>
@@ -426,10 +435,20 @@ canvas{display:block}
           <th>Exit Reason</th>
         </tr></thead>
         <tbody id="trades-body">
-          <tr><td colspan="15" style="color:var(--muted);padding:16px 12px;text-align:center">No trade data yet</td></tr>
+          <tr><td colspan="16" style="color:var(--muted);padding:16px 12px;text-align:center">No trade data yet</td></tr>
         </tbody>
       </table>
     </div>
+  </div>
+
+  <!-- Live P&L bar chart -->
+  <div id="trades-pnl-section">
+    <div id="trades-pnl-hdr">
+      LIVE P&amp;L
+      <span id="trades-pnl-count" style="font-weight:400;color:var(--muted);font-size:10px"></span>
+      <span id="trades-pnl-total"></span>
+    </div>
+    <div id="trades-pnl-wrap"><canvas id="trades-pnl-canvas"></canvas></div>
   </div>
 
   <!-- Bottom half: equity + stats + closed trades -->
@@ -484,6 +503,7 @@ canvas{display:block}
 let ws         = null;
 let chart      = null;
 let chartTP    = null;  // trades page chart
+let chartPnl   = null;  // trades page live P&L bar chart
 let lastScan   = null;
 let scanNextAt = null;
 let allTrades  = [];
@@ -491,10 +511,47 @@ let sortKey    = 'opened_at';
 let sortAsc    = false;
 const SCAN_INTERVAL = 30 * 60;
 const _tradeStore = {};  // id → trade object; avoids all HTML quoting issues in onclick
+const _selectedTrades = new Set();
 
 function clickTrade(id) {
   const t = _tradeStore[id];
   if (t) openModal(t);
+}
+
+function onTradeCheck() {
+  _selectedTrades.clear();
+  document.querySelectorAll('.trade-chk:checked').forEach(el => _selectedTrades.add(el.dataset.id));
+  const n = _selectedTrades.size;
+  const btn = document.getElementById('btn-delete-selected');
+  btn.style.display = n > 0 ? 'inline-block' : 'none';
+  document.getElementById('delete-count').textContent = n;
+  // sync select-all state
+  const all = document.querySelectorAll('.trade-chk');
+  const chkAll = document.getElementById('chk-all');
+  if (chkAll) chkAll.indeterminate = n > 0 && n < all.length;
+  if (chkAll) chkAll.checked = all.length > 0 && n === all.length;
+}
+
+function toggleSelectAll(checked) {
+  document.querySelectorAll('.trade-chk').forEach(el => { el.checked = checked; });
+  onTradeCheck();
+}
+
+async function deleteSelectedTrades() {
+  const ids = [..._selectedTrades];
+  if (!ids.length) return;
+  if (!confirm(`Delete ${ids.length} selected trade${ids.length !== 1 ? 's' : ''}? This cannot be undone.`)) return;
+  try {
+    await fetch('/api/sim/delete-positions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ position_ids: ids, api_key: apiKey() }),
+    });
+    _selectedTrades.clear();
+    document.getElementById('btn-delete-selected').style.display = 'none';
+    document.getElementById('delete-count').textContent = '0';
+    await refreshSim();
+  } catch(e) { console.error(e); }
 }
 
 const COLORS = {
@@ -607,6 +664,58 @@ function initChartTP() {
       }
     }
   });
+}
+
+function initPnlChart() {
+  const canvas = document.getElementById('trades-pnl-canvas');
+  if (!canvas || chartPnl) return;
+  chartPnl = new Chart(canvas.getContext('2d'), {
+    type: 'bar',
+    data: { labels: [], datasets: [{ label: 'P&L ($)', data: [], backgroundColor: [], borderRadius: 3, borderSkipped: false }] },
+    options: {
+      indexAxis: 'y',
+      responsive: true, maintainAspectRatio: false, animation: { duration: 300 },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: { label: ctx => ` $${ctx.raw >= 0 ? '+' : ''}${ctx.raw.toFixed(2)}` },
+          backgroundColor: '#1a1a2e', borderColor: '#2a2a45', borderWidth: 1,
+        }
+      },
+      scales: {
+        x: { ticks: { color: '#454568', font: { size: 9 }, callback: v => `$${v >= 0 ? '+' : ''}${v.toFixed(0)}` }, grid: { color: '#1e1e38' }, border: { color: '#1e1e38' } },
+        y: { ticks: { color: '#dde0f0', font: { size: 10, family: "'SF Mono','Fira Code',monospace" } }, grid: { display: false } }
+      }
+    }
+  });
+}
+
+function updatePnlChart(trades) {
+  if (!chartPnl) initPnlChart();
+  if (!chartPnl) return;
+  const ds = chartPnl.data.datasets[0];
+  if (!trades || !trades.length) {
+    chartPnl.data.labels = []; ds.data = []; ds.backgroundColor = [];
+    chartPnl.update('none');
+    const c = document.getElementById('trades-pnl-count'); if (c) c.textContent = '';
+    const t = document.getElementById('trades-pnl-total'); if (t) t.textContent = '';
+    return;
+  }
+  const sorted = [...trades].sort((a, b) => {
+    const av = a.status === 'open' ? (a.last_pnl_dollars ?? 0) : (a.pnl_dollars ?? 0);
+    const bv = b.status === 'open' ? (b.last_pnl_dollars ?? 0) : (b.pnl_dollars ?? 0);
+    return av - bv;
+  });
+  chartPnl.data.labels = sorted.map(t => t.status === 'open' ? `${t.symbol || '—'} ◉` : (t.symbol || '—'));
+  const vals = sorted.map(t => t.status === 'open' ? (t.last_pnl_dollars ?? 0) : (t.pnl_dollars ?? 0));
+  ds.data = vals;
+  ds.backgroundColor = vals.map(v => v > 0 ? 'rgba(34,197,94,0.75)' : v < 0 ? 'rgba(239,68,68,0.75)' : 'rgba(99,102,241,0.4)');
+  chartPnl.update('none');
+  const total = vals.reduce((s, v) => s + v, 0);
+  const cEl = document.getElementById('trades-pnl-count');
+  if (cEl) cEl.textContent = `${trades.length} trade${trades.length !== 1 ? 's' : ''}`;
+  const tEl = document.getElementById('trades-pnl-total');
+  if (tEl) { tEl.textContent = `${total >= 0 ? '+' : ''}$${Math.abs(total).toFixed(2)}`; tEl.style.color = total > 0 ? 'var(--green)' : total < 0 ? 'var(--red)' : 'var(--text)'; }
 }
 
 function updateChart(history) {
@@ -1051,7 +1160,7 @@ function renderTradesTable() {
   document.getElementById('ts-wr').style.color=wr>=50?'var(--green)':wr<50&&wr!=null?'var(--red)':'var(--text)';
 
   const tbody=document.getElementById('trades-body');
-  if (!trades.length) { tbody.innerHTML='<tr><td colspan="15" style="color:var(--muted);padding:16px 12px;text-align:center">No trades match filter</td></tr>'; return; }
+  if (!trades.length) { tbody.innerHTML='<tr><td colspan="16" style="color:var(--muted);padding:16px 12px;text-align:center">No trades match filter</td></tr>'; updatePnlChart([]); return; }
 
   tbody.innerHTML = trades.map(t=>{
     const isOpen=t.status==='open';
@@ -1066,7 +1175,9 @@ function renderTradesTable() {
     const exitPrice=isOpen?null:(t.exit_stock_price??t.last_stock_price??null);
     const currentPrice=isOpen?(t.last_stock_price??null):null;
     _tradeStore[t.position_id] = t;
+    const chk = !isOpen ? `<td style="padding:4px 6px" onclick="event.stopPropagation()"><input type="checkbox" class="trade-chk" data-id="${esc(t.position_id||'')}" onchange="onTradeCheck()" style="cursor:pointer;accent-color:var(--accent)"></td>` : `<td style="padding:4px 6px"></td>`;
     return `<tr class="${rowCls}" onclick="clickTrade('${esc(t.position_id||'')}')" style="cursor:pointer">
+      ${chk}
       <td><strong>${esc(t.symbol||'—')}</strong></td>
       <td style="color:${dirC}">${t.direction==='bullish'?'▲':'▼'}</td>
       <td style="color:${dirC}">${typeStr}</td>
@@ -1084,6 +1195,8 @@ function renderTradesTable() {
       <td style="color:var(--muted);max-width:160px;overflow:hidden;text-overflow:ellipsis">${esc((t.exit_reason||'').slice(0,60))}</td>
     </tr>`;
   }).join('');
+
+  updatePnlChart(trades);
 }
 
 // ── Trade detail modal ─────────────────────────────────────────────────────────

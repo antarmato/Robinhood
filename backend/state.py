@@ -403,6 +403,45 @@ class StateManager:
         self.save()
         return {"cleared_open": cleared_open, "cleared_closed": cleared_closed}
 
+    def clear_closed_positions(self) -> int:
+        """Remove all closed positions. Training DB untouched."""
+        positions = self._s.get("sim_positions", [])
+        cleared = len([p for p in positions if p.get("status") == "closed"])
+        self._s["sim_positions"] = [p for p in positions if p.get("status") == "open"]
+        self._s["pnl_history"] = []
+        self.save()
+        return cleared
+
+    def delete_sim_positions(self, pos_ids: list) -> int:
+        """Remove specific positions by position_id. Rebuilds pnl_history."""
+        id_set = set(pos_ids)
+        before = len(self._s.get("sim_positions", []))
+        self._s["sim_positions"] = [
+            p for p in self._s.get("sim_positions", [])
+            if p.get("position_id") not in id_set
+        ]
+        removed = before - len(self._s["sim_positions"])
+        # Rebuild pnl_history from remaining closed positions in order
+        closed = [p for p in self._s["sim_positions"] if p.get("status") == "closed"]
+        closed.sort(key=lambda p: p.get("closed_at") or "")
+        cumulative = 0.0
+        history = []
+        for p in closed:
+            cumulative += float(p.get("pnl_dollars", 0))
+            history.append({
+                "timestamp":      p.get("closed_at", ""),
+                "cumulative_pnl": round(cumulative, 2),
+                "trade_pnl":      round(float(p.get("pnl_dollars", 0)), 2),
+                "trade_pnl_pct":  round(float(p.get("pnl_pct", 0)), 2),
+                "outcome":        "win" if float(p.get("pnl_dollars", 0)) > 0 else "loss",
+                "position_id":    p.get("position_id", ""),
+                "symbol":         p.get("symbol", ""),
+                "direction":      p.get("direction", ""),
+            })
+        self._s["pnl_history"] = history
+        self.save()
+        return removed
+
 
 _state = StateManager()
 

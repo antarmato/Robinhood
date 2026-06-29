@@ -383,7 +383,7 @@ async def get_sim():
 
     return {
         "open_positions":  open_,
-        "closed_positions": closed[-20:],  # last 20
+        "closed_positions": closed,
         "pnl_history":     history,
         "stats": {
             "total_pnl":       total_pnl,
@@ -706,6 +706,36 @@ async def sim_reset(api_key: str = ""):
         "cleared_open":   cleared_open,
         "cleared_closed": cleared_closed,
     }
+
+@app.get("/api/sim/clear-closed")
+async def sim_clear_closed(api_key: str = ""):
+    """Remove all closed positions while keeping open ones."""
+    _check_key(api_key)
+    s = get_state()
+    cleared = s.clear_closed_positions()
+    await _broadcast("system", "sim_clear_closed", {
+        "message": f"Cleared {cleared} closed position{'s' if cleared != 1 else ''}"
+    })
+    return {"status": "ok", "cleared_closed": cleared}
+
+
+class DeletePositionsRequest(BaseModel):
+    position_ids: list[str]
+    api_key: str = ""
+
+@app.post("/api/sim/delete-positions")
+async def sim_delete_positions(req: DeletePositionsRequest):
+    """Delete specific sim positions by position_id."""
+    _check_key(req.api_key)
+    if not req.position_ids:
+        return {"status": "ok", "removed": 0}
+    s = get_state()
+    removed = s.delete_sim_positions(req.position_ids)
+    await _broadcast("system", "positions_deleted", {
+        "message": f"Deleted {removed} position{'s' if removed != 1 else ''}"
+    })
+    return {"status": "ok", "removed": removed}
+
 
 # ── WebSocket ──────────────────────────────────────────────────────────────────
 
