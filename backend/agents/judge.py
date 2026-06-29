@@ -99,6 +99,26 @@ class JudgeAgent(BaseAgent):
         now_et = datetime.now(_ET) if _ET else datetime.now()
         tod    = now_et.time()
         weighted_score = _compute_score(technical, fundamental, sentiment, risk)
+
+        # ── Python-level feature adjustment (self-learned from scan_log) ──────
+        # Queries historical win rates for the specific feature conditions present
+        # in this setup (EMA200 structure, ADX zone, regime, agent consensus).
+        # Adjusts the Python score by up to ±5 points — fully data-driven, no LLM.
+        tech_s = float(technical.get("score", 5))
+        fund_s = float(fundamental.get("score", 5))
+        sent_s = float(sentiment.get("score", 5))
+        consensus_n = sum([tech_s >= 7.0, fund_s >= 7.0, sent_s >= 7.0])
+        feat_adj, feat_adj_reason = ts.get_feature_score_adjustment(
+            direction=direction,
+            above_ema200=technical.get("above_ema200"),
+            above_ema50=(technical.get("current_price", 0) > technical.get("ema50", 0))
+                        if technical.get("ema50") else None,
+            adx=technical.get("adx"),
+            regime=(market_regime or {}).get("regime"),
+            consensus_score=consensus_n,
+        )
+        adjusted_score = round(weighted_score + feat_adj, 1)
+
         # Regime alignment for threshold
         _r_aligned = None
         _r_strength = 0
@@ -114,7 +134,7 @@ class JudgeAgent(BaseAgent):
         threshold = score_threshold(iv_rank, market_open, time_of_day=tod,
                                     regime_aligned=_r_aligned, regime_strength=_r_strength,
                                     streak_surcharge=streak_surcharge)
-        score_failed   = weighted_score < threshold
+        score_failed = adjusted_score < threshold
 
         # ── Strategy / HV context ─────────────────────────────────────────────
         vix_level  = sentiment.get("vix_level", 20)
@@ -241,9 +261,7 @@ class JudgeAgent(BaseAgent):
         session = "LIVE MARKET" if market_open else "PRE-MARKET RESEARCH"
 
         # ── Build Judge context ───────────────────────────────────────────────
-        tech_s = technical.get("score", 5)
-        fund_s = fundamental.get("score", 5)
-        sent_s = sentiment.get("score", 5)
+        # tech_s / fund_s / sent_s already defined above in feature adjustment section
 
         hist_block = ""
         if hist_lines:
@@ -273,12 +291,23 @@ class JudgeAgent(BaseAgent):
         learned_context = ts.get_learned_context(min_samples=3)
         learned_block = ("SELF-LEARNED CALIBRATION (from PostgreSQL training log):\n" + learned_context) if learned_context else ""
 
+        # ── Episodic memory: actual conditions of recent similar trades ────────
+        episodic = ts.get_episodic_context(direction=direction, symbol=symbol, limit=5)
+        # Fall back to direction-only if symbol-specific is thin
+        if not episodic:
+            episodic = ts.get_episodic_context(direction=direction, limit=5)
+        episodic_block = episodic if episodic else ""
+
         strong_count = sum([tech_s >= 7.0, fund_s >= 7.0, sent_s >= 7.0])
         mid_count_j  = sum([6.0 <= tech_s < 7.0, 6.0 <= fund_s < 7.0, 6.0 <= sent_s < 7.0])
         weak_count_j = 3 - strong_count - mid_count_j
         raw_consensus = strong_count * 1.5 + mid_count_j * 0.5 - weak_count_j * 1.5
         capped = max(-3.0, min(3.0, raw_consensus))
         consensus_label = f"{capped:+.1f} ({strong_count}s/{mid_count_j}m/{weak_count_j}w)"
+        feat_adj_line = (
+            f"  + feature adjustment {feat_adj:+.1f} ({feat_adj_reason})\n  "
+            if feat_adj != 0.0 and feat_adj_reason else "  "
+        )
         context = f"""[{session} | Cycle {cycle} | {tod_note}]
 
 TRADE: {symbol} {direction.upper()} {option_type.upper()} @ ${price:.2f}
@@ -291,16 +320,18 @@ AGENT SCORES (Python-computed):
   Fundamental {fund_s}/10: {fundamental.get('summary','')}
   Sentiment   {sent_s}/10: {sentiment.get('summary','')}
 
-COMPUTED SCORE: {weighted_score} / threshold {threshold}
+COMPUTED SCORE: {adjusted_score} / threshold {threshold}
   tech({tech_s}×3={tech_s*3.0:.0f}) + fund({fund_s}×1.5={fund_s*1.5:.0f}) + sent({sent_s}×1.5={sent_s*1.5:.0f}) + risk(8×1=8)
   + consensus ({strong_count} strong/≥7, {mid_count_j} mid/6-7, {weak_count_j} weak) = {consensus_label}
-  = {weighted_score}  |  IV threshold reason: {iv_edge_label(iv_rank)}
-{"✅ SCORE PASSES" if not score_failed else f"❌ SCORE FAILS ({weighted_score} < {threshold})"}
+  = base {weighted_score}
+{feat_adj_line}= adjusted {adjusted_score}  |  IV threshold reason: {iv_edge_label(iv_rank)}
+{"✅ SCORE PASSES" if not score_failed else f"❌ SCORE FAILS ({adjusted_score} < {threshold})"}
 
 RISK FLAGS:
 {chr(10).join(f'  • {f}' for f in risk_flags) if risk_flags else '  None identified'}
 {similar_block}
 {hist_block}
+{episodic_block}
 {learned_block}"""
 
         regime_mismatch = False
@@ -328,10 +359,13 @@ The Python score is {weighted_score} (threshold {threshold}).
 {regime_cap_note}
 
 Confidence calibration:
-  1-4: real reservations (bad timing, headwinds overwhelming the setup)
-  5-6: reasonable setup, normal uncertainty
-  7-8: clear directional setup, good risk/reward
+  1-3: serious flaws — multiple agents disagree, regime strongly opposed, or historical edge clearly negative
+  4:   notable reservations — use sparingly, only when you have a specific concrete reason this setup will fail
+  5-6: reasonable setup, normal uncertainty — this is the DEFAULT for a passing score with no glaring issues
+  7-8: clear directional setup, good risk/reward, agents aligned
   9-10: multiple strong signals confirming, IV environment ideal (only when regime aligned)
+
+Anchoring rule: if the Python score PASSES and you have no specific, articulable reason this will fail, your baseline is 5-6 — not 4. "Market uncertainty" is not a reason to go to 4.
 
 Rules:
   - Do NOT penalize for missing options data (IV, OI, bid-ask) — handled at execution
@@ -343,12 +377,13 @@ Rules:
 
 IMPORTANT — HOW TO USE THE SELF-LEARNED CALIBRATION:
   The context below contains actual historical win rates from this system's past trades.
-  You MUST reference these win rates to calibrate your confidence:
-  - If this symbol/regime/direction historically wins < 35%: reduce confidence by 1-2 points
+  Use these win rates to nudge (not override) your confidence — the current setup's technicals are the primary signal:
+  - If this symbol/regime/direction historically wins < 35%: reduce confidence by at most 1 point
   - If this symbol historically wins > 65%: you may increase confidence by 1 point
-  - If current conditions match a 'LOW WIN pattern': treat as a negative signal
+  - If current conditions match a 'LOW WIN pattern': treat as a mild negative signal
   - If current conditions match a 'TOP WIN pattern': treat as a positive signal
-  - Do not ignore these patterns — they represent real learned edges and losses
+  - History adjusts your view by ±1 max — do NOT let poor historical data alone push a technically strong setup (tech score ≥ 8) below confidence 5
+  - If < 10 historical trades exist for this setup, treat the history as unreliable and weight it minimally
 
 Respond ONLY with JSON:
 {{
@@ -373,7 +408,7 @@ Respond ONLY with JSON:
 
         if score_failed:
             decision    = "pass"
-            pass_reason = pass_reason or f"Score {weighted_score} below threshold {threshold}"
+            pass_reason = pass_reason or f"Score {adjusted_score} below threshold {threshold}"
             trade_proposal = None
         elif confidence < conf_min:
             decision    = "pass"
@@ -408,7 +443,7 @@ Respond ONLY with JSON:
         await self._emit("decision", {
             "symbol":         symbol,
             "decision":       decision,
-            "weighted_score": weighted_score,
+            "weighted_score": adjusted_score,
             "threshold":      threshold,
             "iv_rank":        iv_rank,
             "confidence":     confidence,
@@ -419,7 +454,7 @@ Respond ONLY with JSON:
 
         return {
             "decision":       decision,
-            "weighted_score": weighted_score,
+            "weighted_score": adjusted_score,
             "threshold":      threshold,
             "confidence":     confidence,
             "reasoning":      reasoning,

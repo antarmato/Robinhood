@@ -833,6 +833,199 @@ def get_outcome_stats() -> dict:
         return {}
 
 
+def _wr_to_adj(win_rate: float, n: int) -> float:
+    """Convert a feature win rate into a score delta, scaled by sample confidence."""
+    # Confidence: full weight at 30+ trades, half at 10, quarter at 5
+    conf = min(1.0, n / 30.0) * 0.6 + min(1.0, n / 10.0) * 0.4
+    if   win_rate >= 0.70: base =  3.0
+    elif win_rate >= 0.60: base =  1.5
+    elif win_rate >= 0.55: base =  0.5
+    elif win_rate >= 0.45: base =  0.0
+    elif win_rate >= 0.40: base = -0.5
+    elif win_rate >= 0.30: base = -1.5
+    else:                  base = -3.0
+    return round(base * conf, 2)
+
+
+def get_feature_score_adjustment(
+    direction: str,
+    above_ema200: bool | None = None,
+    above_ema50: bool | None = None,
+    adx: float = None,
+    regime: str | None = None,
+    consensus_score: int | None = None,
+    min_samples: int = 5,
+) -> tuple[float, str]:
+    """
+    Query historical feature-level win rates from scan_log and return a Python-level
+    score adjustment (bounded to [-5, +5]) plus a short reason label.
+
+    This makes the Python scoring self-learning: the same indicators used in each
+    trade are tracked against outcomes, and future scores shift accordingly.
+    Only activates when >= min_samples matching trades exist for a feature.
+    """
+    conn = _get_conn()
+    if not conn:
+        return 0.0, ""
+
+    components: list[tuple[float, str]] = []  # (weighted_adj, label)
+
+    try:
+        with conn.cursor() as cur:
+
+            # ── Feature 1: EMA200 structure + direction (40% weight) ──────────
+            if above_ema200 is not None:
+                cur.execute("""
+                    SELECT COUNT(*) AS n,
+                           COUNT(*) FILTER (WHERE outcome='win') AS wins
+                    FROM scan_log
+                    WHERE decision='trade' AND outcome IS NOT NULL
+                      AND direction=%s AND above_ema200=%s
+                """, (direction, above_ema200))
+                row = cur.fetchone()
+                if row and row[0] >= min_samples:
+                    n, wins = int(row[0]), int(row[1])
+                    wr = wins / n
+                    adj = _wr_to_adj(wr, n)
+                    if abs(adj) > 0.1:
+                        label = (
+                            f"{'above' if above_ema200 else 'below'} EMA200 + {direction}: "
+                            f"{wr:.0%}WR ({n}T)"
+                        )
+                        components.append((adj * 0.40, label))
+
+            # ── Feature 2: ADX trend zone + direction (25% weight) ────────────
+            if adx is not None:
+                adx_zone = 'trending' if adx >= 25 else ('choppy' if adx < 18 else 'neutral')
+                cur.execute("""
+                    SELECT COUNT(*) AS n,
+                           COUNT(*) FILTER (WHERE outcome='win') AS wins
+                    FROM scan_log
+                    WHERE decision='trade' AND outcome IS NOT NULL
+                      AND direction=%s
+                      AND CASE WHEN adx >= 25 THEN 'trending'
+                               WHEN adx < 18  THEN 'choppy'
+                               ELSE 'neutral' END = %s
+                """, (direction, adx_zone))
+                row = cur.fetchone()
+                if row and row[0] >= min_samples:
+                    n, wins = int(row[0]), int(row[1])
+                    wr = wins / n
+                    adj = _wr_to_adj(wr, n)
+                    if abs(adj) > 0.1:
+                        components.append((adj * 0.25, f"ADX {adx_zone} + {direction}: {wr:.0%}WR ({n}T)"))
+
+            # ── Feature 3: Regime + direction (25% weight) ───────────────────
+            if regime is not None:
+                cur.execute("""
+                    SELECT COUNT(*) AS n,
+                           COUNT(*) FILTER (WHERE outcome='win') AS wins
+                    FROM scan_log
+                    WHERE decision='trade' AND outcome IS NOT NULL
+                      AND direction=%s AND regime=%s
+                """, (direction, regime))
+                row = cur.fetchone()
+                if row and row[0] >= min_samples:
+                    n, wins = int(row[0]), int(row[1])
+                    wr = wins / n
+                    adj = _wr_to_adj(wr, n)
+                    if abs(adj) > 0.1:
+                        components.append((adj * 0.25, f"{regime}+{direction}: {wr:.0%}WR ({n}T)"))
+
+            # ── Feature 4: Agent consensus + direction (10% weight) ──────────
+            if consensus_score is not None:
+                cur.execute("""
+                    SELECT COUNT(*) AS n,
+                           COUNT(*) FILTER (WHERE outcome='win') AS wins
+                    FROM scan_log
+                    WHERE decision='trade' AND outcome IS NOT NULL
+                      AND direction=%s AND consensus_score=%s
+                """, (direction, consensus_score))
+                row = cur.fetchone()
+                if row and row[0] >= min_samples:
+                    n, wins = int(row[0]), int(row[1])
+                    wr = wins / n
+                    adj = _wr_to_adj(wr, n)
+                    if abs(adj) > 0.1:
+                        components.append((adj * 0.10, f"consensus {consensus_score}/3 + {direction}: {wr:.0%}WR ({n}T)"))
+
+    except Exception as e:
+        logger.debug(f"get_feature_score_adjustment failed: {e}")
+        return 0.0, ""
+
+    if not components:
+        return 0.0, ""
+
+    total = round(sum(c[0] for c in components), 1)
+    total = max(-5.0, min(5.0, total))
+    reason = " | ".join(c[1] for c in components if abs(c[0]) > 0.05)
+    return total, reason
+
+
+def get_episodic_context(direction: str, symbol: str = None, limit: int = 5) -> str:
+    """
+    Return a narrative of recent closed trades with matching direction (and optionally
+    symbol), including their key technical conditions at entry and actual outcome.
+
+    This gives the Judge concrete episodic memory: "last time conditions were X, outcome was Y."
+    More useful than summary stats alone because the Judge can compare current indicators
+    directly against past winning and losing setups.
+    """
+    conn = _get_conn()
+    if not conn:
+        return ""
+    try:
+        with conn.cursor() as cur:
+            params: list = [direction]
+            sym_filter = ""
+            if symbol:
+                sym_filter = "AND symbol=%s "
+                params.append(symbol)
+            params.append(limit * 2)  # fetch more for diversity
+            cur.execute(f"""
+                SELECT symbol, direction, outcome, outcome_pnl_pct, outcome_days_held,
+                       tech_score, fund_score, sent_score, rsi, adx,
+                       above_ema200, above_ema50, regime, iv_rank,
+                       consensus_score, outcome_exit_reason, logged_at
+                FROM scan_log
+                WHERE decision='trade' AND outcome IS NOT NULL
+                  AND direction=%s {sym_filter}
+                ORDER BY logged_at DESC
+                LIMIT %s
+            """, params)
+            rows = cur.fetchall()
+            if not rows:
+                return ""
+
+            lines = ["RECENT SIMILAR TRADES (same direction — learn from these):"]
+            for row in rows[:limit]:
+                (sym, dirn, outcome, pnl, days, tech_s, fund_s, sent_s,
+                 rsi, adx, ema200, ema50, reg, iv, cons, exit_r, logged) = row
+                outcome_str = f"{'✅ WON' if outcome == 'win' else '❌ LOST'} {float(pnl or 0):+.1f}% in {days or '?'}d"
+                ema_str = ("above EMA200" if ema200 else "below EMA200") if ema200 is not None else "EMA200 N/A"
+                adx_str = f"ADX {float(adx or 0):.0f}" if adx else ""
+                rsi_str = f"RSI {float(rsi or 0):.0f}" if rsi else ""
+                reg_str = f"{reg} regime" if reg else ""
+                iv_str  = f"IV rank {float(iv or 0):.0f}" if iv else ""
+                cons_str = f"consensus {cons}/3" if cons is not None else ""
+                exit_str = f"exit: {exit_r[:50]}" if exit_r else ""
+                conditions = ", ".join(filter(None, [ema_str, adx_str, rsi_str, reg_str, iv_str, cons_str]))
+                score_str  = f"tech {tech_s}/{fund_s}/{sent_s}" if tech_s else ""
+                lines.append(
+                    f"  {sym} {dirn}: {conditions} | {score_str} | {outcome_str}"
+                    + (f" ({exit_str})" if exit_str else "")
+                )
+
+            lines.append(
+                "Judge: compare current setup's RSI, ADX, EMA alignment, and regime to "
+                "the winning vs losing trades above. Adjust confidence accordingly."
+            )
+            return "\n".join(lines)
+    except Exception as e:
+        logger.debug(f"get_episodic_context failed: {e}")
+        return ""
+
+
 def get_similar_iv_stats(iv_rank: float, direction: str, min_samples: int = 3) -> dict | None:
     """
     Find closed trades with similar IV rank (±20) and same direction.
