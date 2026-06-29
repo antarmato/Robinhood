@@ -1103,7 +1103,7 @@ def get_all_closed_trades(exclude_position_ids: set = None) -> list:
                     "sent_score":        float(r[8]) if r[8] is not None else None,
                     "days_held":         int(r[12]) if r[12] is not None else None,
                     "exit_reason":       r[13] or "",
-                    "closed_at":         r[14].isoformat() if r[14] else None,
+                    "closed_at":         (r[14] or r[15]).isoformat() if (r[14] or r[15]) else None,
                     "opened_at":         r[15].isoformat() if r[15] else None,
                 })
             return rows

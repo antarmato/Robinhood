@@ -685,10 +685,9 @@ function setPnlView(v) {
   updatePnlChart();
 }
 
-function pushDaySnapshot(closedPnl, openPositions) {
-  const unrealized = (openPositions || []).reduce((s, p) => s + (parseFloat(p.last_pnl_dollars) || 0), 0);
-  const total = Math.round((closedPnl + unrealized) * 100) / 100;
-  daySnapshots.push({ t: Date.now(), v: total });
+function pushDaySnapshot(totalPnl) {
+  const v = Math.round(totalPnl * 100) / 100;
+  daySnapshots.push({ t: Date.now(), v });
   if (daySnapshots.length > 500) daySnapshots.shift();
   if (pnlView === '1D' && chartPnl) updatePnlChart();
 }
@@ -785,9 +784,13 @@ function updatePnlChart() {
   if (pnlView === '1D') {
     raw = daySnapshots.map(s => ({ time: Math.floor(s.t / 1000), value: s.v }));
   } else {
-    raw = (allCombinedHistory || [])
-      .filter(h => h.timestamp)
-      .map(h => ({ time: Math.floor(new Date(h.timestamp).getTime() / 1000), value: h.cumulative_pnl }));
+    const hist = allCombinedHistory || [];
+    const nowSec = Math.floor(Date.now() / 1000);
+    raw = hist.map((h, i) => {
+      let t = h.timestamp ? Math.floor(new Date(h.timestamp).getTime() / 1000) : 0;
+      if (!t || isNaN(t)) t = nowSec - (hist.length - i) * 86400; // 1 day per entry fallback
+      return { time: t, value: h.cumulative_pnl };
+    });
   }
 
   // Deduplicate + sort (LWC requires unique ascending timestamps)
@@ -963,8 +966,12 @@ async function refreshSim() {
     const closed = (allData.closed_positions||[]).map(p=>({...p, status:'closed'}));
     allTrades = [...open, ...closed];
     allCombinedHistory = allData.combined_history||[];
-    // Push intraday snapshot for live 1D chart
-    pushDaySnapshot(data.stats?.total_pnl ?? 0, allData.open_positions || []);
+    // Push intraday snapshot: ALL closed P&L (all sessions) + live unrealized
+    const _closedPnl = allTrades.filter(t => t.status === 'closed')
+      .reduce((s, t) => s + (parseFloat(t.pnl_dollars) || 0), 0);
+    const _unrealizedPnl = (allData.open_positions || [])
+      .reduce((s, p) => s + (parseFloat(p.last_pnl_dollars) || 0), 0);
+    pushDaySnapshot(_closedPnl + _unrealizedPnl);
     updateSymbolFilter();
     if (document.getElementById('page-trades').classList.contains('active')) renderTradesTable();
   } catch(e) { console.error(e); }
@@ -1646,9 +1653,11 @@ async function refreshPrices() {
       renderTradesTable();
     }
 
-    // Update P&L bar: closed realized + live unrealized
-    const closedPnl = allTrades.filter(t => t.status === 'closed').reduce((s, t) => s + (t.pnl_dollars ?? 0), 0);
-    setPnlBar(closedPnl + (data.total_unrealized_pnl ?? 0));
+    // Update P&L bar + 1D chart: closed realized + live unrealized
+    const closedPnl = allTrades.filter(t => t.status === 'closed').reduce((s, t) => s + (parseFloat(t.pnl_dollars) || 0), 0);
+    const totalPnl = closedPnl + (data.total_unrealized_pnl ?? 0);
+    setPnlBar(totalPnl);
+    pushDaySnapshot(totalPnl); // keeps the 1D chart in sync with fresh prices
   } catch(e) { console.error('[refreshPrices] failed:', e); }
 }
 
