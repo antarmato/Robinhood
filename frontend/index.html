@@ -222,6 +222,7 @@ canvas{display:block}
       <input id="api-key" type="password" class="inp" placeholder="API key" style="width:110px;margin:0">
       <button id="btn-start" class="btn btn-g" onclick="startSystem()" style="flex:none;padding:4px 10px">▶ Start</button>
       <button id="btn-stop" class="btn btn-r" onclick="stopSystem()" disabled style="flex:none;padding:4px 10px">■ Stop</button>
+      <button id="btn-scan" class="btn" onclick="forceScan()" style="flex:none;padding:4px 10px;background:rgba(56,189,248,.12);color:var(--blue);border:1px solid rgba(56,189,248,.3)" title="Force an immediate scan cycle">⟳ Scan Now</button>
       <button id="btn-reset" class="btn" onclick="resetSim()" style="flex:none;padding:4px 10px;background:rgba(245,158,11,.12);color:var(--yellow);border:1px solid rgba(245,158,11,.3)">↺ Reset Sim</button>
     </div>
   </div>
@@ -653,6 +654,16 @@ function handleWS(msg) {
     return;
   }
   if (type==='status'&&data?.status) { setStatus(data.status); return; }
+  if (type==='heartbeat') {
+    const el = document.getElementById('ib-next');
+    if (el && data?.next_scan_secs != null) {
+      const mm = String(Math.floor(data.next_scan_secs/60)).padStart(2,'0');
+      const ss = String(data.next_scan_secs % 60).padStart(2,'0');
+      scanNextAt = Date.now() + data.next_scan_secs * 1000;
+    }
+    feedAdd('system', '⟳ HEARTBEAT', data?.message || 'System alive', timestamp, 't-info');
+    return;
+  }
   if (type==='cycle_start') {
     setCycle(data.cycle||0); setScanning(true);
     feedAdd(agent,`🔄 CYCLE #${data.cycle}`,data.session||'LIVE',timestamp,'t-cycle');
@@ -1230,6 +1241,18 @@ async function startSystem() {
 }
 async function stopSystem() {
   try { await fetch(`/api/system/stop?api_key=${encodeURIComponent(apiKey())}`,{method:'GET'}); setTimeout(refreshAll,800); } catch(e){console.error(e);}
+}
+async function forceScan() {
+  const btn = document.getElementById('btn-scan');
+  btn.disabled = true; btn.textContent = '⟳ Queued…';
+  try {
+    const r = await fetch(`/api/system/scan?api_key=${encodeURIComponent(apiKey())}`,{method:'GET'});
+    const d = await r.json();
+    btn.textContent = d.ok ? '⟳ Scan Now' : '⟳ Scan Now';
+    if (!d.ok) alert(d.message);
+    else feedAdd('system','⟳ SCAN QUEUED','Scan will fire within 30 seconds',new Date().toISOString(),'t-info');
+  } catch(e) { console.error(e); }
+  setTimeout(()=>{ btn.disabled=false; btn.textContent='⟳ Scan Now'; }, 3000);
 }
 async function resetSim() {
   if (!confirm('Reset sim? This clears all positions and P&L history.')) return;

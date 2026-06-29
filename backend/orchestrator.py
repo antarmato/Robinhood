@@ -14,6 +14,7 @@ import asyncio
 import logging
 import math
 import os
+import time as _wtime
 import uuid
 from datetime import datetime, time as dtime
 try:
@@ -68,6 +69,7 @@ class Orchestrator:
         self.max_loss          = float(os.getenv("MAX_LOSS_PER_TRADE", "100"))
         self.scan_interval     = int(os.getenv("SCAN_INTERVAL_MINUTES", "30")) * 60
         self.monitor_interval  = int(os.getenv("MONITOR_INTERVAL_MINUTES", "15")) * 60
+        self._force_scan       = False   # set True to trigger immediate scan
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -103,8 +105,10 @@ class Orchestrator:
 
     async def _main_loop(self):
         logger.info("Orchestrator starting.")
-        last_scan    = 0.0
-        last_monitor = 0.0
+        # Use wall-clock time (time.time()) so backend and frontend stay in sync.
+        last_scan      = 0.0
+        last_monitor   = 0.0
+        last_heartbeat = 0.0
 
         while True:
             try:
@@ -141,7 +145,7 @@ class Orchestrator:
                         and self.state.get_last_premarket_date() != today):
                     await self._run_premarket_prep()
 
-                now = asyncio.get_event_loop().time()
+                now = _wtime.time()   # wall-clock seconds — matches state.last_scan
 
                 # ── Monitor positions ─────────────────────────────────────────
                 if now - last_monitor >= self.monitor_interval:
@@ -151,8 +155,24 @@ class Orchestrator:
                 # ── Expire stale proposals ────────────────────────────────────
                 self._expire_stale_proposals()
 
+                # ── Heartbeat every 5 min so UI can confirm backend is alive ──
+                if now - last_heartbeat >= 300:
+                    last_heartbeat = now
+                    open_count = len(self.state.get_sim_positions(status="open"))
+                    secs_to_scan = max(0, int(self.scan_interval - (now - last_scan)))
+                    mm, ss = divmod(secs_to_scan, 60)
+                    await self._emit("system", "heartbeat", {
+                        "message": (
+                            f"⟳ System alive | Cycle {self.state.cycle_count} | "
+                            f"{open_count} open | Next scan in {mm}m{ss:02d}s"
+                        ),
+                        "next_scan_secs": secs_to_scan,
+                    })
+
                 # ── Scan ─────────────────────────────────────────────────────
-                if now - last_scan >= self.scan_interval:
+                scan_due = (now - last_scan >= self.scan_interval) or self._force_scan
+                if scan_due:
+                    self._force_scan = False
                     last_scan = now
                     open_count = len(self.state.get_sim_positions(status="open"))
                     if open_count >= self.MAX_OPEN_POSITIONS:
@@ -705,6 +725,10 @@ class Orchestrator:
             f"SIM: Opened {symbol} {opt_type.upper()} @ ${price:.2f} "
             f"score={judge.get('weighted_score')} conf={judge.get('confidence')}"
         )
+
+    def trigger_scan(self):
+        """Force an immediate scan on the next loop tick (within 30s)."""
+        self._force_scan = True
 
     # ── Monitor ────────────────────────────────────────────────────────────────
 

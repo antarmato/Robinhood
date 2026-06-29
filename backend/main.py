@@ -278,6 +278,15 @@ async def stop_get(api_key: str = ""):
     await orchestrator.stop()
     return {"status": "stopped"}
 
+
+@app.get("/api/system/scan")
+async def force_scan(api_key: str = ""):
+    _check_key(api_key)
+    if not orchestrator.is_running:
+        return {"ok": False, "message": "System not running — start it first"}
+    orchestrator.trigger_scan()
+    return {"ok": True, "message": "Scan queued — will fire within 30 seconds"}
+
 # ── POST versions (kept for Railway web dashboard) ─────────────────────────────
 
 @app.post("/api/trades")
