@@ -362,6 +362,16 @@ canvas{display:block}
     </div>
     <div class="card" style="border-bottom:none;border-top:1px solid var(--border)">
       <div class="card-title">
+        LIVE PRICE TEST
+        <button class="btn btn-g" onclick="testLivePrice()" style="flex:none;padding:2px 10px;font-size:10px;margin-left:auto">▶ Test</button>
+      </div>
+      <div style="display:flex;gap:6px;margin-bottom:6px">
+        <input id="test-price-sym" class="inp" placeholder="Symbol (default: PYPL)" style="margin:0;flex:1">
+      </div>
+      <div id="test-price-result" style="font-size:11px;color:var(--muted)">Enter a symbol and click Test to fetch a live price.</div>
+    </div>
+    <div class="card" style="border-bottom:none;border-top:1px solid var(--border)">
+      <div class="card-title">
         WHAT MODEL LEARNED
         <button class="btn btn-g" onclick="loadLearningInsights()" style="flex:none;padding:2px 10px;font-size:10px;margin-left:auto">↻ Load</button>
       </div>
@@ -1227,6 +1237,30 @@ async function runDiagnostics() {
       : '<div style="color:var(--yellow);font-size:10px;margin-top:6px;font-weight:700">⚠ Some checks failed — review above</div>');
   } catch(e) { body.innerHTML=`<div style="color:var(--red)">Error: ${esc(e.message)}</div>`; }
   btn.disabled=false; btn.textContent='▶ Run';
+}
+
+async function testLivePrice() {
+  const sym = (document.getElementById('test-price-sym').value.trim() || 'PYPL').toUpperCase();
+  const el  = document.getElementById('test-price-result');
+  el.innerHTML = `<span style="color:var(--muted)">Fetching ${sym}...</span>`;
+  try {
+    const r = await fetch(`/api/test/price?symbol=${encodeURIComponent(sym)}`);
+    const d = await r.json();
+    if (d.ok) {
+      const chg = d.pct_change ?? 0;
+      const chgC = chg > 0 ? 'var(--green)' : chg < 0 ? 'var(--red)' : 'var(--muted)';
+      el.innerHTML = `
+        <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:4px">
+          <span style="font-size:18px;font-weight:700;color:var(--text)">$${d.price?.toFixed(2) ?? '—'}</span>
+          <span style="color:${chgC};font-weight:700">${chg >= 0 ? '+' : ''}${chg?.toFixed(2)}%</span>
+        </div>
+        <div style="color:var(--muted);font-size:10px">${esc(d.symbol)} · source: ${esc(d.source)} · ${new Date().toLocaleTimeString()}</div>`;
+    } else {
+      el.innerHTML = `<span style="color:var(--red)">Error: ${esc(d.error || 'unknown')}</span>`;
+    }
+  } catch(e) {
+    el.innerHTML = `<span style="color:var(--red)">Request failed: ${esc(e.message)}</span>`;
+  }
 }
 
 async function loadLearningInsights() {

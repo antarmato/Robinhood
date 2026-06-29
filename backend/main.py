@@ -454,6 +454,19 @@ async def get_sim_prices():
     return {"updates": updates, "total_unrealized_pnl": round(total_unrealized, 2)}
 
 
+@app.get("/api/test/price")
+async def test_price(symbol: str = "PYPL"):
+    """Test endpoint: fetch live price for any symbol (default PYPL)."""
+    import asyncio as _aio
+    from . import market_data as _md
+    loop = _aio.get_event_loop()
+    try:
+        quote = await loop.run_in_executor(None, lambda: _md.get_quote(symbol.upper()))
+        return {"ok": True, "symbol": symbol.upper(), "price": quote.get("price"), "pct_change": quote.get("pct_change"), "source": "alpaca/iex"}
+    except Exception as e:
+        return {"ok": False, "symbol": symbol.upper(), "error": str(e)}
+
+
 @app.get("/api/symbol-stats")
 async def symbol_stats():
     """Per-symbol win rate and avg P&L from training DB."""
