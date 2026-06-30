@@ -29,7 +29,7 @@ import anthropic
 from .agents import (
     ScannerAgent, TechnicalAgent,
     FundamentalAgent, SentimentAgent, RiskAgent,
-    JudgeAgent, MonitorAgent,
+    JudgeAgent, MonitorAgent, PositionReviewer,
 )
 from .state import get_state
 from .outcome_tracker import get_outcome_tracker
@@ -912,8 +912,52 @@ class Orchestrator:
             if entry_confidence <= 5 and new_high >= 70.0 and pnl_pct >= 50.0:
                 trail_floor = max(trail_floor, 50.0)  # don't let a lucky low-conf trade give back to 0
 
+            # ── LLM thesis review ──────────────────────────────────────────────
+            # Re-evaluate whether the original entry thesis still holds.
+            # Runs after day 1 so same-day entries aren't immediately second-guessed.
+            # Can exit early (thesis broken) or tighten the stop floor.
+            ai_exit_reason = None
+            if days_held >= 1:
+                try:
+                    fresh_pos = {
+                        **pos,
+                        "last_pnl_pct":       pnl_pct,
+                        "high_water_pnl_pct": new_high,
+                        "last_stock_price":   current_stock,
+                        "days_held":          days_held,
+                        "dte_left":           dte_left,
+                    }
+                    reviewer = PositionReviewer(self.claude, self._make_broadcast())
+                    verdict  = await reviewer.review(fresh_pos, self.state.market_regime or {})
+                    v_action = verdict.get("action", "hold")
+                    v_reason = verdict.get("reason", "")
+
+                    emoji = {"hold": "✅", "exit": "🚪", "tighten_stop": "⚠️"}.get(v_action, "📋")
+                    await self._emit("system", "info", {
+                        "message": (
+                            f"{emoji} {symbol} thesis review → {v_action.upper()}: {v_reason}"
+                        )
+                    })
+
+                    if v_action == "exit":
+                        ai_exit_reason = f"Thesis review: {v_reason}"
+                    elif v_action == "tighten_stop":
+                        tighter = verdict.get("tighter_floor")
+                        if tighter is not None:
+                            new_floor = float(tighter)
+                            if new_floor > trail_floor:   # only ever tighten, never loosen
+                                logger.info(
+                                    f"{symbol}: stop tightened by AI review "
+                                    f"{trail_floor:+.0f}% → {new_floor:+.0f}%"
+                                )
+                                trail_floor = new_floor
+                except Exception as e:
+                    logger.warning(f"Position review failed for {symbol}: {e}")
+
             exit_reason = None
-            if pnl_pct <= trail_floor:
+            if ai_exit_reason:
+                exit_reason = ai_exit_reason
+            elif pnl_pct <= trail_floor:
                 if trail_floor >= 50.0:
                     exit_reason = (
                         f"Low-conf take-profit: peak {new_high:+.0f}% → locking {pnl_pct:+.1f}%"

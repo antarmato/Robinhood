@@ -5,9 +5,10 @@ from .sentiment import SentimentAgent
 from .risk import RiskAgent
 from .judge import JudgeAgent
 from .monitor import MonitorAgent
+from .position_reviewer import PositionReviewer
 
 __all__ = [
     "ScannerAgent", "TechnicalAgent",
     "FundamentalAgent", "SentimentAgent", "RiskAgent",
-    "JudgeAgent", "MonitorAgent",
+    "JudgeAgent", "MonitorAgent", "PositionReviewer",
 ]
