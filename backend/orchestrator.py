@@ -914,10 +914,12 @@ class Orchestrator:
 
             # ── LLM thesis review ──────────────────────────────────────────────
             # Re-evaluate whether the original entry thesis still holds.
-            # Runs after day 1 so same-day entries aren't immediately second-guessed.
+            # Runs after 2 hours so the position has time to settle, but still
+            # catches same-day blowups before hitting the hard stop.
             # Can exit early (thesis broken) or tighten the stop floor.
+            hours_held = (datetime.now() - opened_at).total_seconds() / 3600
             ai_exit_reason = None
-            if days_held >= 1:
+            if hours_held >= 2:
                 try:
                     fresh_pos = {
                         **pos,
