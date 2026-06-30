@@ -1122,12 +1122,9 @@ async function refreshSim() {
     const closed = (allData.closed_positions||[]).map(p=>({...p, status:'closed'}));
     allTrades = [...open, ...closed];
     allCombinedHistory = allData.combined_history||[];
-    // Push intraday snapshot: ALL closed P&L (all sessions) + live unrealized
-    const _closedPnl = allTrades.filter(t => t.status === 'closed')
-      .reduce((s, t) => s + (parseFloat(t.pnl_dollars) || 0), 0);
-    const _unrealizedPnl = (allData.open_positions || [])
-      .reduce((s, p) => s + (parseFloat(p.last_pnl_dollars) || 0), 0);
-    pushDaySnapshot(_closedPnl + _unrealizedPnl);
+    // 1D chart snapshots are owned exclusively by refreshPrices (live prices).
+    // Do NOT push here — refreshSim uses stale DB prices for open positions
+    // which causes glitchy dips on the chart.
     updateSymbolFilter();
     if (document.getElementById('page-trades').classList.contains('active')) renderTradesTable();
   } catch(e) { console.error(e); }
@@ -1784,14 +1781,24 @@ async function loadLearningInsights() {
 }
 
 // ── Live price refresh (open positions) ───────────────────────────────────────
+// This is the SOLE owner of pushDaySnapshot — refreshSim must not push to avoid
+// stale-DB-price glitches (dip then recovery) on the 1D chart.
 async function refreshPrices() {
   try {
     const r = await fetch('/api/sim/prices');
     const data = await r.json();
     const updates = data.updates || [];
-    if (!updates.length) return;
 
-    // Patch allTrades in-place
+    const closedPnl = allTrades.filter(t => t.status === 'closed')
+      .reduce((s, t) => s + (parseFloat(t.pnl_dollars) || 0), 0);
+
+    if (!updates.length) {
+      // No open positions — still push closed P&L so the 1D chart stays up to date
+      pushDaySnapshot(closedPnl);
+      return;
+    }
+
+    // Patch allTrades in-place with fresh prices
     for (const u of updates) {
       const t = allTrades.find(x => x.position_id === u.position_id);
       if (t) {
@@ -1810,10 +1817,9 @@ async function refreshPrices() {
     }
 
     // Update P&L bar + 1D chart: closed realized + live unrealized
-    const closedPnl = allTrades.filter(t => t.status === 'closed').reduce((s, t) => s + (parseFloat(t.pnl_dollars) || 0), 0);
     const totalPnl = closedPnl + (data.total_unrealized_pnl ?? 0);
     setPnlBar(totalPnl);
-    pushDaySnapshot(totalPnl); // keeps the 1D chart in sync with fresh prices
+    pushDaySnapshot(totalPnl);
   } catch(e) { console.error('[refreshPrices] failed:', e); }
 }
 
