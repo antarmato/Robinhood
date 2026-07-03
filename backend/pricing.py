@@ -18,9 +18,20 @@ Pricing model (approximation for 1 long contract, ~0.25 delta at entry):
 import math
 
 __all__ = [
-    "entry_premium", "initial_stop_pct", "price_option", "mark_position",
-    "update_stall_count", "compute_trail_floor", "exit_reason",
+    "entry_premium", "spread_fraction", "initial_stop_pct", "price_option",
+    "mark_position", "update_stall_count", "compute_trail_floor", "exit_reason",
 ]
+
+
+def spread_fraction(iv_rank: float) -> float:
+    """
+    Round-trip bid-ask friction as a fraction of option value: 3% base plus up
+    to 4% more at high IV (spreads widen when vol is bid). Applied to the
+    liquidation value in mark_position so realized P&L reflects actually
+    crossing the spread twice, instead of the zero-cost fills the sim
+    previously assumed.
+    """
+    return round(0.03 + 0.04 * max(0.0, min(iv_rank, 100.0)) / 100.0, 4)
 
 
 def entry_premium(stock_price: float, iv_rank: float, entry_dte: int = 35) -> float:
@@ -89,13 +100,19 @@ def price_option(
 
 
 def mark_position(pos: dict, current_stock: float, days_held: int) -> dict:
-    """Mark a sim position to the model. Returns option price, P&L, DTE left."""
+    """
+    Mark a sim position to the model. Returns liquidation option price, P&L,
+    DTE left. P&L is computed on liquidation value — fair model value minus
+    the position's round-trip spread friction (`spread_frac`, 0 for legacy
+    positions) — so trails and stops act on what an exit would actually realize.
+    """
     entry_dte = int(pos.get("entry_dte", 35))
     entry_opt = float(pos.get("entry_option_price", 1.0))
     contracts = float(pos.get("contracts", 1))   # fractional: sized to $100 total cost
+    friction  = float(pos.get("spread_frac", 0.0))
     dte_left  = max(0, entry_dte - max(0, days_held))
 
-    current_opt = price_option(
+    fair = price_option(
         entry_stock=float(pos.get("entry_stock_price", current_stock)),
         current_stock=current_stock,
         entry_option=entry_opt,
@@ -105,10 +122,11 @@ def mark_position(pos: dict, current_stock: float, days_held: int) -> dict:
         entry_dte=entry_dte,
         dte_left=dte_left,
     )
+    liquidation = round(max(0.01, fair * (1.0 - friction)), 4)
     return {
-        "option_price": current_opt,
-        "pnl_pct":      round((current_opt - entry_opt) / entry_opt * 100, 2),
-        "pnl_dollars":  round((current_opt - entry_opt) * contracts * 100, 2),
+        "option_price": liquidation,
+        "pnl_pct":      round((liquidation - entry_opt) / entry_opt * 100, 2),
+        "pnl_dollars":  round((liquidation - entry_opt) * contracts * 100, 2),
         "dte_left":     dte_left,
     }
 

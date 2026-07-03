@@ -678,6 +678,13 @@ class Orchestrator:
                 {"message": f"SIM: Skipping {symbol} — opening 15 min (volatile spreads). Will try next cycle."})
             return
 
+        # Closing 30-minute guard — a fill this late holds overnight gap risk
+        # with no chance to manage it (late-day entries lost 2 of 3 so far)
+        if tod >= dtime(15, 30):
+            await self._emit("system", "info",
+                {"message": f"SIM: Skipping {symbol} — last 30 min (overnight gap risk). Will reconsider tomorrow."})
+            return
+
         # Don't open a second position in the same symbol
         open_syms = {p["symbol"] for p in self.state.get_sim_positions(status="open")}
         if symbol in open_syms:
@@ -711,8 +718,9 @@ class Orchestrator:
 
         # Premium scales with spot price and IV so leverage is uniform across
         # symbols; fractional contracts size every position to $100 total cost.
-        entry_opt = pricing.entry_premium(price, iv_rank, entry_dte)
-        contracts = round(100.0 / (entry_opt * 100.0), 4)
+        entry_opt   = pricing.entry_premium(price, iv_rank, entry_dte)
+        contracts   = round(100.0 / (entry_opt * 100.0), 4)
+        spread_frac = pricing.spread_fraction(iv_rank)
 
         pos = {
             "position_id":       str(uuid.uuid4()),
@@ -722,6 +730,7 @@ class Orchestrator:
             "entry_stock_price": round(price, 2),
             "entry_option_price": entry_opt,
             "contracts":         contracts,
+            "spread_frac":       spread_frac,
             "total_cost":        100.00,
             "entry_dte":         entry_dte,
             "delta":             0.25,
@@ -783,9 +792,11 @@ class Orchestrator:
         self.state.update_last_monitor()
 
     async def _monitor_sim_positions(self):
-        # Prices only move during market hours — skip polling outside them
-        if not self._is_market_hours():
-            logger.debug("Market closed — skipping position monitor")
+        # Only act on regular-session prices (9:30-16:00). Pre-open quotes are
+        # thin and the model marks are unreliable — positions were being exited
+        # at 9:00-9:30 AM on premarket prices.
+        if self._session_phase() != "market":
+            logger.debug("Outside regular session — skipping position monitor")
             return
 
         open_positions = self.state.get_sim_positions(status="open")

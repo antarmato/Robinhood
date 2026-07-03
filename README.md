@@ -58,12 +58,16 @@ and learns from every outcome via a PostgreSQL training log. A single-page dashb
 - Entry premium is modeled as `spot × (2% + 4% × IV/100) × sqrt(DTE/35)` (~25-delta
   pricing), and fractional contracts size every position to **$100 total cost** — so
   leverage per 1% stock move is uniform (~6× at IV 50) regardless of share price.
+- Round-trip bid-ask friction (3%–7%, wider at high IV) is deducted from
+  liquidation value, so realized P&L reflects actually crossing the spread.
 - Exits: IV-aware initial stop, tiered trailing floor, stall tightening, DTE lift,
   mini-peak lock, low-confidence take-profit, stale-loser / dead-money / theta /
-  expiry exits — all in `backend/pricing.py` with unit tests.
+  expiry exits — all in `backend/pricing.py` with unit tests. Positions are only
+  marked/exited during the regular session (9:30–16:00 ET).
 - Entry gates: score threshold (IV/time/regime adjusted), per-symbol confidence
   minimums, a score cushion for bare-minimum-confidence setups, IV rank hard cap
-  (>75 never enters), sector/correlation caps, re-entry and churn blocks.
+  (>75 never enters), sector/correlation caps, re-entry and churn blocks, and
+  no fills in the first 15 or last 30 minutes of the session.
 
 ## Running locally
 

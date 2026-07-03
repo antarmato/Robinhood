@@ -61,6 +61,29 @@ def test_fractional_contracts_size_to_100_dollars():
     assert -8.0 < mark["pnl_pct"] < -2.0
 
 
+# ── spread_fraction (bid-ask friction) ──────────────────────────────────────
+
+@pytest.mark.parametrize("iv_rank,expected", [(0, 0.03), (50, 0.05), (100, 0.07)])
+def test_spread_fraction_scales_with_iv(iv_rank, expected):
+    assert pricing.spread_fraction(iv_rank) == pytest.approx(expected)
+
+
+def test_mark_position_applies_spread_friction():
+    pos = {"entry_stock_price": 100.0, "entry_option_price": 4.0,
+           "direction": "bullish", "delta": 0.25, "iv_rank": 50.0,
+           "entry_dte": 35, "contracts": 0.25, "spread_frac": 0.05}
+    # Flat stock, no decay: liquidation = fair × 0.95 → P&L = -5%
+    mark = pricing.mark_position(pos, 100.0, days_held=0)
+    assert mark["pnl_pct"] == pytest.approx(-5.0, abs=0.01)
+    assert mark["pnl_dollars"] == pytest.approx(-5.0, abs=0.05)  # $100 basis
+
+
+def test_mark_position_no_friction_for_legacy_positions():
+    pos = {"entry_stock_price": 100.0, "entry_option_price": 1.0,
+           "direction": "bullish", "entry_dte": 35}
+    assert pricing.mark_position(pos, 100.0, days_held=0)["pnl_pct"] == 0.0
+
+
 # ── initial_stop_pct ────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("iv_rank,expected", [
