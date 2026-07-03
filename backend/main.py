@@ -16,7 +16,9 @@ from pydantic import BaseModel
 from .orchestrator import get_orchestrator
 from .state import get_state
 from .outcome_tracker import get_outcome_tracker
+from . import pricing
 from . import training_store as ts
+from .timeutil import days_since
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -64,6 +66,11 @@ orchestrator.set_broadcast(_broadcast)
 # ── Auth ───────────────────────────────────────────────────────────────────────
 
 API_KEY = os.getenv("API_KEY", "")  # Optional key for Cowork artifact to authenticate
+if not API_KEY:
+    logger.warning(
+        "API_KEY not set — control endpoints (start/stop/reset/trades) are UNAUTHENTICATED. "
+        "Set API_KEY in the environment before exposing this service publicly."
+    )
 
 def _check_key(key: str = ""):
     if API_KEY and key != API_KEY:
@@ -110,7 +117,6 @@ async def health():
     result = {
         "status": "ok",
         "alpaca_key_set":    bool(alpaca_key),
-        "alpaca_key_prefix": alpaca_key[:6] + "..." if alpaca_key else "NOT SET",
         "polygon_key_set":   bool(poly_key),
         "anthropic_key_set": bool(anthropic_key),
         "tz": os.getenv("TZ", "NOT SET"),
@@ -408,7 +414,11 @@ async def get_sim():
 
 @app.get("/api/sim/prices")
 async def get_sim_prices():
-    """Live price refresh for open positions — called by frontend every 30s."""
+    """
+    Live price refresh for open positions — called by frontend every 30s.
+    Uses the same pricing model as the monitor loop (backend/pricing.py) so the
+    dashboard P&L always matches what the exit engine acts on.
+    """
     import asyncio as _aio
     from . import market_data as _md
     s = get_state()
@@ -417,48 +427,31 @@ async def get_sim_prices():
         return {"updates": [], "total_unrealized_pnl": 0.0}
 
     symbols = list(set(p["symbol"] for p in open_positions))
-    loop = _aio.get_event_loop()
     try:
-        batch = await loop.run_in_executor(None, lambda: _md.get_batch_quotes(symbols))
+        batch = await _aio.to_thread(_md.get_batch_quotes, symbols)
     except Exception:
         return {"updates": [], "error": "price fetch failed"}
 
     updates = []
     total_unrealized = 0.0
     for pos in open_positions:
-        symbol      = pos["symbol"]
-        current     = float(batch.get(symbol, 0))
+        symbol  = pos["symbol"]
+        current = float(batch.get(symbol, 0))
         if not current:
             continue
-        entry_stock = float(pos.get("entry_stock_price", current))
-        entry_opt   = float(pos.get("entry_option_price", 1.0))
-        delta       = float(pos.get("delta", 0.25))
-        direction   = pos.get("direction", "bullish")
-        iv_rank_pos = float(pos.get("iv_rank", 50.0))
-        contracts   = int(pos.get("contracts", 1))
+        try:
+            days_held = days_since(pos["opened_at"])
+        except (KeyError, ValueError):
+            days_held = 0
+        mark = pricing.mark_position(pos, current, days_held)
 
-        if direction == "bullish":
-            favorable_move = current - entry_stock
-        else:
-            favorable_move = entry_stock - current
-        move_pct = favorable_move / max(entry_stock, 0.01)
-
-        effective_delta = min(0.80, delta + move_pct * 0.35) if move_pct >= 0 else max(0.05, delta + move_pct * 0.15)
-        directional_pnl = favorable_move * effective_delta
-        iv_vega = (iv_rank_pos / 100.0) * 0.08
-        vega_pnl = (-entry_opt * iv_vega * move_pct * 2.0) if move_pct >= 0 else (entry_opt * iv_vega * abs(move_pct) * 1.5)
-
-        current_opt = max(0.01, entry_opt + directional_pnl + vega_pnl)
-        pnl_pct     = ((current_opt - entry_opt) / entry_opt) * 100.0
-        pnl_dollars = (current_opt - entry_opt) * contracts * 100
-
-        total_unrealized += pnl_dollars
+        total_unrealized += mark["pnl_dollars"]
         updates.append({
             "position_id":   pos["position_id"],
             "symbol":        symbol,
             "current_price": round(current, 2),
-            "pnl_pct":       round(pnl_pct, 1),
-            "pnl_dollars":   round(pnl_dollars, 2),
+            "pnl_pct":       round(mark["pnl_pct"], 1),
+            "pnl_dollars":   mark["pnl_dollars"],
         })
 
     return {"updates": updates, "total_unrealized_pnl": round(total_unrealized, 2)}
@@ -500,7 +493,7 @@ async def diagnostics():
     results: dict = {
         "env_vars": {
             "ok":       bool(alpaca_key and anthropic_key),
-            "alpaca":   f"✓ {alpaca_key[:6]}..." if alpaca_key else "✗ NOT SET",
+            "alpaca":   "✓ set" if alpaca_key else "✗ NOT SET",
             "anthropic": "✓ set" if anthropic_key else "✗ NOT SET",
             "tradier":  f"✓ set" if tradier_key else "— optional (not set)",
             "tz":       os.getenv("TZ", "not set"),
@@ -599,21 +592,12 @@ async def diagnostics():
     async def _test_database():
         t0 = time.time()
         from . import state as _state_mod
-        db_url = os.getenv("DATABASE_URL", "")
-        if not db_url:
-            return {"ok": False, "detail": "DATABASE_URL not set — using file fallback", "latency_ms": 0}
         try:
-            conn = _state_mod._get_conn()
-            if not conn:
-                return {"ok": False, "detail": "Connection failed", "latency_ms": round((time.time()-t0)*1000)}
-            with conn.cursor() as cur:
-                cur.execute("SELECT updated_at FROM state_store WHERE id=1")
-                row = cur.fetchone()
-            ms = round((time.time()-t0)*1000)
-            ts = str(row[0])[:19] if row else "empty (first boot)"
-            return {"ok": True, "detail": f"Postgres connected | last save: {ts}", "latency_ms": ms}
+            result = await _aio.to_thread(_state_mod.db_health)
         except Exception as e:
-            return {"ok": False, "detail": str(e)[:150], "latency_ms": round((time.time()-t0)*1000)}
+            result = {"ok": False, "detail": str(e)[:150]}
+        result["latency_ms"] = round((time.time() - t0) * 1000)
+        return result
 
     hist_r, quotes_r, macro_r, ant_r, news_r, db_r = await _aio.gather(
         _test_alpaca_history(),

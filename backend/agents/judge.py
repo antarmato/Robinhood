@@ -12,6 +12,7 @@ Architecture (v5 — self-learning loop):
   - Fatal flaws from Technical/Fundamental short-circuit before any LLM call
 """
 
+import asyncio
 import logging
 from datetime import datetime, time as dtime
 from typing import Optional
@@ -25,7 +26,10 @@ except ImportError:
 
 from .base import BaseAgent, BroadcastFn
 from .. import market_data as md
-from ..strategy import score_threshold, iv_edge_label, trade_defaults, THRESHOLD_CONF, confidence_minimum
+from ..strategy import (
+    score_threshold, iv_edge_label, trade_defaults, confidence_minimum,
+    THRESHOLD_CONF, MARGINAL_CONF_SCORE_CUSHION,
+)
 from .. import training_store as ts
 
 logger = logging.getLogger(__name__)
@@ -108,7 +112,8 @@ class JudgeAgent(BaseAgent):
         fund_s = float(fundamental.get("score", 5))
         sent_s = float(sentiment.get("score", 5))
         consensus_n = sum([tech_s >= 7.0, fund_s >= 7.0, sent_s >= 7.0])
-        feat_adj, feat_adj_reason = ts.get_feature_score_adjustment(
+        feat_adj, feat_adj_reason = await asyncio.to_thread(
+            ts.get_feature_score_adjustment,
             direction=direction,
             above_ema200=technical.get("above_ema200"),
             above_ema50=(technical.get("current_price", 0) > technical.get("ema50", 0))
@@ -139,7 +144,7 @@ class JudgeAgent(BaseAgent):
         # ── Strategy / HV context ─────────────────────────────────────────────
         vix_level  = sentiment.get("vix_level", 20)
         vix_regime = sentiment.get("vix_regime", "normal")
-        hv_data    = md.get_hv(symbol)
+        hv_data    = await asyncio.to_thread(md.get_hv, symbol)
         hv_rank    = hv_data.get("hv_rank") or 50
 
         price = technical.get("current_price") or risk.get("current_price") or 100
@@ -151,9 +156,12 @@ class JudgeAgent(BaseAgent):
         defaults    = trade_defaults()
 
         # ── Outcome context from training DB (PostgreSQL — survives restarts) ──
-        similar   = ts.get_similar_iv_stats(iv_rank, direction)
-        stats     = ts.get_outcome_stats()
-        sym_stats = ts.get_symbol_perf(min_trades=2).get(symbol)
+        similar, stats, sym_perf_map = await asyncio.gather(
+            asyncio.to_thread(ts.get_similar_iv_stats, iv_rank, direction),
+            asyncio.to_thread(ts.get_outcome_stats),
+            asyncio.to_thread(ts.get_symbol_perf, min_trades=2),
+        )
+        sym_stats = sym_perf_map.get(symbol)
 
         # DB-level targeted pattern match for this specific setup
         try:
@@ -161,10 +169,11 @@ class JudgeAgent(BaseAgent):
             above_ema200_val = technical.get("above_ema200")
             adx_val = technical.get("adx")
             regime_str = (market_regime or {}).get("regime")
-            db_similar = ts.get_similar_trade_stats(
+            db_similar = await asyncio.to_thread(
+                ts.get_similar_trade_stats,
                 symbol=symbol, direction=direction,
                 tech_score=tech_score_val, above_ema200=above_ema200_val,
-                adx=adx_val, regime=regime_str, min_samples=3
+                adx=adx_val, regime=regime_str, min_samples=3,
             )
         except Exception:
             db_similar = None
@@ -288,14 +297,16 @@ class JudgeAgent(BaseAgent):
             )
 
         # ── Self-learned calibration context ─────────────────────────────────
-        learned_context = ts.get_learned_context(min_samples=3)
+        learned_context = await asyncio.to_thread(ts.get_learned_context, min_samples=3)
         learned_block = ("SELF-LEARNED CALIBRATION (from PostgreSQL training log):\n" + learned_context) if learned_context else ""
 
         # ── Episodic memory: actual conditions of recent similar trades ────────
-        episodic = ts.get_episodic_context(direction=direction, symbol=symbol, limit=5)
+        episodic = await asyncio.to_thread(
+            ts.get_episodic_context, direction=direction, symbol=symbol, limit=5)
         # Fall back to direction-only if symbol-specific is thin
         if not episodic:
-            episodic = ts.get_episodic_context(direction=direction, limit=5)
+            episodic = await asyncio.to_thread(
+                ts.get_episodic_context, direction=direction, limit=5)
         episodic_block = episodic if episodic else ""
 
         strong_count = sum([tech_s >= 7.0, fund_s >= 7.0, sent_s >= 7.0])
@@ -413,6 +424,15 @@ Respond ONLY with JSON:
         elif confidence < conf_min:
             decision    = "pass"
             pass_reason = f"Confidence {confidence}/10 below minimum {conf_min} for {symbol}"
+            trade_proposal = None
+        elif confidence <= THRESHOLD_CONF and adjusted_score < threshold + MARGINAL_CONF_SCORE_CUSHION:
+            # Bare-minimum confidence needs a score cushion — conf-5 trades with
+            # scores hugging the threshold were the biggest live losers.
+            decision    = "pass"
+            pass_reason = (
+                f"Marginal: confidence {confidence}/10 needs score ≥ "
+                f"{threshold + MARGINAL_CONF_SCORE_CUSHION:.0f} (got {adjusted_score})"
+            )
             trade_proposal = None
         else:
             decision = "trade"

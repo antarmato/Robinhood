@@ -3,9 +3,12 @@ State manager — persists system state to PostgreSQL (DATABASE_URL) with
 a local JSON file fallback for development environments.
 """
 
+import atexit
 import json
 import logging
 import os
+import threading
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -16,24 +19,30 @@ logger = logging.getLogger(__name__)
 # ── Storage backends ──────────────────────────────────────────────────────────
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
-STATE_FILE   = Path("/app/data/state.json")
+STATE_FILE   = Path(os.environ.get("STATE_FILE", "/app/data/state.json"))
 
-# psycopg2 is optional — only needed when DATABASE_URL is set
-_pg_conn = None
+# psycopg2 is optional — only needed when DATABASE_URL is set.
+# Connections are kept per-thread: psycopg2 connections are not safe for
+# concurrent use, and the writer thread + diagnostics may hit the DB at once.
+_tlocal = threading.local()
+_schema_ready = False
 
 def _get_conn():
-    global _pg_conn
+    global _schema_ready
+    conn = getattr(_tlocal, "conn", None)
     try:
-        if _pg_conn is None or _pg_conn.closed:
+        if conn is None or conn.closed:
             import psycopg2
-            import psycopg2.extras
-            _pg_conn = psycopg2.connect(DATABASE_URL)
-            _pg_conn.autocommit = True
-            _ensure_table(_pg_conn)
-        return _pg_conn
+            conn = psycopg2.connect(DATABASE_URL)
+            conn.autocommit = True
+            if not _schema_ready:
+                _ensure_table(conn)
+                _schema_ready = True
+            _tlocal.conn = conn
+        return conn
     except Exception as e:
         logger.error(f"DB connect failed: {e}")
-        _pg_conn = None
+        _tlocal.conn = None
         return None
 
 def _ensure_table(conn):
@@ -59,12 +68,11 @@ def _db_load() -> Optional[dict]:
         logger.error(f"DB load failed: {e}")
         return None
 
-def _db_save(data: dict):
+def _db_save(payload: str) -> bool:
     conn = _get_conn()
     if not conn:
         return False
     try:
-        import psycopg2.extras
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO state_store (id, data, updated_at)
@@ -72,13 +80,12 @@ def _db_save(data: dict):
                 ON CONFLICT (id) DO UPDATE
                     SET data = EXCLUDED.data,
                         updated_at = NOW()
-            """, (json.dumps(data, default=str),))
+            """, (payload,))
         return True
     except Exception as e:
         logger.error(f"DB save failed: {e}")
-        # Reset connection so next call reconnects
-        global _pg_conn
-        _pg_conn = None
+        # Drop this thread's connection so the next call reconnects
+        _tlocal.conn = None
         return False
 
 def _file_load() -> Optional[dict]:
@@ -90,13 +97,76 @@ def _file_load() -> Optional[dict]:
         logger.warning(f"File load failed: {e}")
     return None
 
-def _file_save(data: dict):
+def _file_save(payload: str):
     try:
         STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(STATE_FILE, "w") as f:
-            json.dump(data, f, indent=2, default=str)
+        STATE_FILE.write_text(payload)
     except Exception as e:
         logger.error(f"File save failed: {e}")
+
+def db_health() -> dict:
+    """Diagnostics: Postgres connectivity and last state save time."""
+    if not DATABASE_URL:
+        return {"ok": False, "detail": "DATABASE_URL not set — using file fallback"}
+    conn = _get_conn()
+    if not conn:
+        return {"ok": False, "detail": "Connection failed"}
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT updated_at FROM state_store WHERE id = 1")
+            row = cur.fetchone()
+        last = str(row[0])[:19] if row else "empty (first boot)"
+        return {"ok": True, "detail": f"Postgres connected | last save: {last}"}
+    except Exception as e:
+        return {"ok": False, "detail": str(e)[:150]}
+
+# ── Background writer ─────────────────────────────────────────────────────────
+
+class _StateWriter:
+    """
+    Debounced background writer. save() enqueues the latest JSON snapshot; a
+    daemon thread writes it at most once per interval. Bursts of mutations
+    (a scan cycle logs dozens of events) coalesce into a single write, and the
+    asyncio event loop never blocks on Postgres/file I/O.
+    """
+
+    def __init__(self, use_db: bool, min_interval: float = 1.0):
+        self._use_db = use_db
+        self._min_interval = min_interval
+        self._cond = threading.Condition()
+        self._pending: Optional[str] = None
+        self._thread = threading.Thread(target=self._run, name="state-writer", daemon=True)
+        self._thread.start()
+        atexit.register(self.flush)
+
+    def submit(self, payload: str):
+        with self._cond:
+            self._pending = payload
+            self._cond.notify()
+
+    def flush(self):
+        """Write any pending snapshot immediately (called at process exit)."""
+        with self._cond:
+            payload, self._pending = self._pending, None
+        if payload:
+            self._write(payload)
+
+    def _run(self):
+        while True:
+            with self._cond:
+                while self._pending is None:
+                    self._cond.wait()
+                payload, self._pending = self._pending, None
+            self._write(payload)
+            time.sleep(self._min_interval)
+
+    def _write(self, payload: str):
+        if self._use_db:
+            if not _db_save(payload):
+                # fallback write to file so we don't lose data
+                _file_save(payload)
+        else:
+            _file_save(payload)
 
 # ── Default state ─────────────────────────────────────────────────────────────
 
@@ -127,6 +197,7 @@ class StateManager:
     def __init__(self):
         self._use_db = bool(DATABASE_URL)
         self._s = self._load()
+        self._writer = _StateWriter(self._use_db)
         logger.info(f"StateManager init: backend={'postgres' if self._use_db else 'file'}")
 
     def _load(self) -> dict:
@@ -141,13 +212,13 @@ class StateManager:
         return _default()
 
     def save(self):
-        if self._use_db:
-            ok = _db_save(self._s)
-            if not ok:
-                # fallback write to file so we don't lose data
-                _file_save(self._s)
-        else:
-            _file_save(self._s)
+        """Snapshot state and hand it to the background writer (non-blocking)."""
+        try:
+            payload = json.dumps(self._s, default=str)
+        except (TypeError, ValueError) as e:
+            logger.error(f"State serialize failed: {e}")
+            return
+        self._writer.submit(payload)
 
     # ── System ────────────────────────────────────────────────────────────────
 

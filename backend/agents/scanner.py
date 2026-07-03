@@ -21,7 +21,7 @@ import pandas as pd
 
 from .base import BaseAgent, BroadcastFn
 from .. import market_data as md
-from ..strategy import IV_RANK_HARD_SKIP
+from ..strategy import IV_RANK_HARD_SKIP, IV_RANK_ABS_SKIP
 
 logger = logging.getLogger(__name__)
 
@@ -100,9 +100,9 @@ class ScannerAgent(BaseAgent):
             return []
 
         # ── IV rank filter ─────────────────────────────────────────────────────
-        # Soft penalty (graduated score deduction) instead of hard skip.
-        # Without Tradier, get_iv_rank_best() returns HV proxy — don't penalize it.
-        # Hard skip only applied above rank 85 (pathologically expensive).
+        # Graduated score penalty below the cap, hard skip above it.
+        # Live-trade evidence: entries at IV rank 80-94 (RIVN, AMD, ROKU) all
+        # lost — the premium is too expensive to profit from a directional move.
         tradier_available = bool(os.getenv("TRADIER_TOKEN", ""))
 
         iv_passed = {}
@@ -110,8 +110,7 @@ class ScannerAgent(BaseAgent):
         for sym, d in scored.items():
             iv_rank = md.get_iv_rank_best(sym)
             d["iv_rank"] = round(iv_rank, 1)
-            # Hard skip only for extreme IV with real data (>85 = buying insurance at peak fear)
-            if tradier_available and iv_rank > 85:
+            if iv_rank > IV_RANK_ABS_SKIP:
                 iv_skipped.append(f"{sym}({iv_rank:.0f})")
                 continue
             # iv_bonus: cheap IV adds score; expensive IV subtracts
@@ -130,7 +129,7 @@ class ScannerAgent(BaseAgent):
         source = "real IV" if tradier_available else "HV proxy (no Tradier)"
         await self._emit("status",
             f"IV filter ({source}): {len(iv_passed)}/{len(scored)} passed "
-            f"(hard-skipped rank>85: {', '.join(iv_skipped) if iv_skipped else 'none'})")
+            f"(hard-skipped rank>{IV_RANK_ABS_SKIP:.0f}: {', '.join(iv_skipped) if iv_skipped else 'none'})")
 
         if not iv_passed:
             await self._emit("status",

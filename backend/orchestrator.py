@@ -12,16 +12,10 @@ Pipeline (v3 — regime-aware, pre-market-informed, continuous):
 
 import asyncio
 import logging
-import math
 import os
 import time as _wtime
 import uuid
 from datetime import datetime, time as dtime
-try:
-    from zoneinfo import ZoneInfo
-    _ET = ZoneInfo("America/New_York")
-except ImportError:
-    _ET = None
 from typing import Any, Callable, Awaitable
 
 import anthropic
@@ -35,7 +29,9 @@ from .state import get_state
 from .outcome_tracker import get_outcome_tracker
 from .market_regime import classify_regime
 from . import market_data as md
+from . import pricing
 from . import training_store as ts
+from .timeutil import now_et, parse_iso_et
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +64,11 @@ class Orchestrator:
         self.watchlist         = [s.strip() for s in watchlist_raw.split(",")]
         self.max_loss          = float(os.getenv("MAX_LOSS_PER_TRADE", "100"))
         self.scan_interval     = int(os.getenv("SCAN_INTERVAL_MINUTES", "30")) * 60
-        self.monitor_interval  = int(os.getenv("MONITOR_INTERVAL_MINUTES", "15")) * 60
+        # 5-min monitor: trailing floors were being gapped through at 15 min
+        # (COIN peaked +103% but wasn't caught until +48%). One batch quote
+        # call per tick, and the thesis-review cooldown caps LLM cost.
+        self.monitor_interval  = int(os.getenv("MONITOR_INTERVAL_MINUTES", "5")) * 60
+        self.review_interval_h = float(os.getenv("THESIS_REVIEW_HOURS", "3"))
         self._force_scan       = False   # set True to trigger immediate scan
         self._wake_event: asyncio.Event | None = None  # wakes the loop immediately
 
@@ -313,7 +313,7 @@ class Orchestrator:
             regime = prior_regime or {}
 
         premarket = self.state.premarket_context
-        sym_perf  = ts.get_symbol_perf()
+        sym_perf  = await asyncio.to_thread(ts.get_symbol_perf)
 
         scanner    = ScannerAgent(self.claude, self.watchlist, self._make_broadcast())
         candidates = await scanner.scan(
@@ -497,7 +497,8 @@ class Orchestrator:
                     if p.get("symbol") == sym and p.get("cycle") == cycle:
                         position_id_map[sym] = p["position_id"]
                         break
-            ts.log_scan_results(cycle, scan_summary, self.state.market_regime, position_id_map)
+            await asyncio.to_thread(
+                ts.log_scan_results, cycle, scan_summary, self.state.market_regime, position_id_map)
         except Exception as e:
             logger.warning(f"Training store log failed: {e}")
 
@@ -573,14 +574,25 @@ class Orchestrator:
 
         # Re-entry prevention: skip symbols closed in the last 3 cycles at a loss
         current_cycle = self.state.cycle_count
+        all_closed = self.state.get_sim_positions(status="closed")
         recently_closed = {
             p["symbol"]: p
-            for p in self.state.get_sim_positions(status="closed")
+            for p in all_closed
             if (current_cycle - int(p.get("cycle", 0))) <= 3
                and float(p.get("pnl_dollars", 0)) < 0
         }
         if recently_closed:
             logger.debug(f"Re-entry prevention: {list(recently_closed.keys())} recently closed at a loss")
+
+        # Churn prevention: 2+ closed trades on the same symbol+direction in the
+        # last 5 cycles means the move is likely exhausted — even after wins.
+        # (Live evidence: COIN puts #1-2 won, #3-4 re-entered the same fading
+        # move and gave the profits back.)
+        same_dir_counts: dict[tuple, int] = {}
+        for p in all_closed:
+            if (current_cycle - int(p.get("cycle", 0))) <= 5:
+                key = (p.get("symbol"), p.get("direction"))
+                same_dir_counts[key] = same_dir_counts.get(key, 0) + 1
 
         # Pre-compute which correlation groups already have a position
         occupied_groups = set()
@@ -615,6 +627,11 @@ class Orchestrator:
                 pnl = float(closed_pos.get("pnl_pct", 0))
                 self.state.log_event("info", {"message":
                     f"Re-entry block: {sym} closed {pnl:+.0f}% in last 3 cycles — skipping"})
+                continue
+            if same_dir_counts.get((sym, dirn), 0) >= 2:
+                self.state.log_event("info", {"message":
+                    f"Churn block: {sym} {dirn} traded {same_dir_counts[(sym, dirn)]}× "
+                    "in last 5 cycles — move likely exhausted"})
                 continue
             if sym in _TECH and tech_open >= 2:
                 self.state.log_event("info", {"message": f"Sector filter: {sym} skipped (2 tech open)"})
@@ -668,6 +685,11 @@ class Orchestrator:
                 {"message": f"SIM: {symbol} already open — skipping duplicate."})
             return
 
+        if price <= 0:
+            await self._emit("system", "info",
+                {"message": f"SIM: {symbol} skipped — no valid live price."})
+            return
+
         # Collect scores from sub-agents to store with position (for learning)
         technical   = analysis.get("technical", {})
         fundamental = analysis.get("fundamental", {})
@@ -687,14 +709,19 @@ class Orchestrator:
         else:
             entry_dte = 35   # standard
 
+        # Premium scales with spot price and IV so leverage is uniform across
+        # symbols; fractional contracts size every position to $100 total cost.
+        entry_opt = pricing.entry_premium(price, iv_rank, entry_dte)
+        contracts = round(100.0 / (entry_opt * 100.0), 4)
+
         pos = {
             "position_id":       str(uuid.uuid4()),
             "symbol":            symbol,
             "direction":         direction,
             "option_type":       opt_type,
             "entry_stock_price": round(price, 2),
-            "entry_option_price": 1.00,   # $1.00/share × 100 = $100 total
-            "contracts":         1,
+            "entry_option_price": entry_opt,
+            "contracts":         contracts,
             "total_cost":        100.00,
             "entry_dte":         entry_dte,
             "delta":             0.25,
@@ -716,12 +743,12 @@ class Orchestrator:
             "entry_above_ema200": technical.get("above_ema200"),
             "entry_momentum_1d": technical.get("momentum_1d"),
             "entry_rsi":         technical.get("rsi"),
-            "opened_at":         datetime.now().isoformat(),
+            "opened_at":         now_et().isoformat(),
             "cycle":             self.state.cycle_count,
             "status":            "open",
             "high_water_pnl_pct": 0.0,
             "last_stock_price":  round(price, 2),
-            "last_option_price": 1.00,
+            "last_option_price": entry_opt,
             "last_pnl_pct":      0.0,
             "last_pnl_dollars":  0.0,
         }
@@ -779,17 +806,13 @@ class Orchestrator:
         for pos in open_positions:
             symbol      = pos["symbol"]
             direction   = pos["direction"]
-            entry_stock = float(pos["entry_stock_price"])
-            entry_opt   = float(pos["entry_option_price"])
-            contracts   = int(pos.get("contracts", 1))
-            delta       = float(pos.get("delta", 0.25))
-            entry_dte   = int(pos.get("entry_dte", 35))
             high_water  = float(pos.get("high_water_pnl_pct", 0.0))
             pos_id      = pos["position_id"]
 
-            opened_at  = datetime.fromisoformat(pos["opened_at"])
-            days_held  = max(0, (datetime.now() - opened_at).days)
-            dte_left   = max(0, entry_dte - days_held)
+            opened_at  = parse_iso_et(pos["opened_at"])
+            now        = now_et()
+            days_held  = max(0, (now - opened_at).days)
+            hours_held = (now - opened_at).total_seconds() / 3600
 
             # Use batch price, fall back to individual call if missing
             current_stock = float(batch_quotes.get(symbol, 0))
@@ -802,67 +825,19 @@ class Orchestrator:
             if not current_stock:
                 continue
 
-            iv_rank_pos = float(pos.get("iv_rank", 50.0))
+            iv_rank_pos  = float(pos.get("iv_rank", 50.0))
+            initial_stop = pricing.initial_stop_pct(iv_rank_pos)
 
-            # IV-aware initial stop: expensive options bleed faster on no movement.
-            # High IV = tight stop. Low IV = room to breathe.
-            if iv_rank_pos >= 70:
-                initial_stop = -20.0   # very expensive — exit fast if wrong
-            elif iv_rank_pos >= 50:
-                initial_stop = -28.0   # elevated IV
-            elif iv_rank_pos >= 30:
-                initial_stop = -38.0   # moderate
-            else:
-                initial_stop = -50.0   # cheap premium, give it room
-
-            # ── Option pricing model ──────────────────────────────────────────
-            # Favorable stock move (+ means the stock moved in our direction)
-            if direction == "bullish":
-                favorable_move = current_stock - entry_stock
-            else:
-                favorable_move = entry_stock - current_stock
-
-            move_pct = favorable_move / max(entry_stock, 0.01)
-
-            # Gamma-adjusted delta:
-            #   • Favorable move → delta rises toward 0.80 (option going ITM)
-            #   • Adverse move   → delta falls toward 0.05 (option going OTM, less sensitive)
-            if move_pct >= 0:
-                effective_delta = min(0.80, delta + move_pct * 0.35)
-            else:
-                effective_delta = max(0.05, delta + move_pct * 0.15)
-
-            directional_pnl = favorable_move * effective_delta
-
-            # Vega (IV) effect — key real-world modifier for options buyers:
-            #   Favorable moves → IV typically compresses (reduces option value)
-            #   Adverse moves   → IV expands (partially cushions the loss)
-            # Effect scales with IV rank: high-IV options have more vega to crush/expand.
-            # Approximate: 1% stock move at IV rank 50 = ~4% vega effect on option value.
-            iv_vega_factor = (iv_rank_pos / 100.0) * 0.08   # 0=no vega, 1=strong vega
-            if move_pct >= 0:
-                # IV compresses on favorable moves → subtract from option value
-                vega_pnl = -entry_opt * iv_vega_factor * move_pct * 2.0
-            else:
-                # IV expands on adverse moves → partially offset the directional loss
-                vega_pnl = entry_opt * iv_vega_factor * abs(move_pct) * 1.0
-
-            # Sqrt-of-time theta: time value decays faster near expiry
-            #   DTE=35 → factor 1.0  |  DTE=17 → 0.70  |  DTE=7 → 0.45  |  DTE=0 → 0
-            time_factor   = math.sqrt(dte_left / max(entry_dte, 1))
-            current_opt   = round(max(0.01, entry_opt * time_factor + directional_pnl + vega_pnl), 4)
-
-            pnl_pct     = round((current_opt - entry_opt) / entry_opt * 100, 2)
-            pnl_dollars = round((current_opt - entry_opt) * contracts * 100, 2)
+            mark        = pricing.mark_position(pos, current_stock, days_held)
+            current_opt = mark["option_price"]
+            pnl_pct     = mark["pnl_pct"]
+            pnl_dollars = mark["pnl_dollars"]
+            dte_left    = mark["dte_left"]
             new_high    = max(high_water, pnl_pct)
             prev_pnl    = float(pos.get("last_pnl_pct", 0.0))
 
-            # Detect stalling: 3 consecutive flat/declining checks while already profitable
-            stall_count = int(pos.get("stall_count", 0))
-            if new_high >= 40.0 and pnl_pct < prev_pnl - 2.0:
-                stall_count += 1  # declining from a profitable peak
-            elif pnl_pct >= new_high - 3.0:
-                stall_count = 0   # still near the high — reset
+            stall_count = pricing.update_stall_count(
+                int(pos.get("stall_count", 0)), new_high, pnl_pct, prev_pnl)
 
             updates = {
                 "high_water_pnl_pct": new_high,
@@ -876,50 +851,23 @@ class Orchestrator:
             }
 
             # ── Exit logic ────────────────────────────────────────────────────
-            # No fixed profit target — trailing stop lets winners run.
-            # Floor tightens in tiers as the peak gain grows.
-            # Stall tightening: if momentum is dying after a big gain, narrow the trail.
-
-            # Compute trailing floor from peak gain
-            if new_high >= 150.0:
-                trail_floor = new_high - 35.0   # give back 35pts max after 150%+
-            elif new_high >= 100.0:
-                trail_floor = new_high - 30.0   # give back 30pts max after 100%+
-            elif new_high >= 50.0:
-                trail_floor = max(0.0, new_high - 25.0)  # give back 25pts, floor ≥ 0%
-            elif new_high >= 25.0:
-                trail_floor = 0.0               # protect breakeven after 25%
-            else:
-                trail_floor = initial_stop      # IV-adjusted hard stop while gain < 25%
-
-            # Stall tightening: 3+ declining checks → reduce the allowance by 10pts
-            if stall_count >= 3 and trail_floor > initial_stop:
-                trail_floor = min(pnl_pct + 5.0, trail_floor + 10.0)
-
-            # DTE-aware trail tightening: theta accelerates in final 2 weeks.
-            # Raise the floor so we don't hold losers through rapid decay.
-            if dte_left <= 14 and trail_floor < 0:
-                dte_lift = max(0.0, (14 - dte_left) * 1.5)   # +1.5% per day under 14 DTE, max +21%
-                trail_floor = min(trail_floor + dte_lift, 0.0)  # lift toward breakeven, never above
-
-            # Mini-peak reversal: had a nice gain (10-25%) and given most of it back.
-            # Lock in the remaining small gain rather than riding to the stop loss.
-            if 10.0 <= new_high < 25.0 and pnl_pct < 3.0 and pnl_pct > initial_stop:
-                trail_floor = max(trail_floor, 2.0)
-
-            # Confidence-based early take-profit: low-conviction trade hit 70%+ → close
-            entry_confidence = float(pos.get("confidence", 7))
-            if entry_confidence <= 5 and new_high >= 70.0 and pnl_pct >= 50.0:
-                trail_floor = max(trail_floor, 50.0)  # don't let a lucky low-conf trade give back to 0
+            # No fixed profit target — trailing floor tiers, stall tightening,
+            # DTE lift, mini-peak lock, low-conf take-profit (see pricing.py).
+            trail_floor = pricing.compute_trail_floor(
+                new_high=new_high, pnl_pct=pnl_pct, initial_stop=initial_stop,
+                stall_count=stall_count, dte_left=dte_left,
+                entry_confidence=float(pos.get("confidence", 7)),
+            )
 
             # ── LLM thesis review ──────────────────────────────────────────────
             # Re-evaluate whether the original entry thesis still holds.
-            # Runs after 2 hours so the position has time to settle, but still
-            # catches same-day blowups before hitting the hard stop.
+            # First review after 2 hours; then cooldown-gated (see
+            # _thesis_review_due) so we don't burn an LLM call every monitor tick.
             # Can exit early (thesis broken) or tighten the stop floor.
-            hours_held = (datetime.now() - opened_at).total_seconds() / 3600
             ai_exit_reason = None
-            if hours_held >= 2:
+            if hours_held >= 2 and self._thesis_review_due(pos, pnl_pct):
+                updates["last_thesis_review"] = now.isoformat()
+                updates["pnl_at_last_review"] = pnl_pct
                 try:
                     fresh_pos = {
                         **pos,
@@ -956,47 +904,11 @@ class Orchestrator:
                 except Exception as e:
                     logger.warning(f"Position review failed for {symbol}: {e}")
 
-            exit_reason = None
-            if ai_exit_reason:
-                exit_reason = ai_exit_reason
-            elif pnl_pct <= trail_floor:
-                if trail_floor >= 50.0:
-                    exit_reason = (
-                        f"Low-conf take-profit: peak {new_high:+.0f}% → locking {pnl_pct:+.1f}%"
-                    )
-                elif trail_floor >= 2.0 and new_high < 25.0:
-                    exit_reason = (
-                        f"Mini-peak reversal: peak {new_high:+.1f}% → back to {pnl_pct:+.1f}%"
-                    )
-                elif new_high < 25.0:
-                    exit_reason = (
-                        f"Stop loss {pnl_pct:.1f}% "
-                        f"(IV {iv_rank_pos:.0f} → floor {initial_stop:.0f}%)"
-                    )
-                else:
-                    exit_reason = (
-                        f"Trailing stop — peak {new_high:+.0f}% | "
-                        f"floor {trail_floor:+.0f}% | now {pnl_pct:+.1f}%"
-                    )
-            elif days_held >= 10 and pnl_pct < -15.0 and new_high < 5.0:
-                # Stale loser: 10+ days held, never got above 5%, still deeply negative.
-                # The thesis didn't materialize — cut and preserve capital for next setup.
-                exit_reason = (
-                    f"Stale-loser exit: {days_held}d held, "
-                    f"max gain {new_high:+.0f}%, now {pnl_pct:+.1f}%"
-                )
-            elif days_held >= 15 and abs(pnl_pct) < 10.0 and new_high < 15.0:
-                # Dead money: 15+ days and still near flat — burning theta with no directional move.
-                # Cut the position to redeploy capital into a better setup.
-                exit_reason = (
-                    f"Dead-money exit: {days_held}d held, "
-                    f"max {new_high:+.0f}%, stuck at {pnl_pct:+.1f}% — theta decay"
-                )
-            elif dte_left <= 7 and pnl_pct < 20.0:
-                # Final week: theta burns fast; close unless strongly profitable
-                exit_reason = f"Theta exit: {dte_left} DTE, P&L {pnl_pct:+.1f}% (final week)"
-            elif dte_left <= 2:
-                exit_reason = f"Expiry: {dte_left} DTE — forced close"
+            exit_reason = ai_exit_reason or pricing.exit_reason(
+                pnl_pct=pnl_pct, new_high=new_high, trail_floor=trail_floor,
+                initial_stop=initial_stop, iv_rank=iv_rank_pos,
+                days_held=days_held, dte_left=dte_left,
+            )
 
             if exit_reason:
                 exit_data = {
@@ -1012,15 +924,15 @@ class Orchestrator:
                 # Feed result into outcome tracker so the learning loop accumulates data
                 closed_pos = {**pos, **exit_data}
                 try:
-                    get_outcome_tracker().record_sim_close(closed_pos)
+                    await asyncio.to_thread(get_outcome_tracker().record_sim_close, closed_pos)
                 except Exception as e:
                     logger.warning(f"Outcome tracker record failed: {e}")
 
                 # Write outcome back to training DB
                 try:
-                    ts.update_outcome(
-                        pos_id, pnl_pct, pnl_dollars,
-                        days_held=days_held, exit_reason=exit_reason
+                    await asyncio.to_thread(
+                        ts.update_outcome, pos_id, pnl_pct, pnl_dollars,
+                        days_held=days_held, exit_reason=exit_reason,
                     )
                 except Exception as e:
                     logger.warning(f"Training store outcome update failed: {e}")
@@ -1042,6 +954,24 @@ class Orchestrator:
                 )
             else:
                 self.state.update_sim_position(pos_id, updates)
+
+    def _thesis_review_due(self, pos: dict, pnl_pct: float) -> bool:
+        """
+        Cooldown gate for the LLM thesis review: at most one review every
+        THESIS_REVIEW_HOURS per position. Exception: if P&L moved ≥15pts since
+        the last review (thesis may have broken fast), allow after 30 min.
+        """
+        last = pos.get("last_thesis_review")
+        if not last:
+            return True
+        try:
+            hours_since = (now_et() - parse_iso_et(last)).total_seconds() / 3600
+        except ValueError:
+            return True
+        if hours_since >= self.review_interval_h:
+            return True
+        moved = abs(pnl_pct - float(pos.get("pnl_at_last_review", pnl_pct)))
+        return moved >= 15.0 and hours_since >= 0.5
 
     async def _tighten_counter_trend_positions(self, new_regime: str):
         """
@@ -1098,7 +1028,7 @@ class Orchestrator:
 
     @staticmethod
     def _now_et() -> datetime:
-        return datetime.now(_ET) if _ET else datetime.now()
+        return now_et()
 
     @classmethod
     def _is_market_hours(cls) -> bool:

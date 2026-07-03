@@ -6,16 +6,23 @@ Single-leg options only (Robinhood MCP constraint — no multi-leg spread orders
 IV rank rules:
   < 40  → cheap premium, normal score threshold
   40-60 → elevated premium, harder score threshold (+5)
-  > 60  → skip entirely (don't buy expensive options)
+  60-75 → expensive, heavy scanner score penalty
+  > 75  → skip entirely (don't buy expensive options)
 """
 
-IV_RANK_HARD_SKIP   = 60   # above this: skip the symbol
+IV_RANK_HARD_SKIP   = 60   # above this: heavy score penalty
+IV_RANK_ABS_SKIP    = 75   # above this: hard skip, never enter (IV 80-94 entries all lost)
 IV_RANK_HARD_MODE   = 40   # above this: require higher score
 THRESHOLD_MARKET    = 38   # base threshold during market hours
 THRESHOLD_AFTERHOURS = 32  # base threshold pre/after market
 THRESHOLD_HARD_MODE  = 43  # threshold when 40 <= iv_rank <= 60
 THRESHOLD_CHEAP_IV   = 35  # threshold when iv_rank < 20 (cheap premium = lower bar)
 THRESHOLD_CONF       = 5   # minimum confidence (1-10) — default
+
+# Confidence-5 trades need a score cushion above the threshold to trade.
+# Live-trade evidence: bare-minimum-confidence entries (AMD, PYPL) were the
+# biggest losers while conf 6-7 trades were net profitable.
+MARGINAL_CONF_SCORE_CUSHION = 4.0
 
 # High-beta symbols: require stronger conviction to enter at all
 _SYMBOL_CONF_FLOOR: dict[str, int] = {
@@ -145,7 +152,9 @@ def iv_edge_label(iv_rank: float) -> str:
         return f"cheap (rank {iv_rank:.0f}) — good entry"
     if iv_rank < 60:
         return f"elevated (rank {iv_rank:.0f}) — harder threshold"
-    return f"expensive (rank {iv_rank:.0f}) — skipped"
+    if iv_rank <= IV_RANK_ABS_SKIP:
+        return f"expensive (rank {iv_rank:.0f}) — heavy penalty"
+    return f"prohibitive (rank {iv_rank:.0f}) — skipped"
 
 
 def trade_defaults() -> dict:

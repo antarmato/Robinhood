@@ -10,28 +10,38 @@ Schema: scan_log
 import json
 import logging
 import os
+import threading
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
-_conn = None
+
+# Connections are kept per-thread: these functions run from executor threads
+# (asyncio.to_thread) as well as the main thread, and psycopg2 connections are
+# not safe for concurrent use.
+_tlocal = threading.local()
+_schema_ready = False
 
 
 def _get_conn():
-    global _conn
+    global _schema_ready
     if not DATABASE_URL:
         return None
+    conn = getattr(_tlocal, "conn", None)
     try:
-        if _conn is None or _conn.closed:
+        if conn is None or conn.closed:
             import psycopg2
-            _conn = psycopg2.connect(DATABASE_URL)
-            _conn.autocommit = True
-            _ensure_schema(_conn)
-        return _conn
+            conn = psycopg2.connect(DATABASE_URL)
+            conn.autocommit = True
+            if not _schema_ready:
+                _ensure_schema(conn)
+                _schema_ready = True
+            _tlocal.conn = conn
+        return conn
     except Exception as e:
         logger.error(f"TrainingStore connect failed: {e}")
-        _conn = None
+        _tlocal.conn = None
         return None
 
 
