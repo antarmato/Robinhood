@@ -406,6 +406,7 @@ canvas{display:block}
   <div class="ib"><span class="ib-l">Scanned</span><span id="ib-cands" class="ib-v">—</span></div>
   <div class="ib"><span class="ib-l">Next scan</span><span id="ib-next" class="ib-v">—</span></div>
   <div class="ib"><span class="ib-l">Open</span><span id="ib-open" class="ib-v">0</span></div>
+  <div class="ib" title="Realized P&L today + live unrealized. Entries halt at -$60 realized for the day."><span class="ib-l">Today</span><span id="ib-today" class="ib-v">$0.00</span></div>
   <div class="ib grow"><span class="ib-l">P&L</span><span id="ib-pnl" class="ib-v">$0.00</span></div>
 </div>
 
@@ -439,7 +440,7 @@ canvas{display:block}
       <div class="sec-hdr">
         OPEN POSITIONS
         <span id="pos-count-lbl" class="dim" style="font-weight:400;font-size:10px"></span>
-        <span class="sec-hdr-r">delta=0.25 · $1.00/share · $100 max</span>
+        <span class="sec-hdr-r">delta=0.25 · IV-scaled premium · $100/position</span>
       </div>
       <div id="pos-table-wrap">
         <table class="ptable">
@@ -607,7 +608,7 @@ canvas{display:block}
   <div id="trades-pnl-section">
     <div id="trades-pnl-hdr">
       <button class="pnl-tab active" data-view="1D" onclick="setPnlView('1D')">1D</button>
-      <button class="pnl-tab" data-view="1M" onclick="setPnlView('1M')">1M</button>
+      <button class="pnl-tab" data-view="ALL" onclick="setPnlView('ALL')">ALL</button>
       <span id="pnl-sep"></span>
       <span id="pnl-hover-info"></span>
       <span id="trades-pnl-count"></span>
@@ -672,7 +673,8 @@ let lastScan   = null;
 let scanNextAt = null;
 let allTrades           = [];
 let allCombinedHistory  = [];
-let daySnapshots        = [];   // {t: ms, v: totalPnl} — intraday P&L points
+let daySnapshots        = [];   // {t: ms, v: totalPnl} — live points since page load
+let serverEquity        = { snapshots: [], trades: [], today: '' };  // /api/equity (persists across reloads)
 let pnlView             = '1D';
 let sortKey             = 'opened_at';
 let sortAsc    = false;
@@ -913,6 +915,12 @@ function initPnlChart() {
     lastValueVisible: false,
   });
 
+  // Zero baseline so gains/losses read at a glance
+  series.createPriceLine({
+    price: 0, color: 'rgba(221,224,240,0.15)', lineWidth: 1,
+    lineStyle: LC.LineStyle.Dotted, axisLabelVisible: false, title: '',
+  });
+
   lwChart.subscribeCrosshairMove(param => {
     if (!param.time || !param.point || param.point.x < 0) {
       if (_pnlLatest != null)
@@ -931,6 +939,14 @@ function initPnlChart() {
   chartPnl = { lwChart, series };
 }
 
+async function refreshEquity() {
+  try {
+    const r = await fetch('/api/equity');
+    serverEquity = await r.json();
+    updatePnlChart();
+  } catch(e) { console.error('[refreshEquity]', e); }
+}
+
 function updatePnlChart() {
   if (!chartPnl) initPnlChart();
   if (!chartPnl) return;
@@ -938,12 +954,23 @@ function updatePnlChart() {
 
   let raw = [];
   if (pnlView === '1D') {
-    raw = daySnapshots.map(s => ({ time: Math.floor(s.t / 1000), value: s.v }));
+    // Server-persisted intraday snapshots (survive reloads) + live points since load
+    const today = serverEquity.today || '';
+    raw = (serverEquity.snapshots || [])
+      .filter(s => !today || s.day === today)
+      .map(s => ({ time: s.t, value: s.total }));
+    const lastServer = raw.length ? raw[raw.length - 1].time : 0;
+    for (const s of daySnapshots) {
+      const t = Math.floor(s.t / 1000);
+      if (t > lastServer) raw.push({ time: t, value: s.v });
+    }
   } else {
-    const hist = allCombinedHistory || [];
+    // ALL: cumulative P&L at each trade close, across all sessions
+    const hist = (serverEquity.trades && serverEquity.trades.length)
+      ? serverEquity.trades : (allCombinedHistory || []);
     const nowSec = Math.floor(Date.now() / 1000);
     raw = hist.map((h, i) => {
-      let t = h.timestamp ? Math.floor(new Date(h.timestamp).getTime() / 1000) : 0;
+      let t = h.ts_epoch || (h.timestamp ? Math.floor(new Date(h.timestamp).getTime() / 1000) : 0);
       if (!t || isNaN(t)) t = nowSec - (hist.length - i) * 86400; // 1 day per entry fallback
       return { time: t, value: h.cumulative_pnl };
     });
@@ -957,10 +984,11 @@ function updatePnlChart() {
   const cEl = document.getElementById('trades-pnl-count');
 
   if (!data.length) {
-    // Auto-fallback: if 1D has no data yet, silently show 1M
-    if (pnlView === '1D' && (allCombinedHistory||[]).length) {
-      pnlView = '1M';
-      document.querySelectorAll('.pnl-tab').forEach(b => b.classList.toggle('active', b.dataset.view === '1M'));
+    // Auto-fallback: if 1D has no data yet (market not open today), show ALL
+    const histLen = (serverEquity.trades||[]).length || (allCombinedHistory||[]).length;
+    if (pnlView === '1D' && histLen) {
+      pnlView = 'ALL';
+      document.querySelectorAll('.pnl-tab').forEach(b => b.classList.toggle('active', b.dataset.view === 'ALL'));
       updatePnlChart();
       return;
     }
@@ -1070,7 +1098,7 @@ function handleWS(msg) {
       data.message||`${data.symbol} | P&L $${pnl>=0?'+':''}${pnl.toFixed(2)} (${data.pnl_pct>=0?'+':''}${data.pnl_pct?.toFixed(1)}%)`,
       timestamp, pnl>=0?'t-sim':'t-error');
     if (data.cumulative_pnl!=null) setPnlBar(data.cumulative_pnl);
-    refreshSim(); return;
+    refreshSim(); refreshEquity(); return;
   }
   if (type==='score') {
     const d2 = data.data||data;
@@ -1135,6 +1163,15 @@ function setPnlBar(pnl) {
   const el = document.getElementById('ib-pnl');
   el.textContent = `${pnl>=0?'+':''}$${Math.abs(pnl).toFixed(2)}`;
   el.style.color = pnl>0?'var(--green)':pnl<0?'var(--red)':'var(--text)';
+}
+
+let _todayRealized = 0, _lastUnrealized = 0;
+function setTodayBar() {
+  const el = document.getElementById('ib-today');
+  if (!el) return;
+  const v = _todayRealized + _lastUnrealized;
+  el.textContent = `${v>=0?'+':''}$${Math.abs(v).toFixed(2)}`;
+  el.style.color = v>0?'var(--green)':v<0?'var(--red)':'var(--text)';
 }
 
 function setStatus(st) {
@@ -1271,6 +1308,7 @@ function renderPositions(positions) {
 
 function renderStats(s) {
   const pnl=s.total_pnl??0, wr=s.win_rate??0, cnt=s.total_trades??0;
+  if (s.today_pnl!=null) { _todayRealized = s.today_pnl; setTodayBar(); }
   const pEl=document.getElementById('s-pnl');
   pEl.textContent=`${pnl>=0?'+':''}$${Math.abs(pnl).toFixed(2)}`;
   pEl.className=`stat-v ${pnl>0?'v-g':pnl<0?'v-r':''}`;
@@ -1719,6 +1757,7 @@ async function loadLearningInsights() {
     const symPf  = d.symbol_perf || {};
     const pats   = d.patterns || [];
     const ctx    = d.learned_context || '';
+    const calib  = d.filter_calibration || [];
 
     const closed  = parseInt(stats.wins||0) + parseInt(stats.losses||0);
     const wins    = parseInt(stats.wins||0);
@@ -1763,11 +1802,28 @@ async function loadLearningInsights() {
     // Learned context as raw text summary
     const ctxHtml = ctx ? `<div style="margin-top:6px;padding:6px 8px;background:rgba(255,255,255,.04);border-radius:3px;font-size:10px;color:var(--muted);white-space:pre-wrap;line-height:1.5">${esc(ctx)}</div>` : '';
 
+    // Counterfactual filter calibration — how the setups we passed on would have done
+    const virtN = parseInt(stats.virtual_labeled||0);
+    const calibHtml = calib.length ? `
+      <div style="margin-bottom:8px">
+        <div style="font-size:10px;color:var(--muted);margin-bottom:2px" title="Every passed setup is labeled 5 trading days later with what a standard entry would have returned">FILTER CHECK · ${virtN} passes labeled</div>
+        ${calib.map(c=>{
+          const wrC = c.win_rate>=55?'var(--yellow)':'var(--green)';
+          return `<div style="font-size:10px;padding:1px 0">
+            <span style="color:var(--text);font-weight:700">${esc(c.bucket)}</span>
+            <span style="color:${wrC};margin-left:4px">${c.win_rate.toFixed(0)}% would-have-won</span>
+            <span style="color:var(--muted)"> avg ${c.avg_pnl>=0?'+':''}${c.avg_pnl.toFixed(0)}% (${c.n}P)</span>
+          </div>`;
+        }).join('')}
+        <div style="font-size:9px;color:var(--muted);margin-top:2px">High would-have-won just below threshold ⇒ bar too tight · low ⇒ filter is working</div>
+      </div>` : '';
+
     el.innerHTML = `
       <div style="padding:4px 0;border-bottom:1px solid var(--border);margin-bottom:8px">
-        <div style="font-size:10px;color:var(--muted);margin-bottom:2px">OVERALL · ${closed} closed · ${entered} entered</div>
+        <div style="font-size:10px;color:var(--muted);margin-bottom:2px">OVERALL · ${closed} closed · ${entered} entered${virtN?` · ${virtN} counterfactuals`:''}</div>
         <div style="font-size:14px;font-weight:700;color:${wrColor}">Win Rate: ${wr}%</div>
       </div>
+      ${calibHtml}
       ${goodPats.length||badPats.length ? `<div style="margin-bottom:8px">
         ${patBlock('TOP WIN CONDITIONS',goodPats,'var(--green)')}
         ${patBlock('WEAK CONDITIONS',badPats,'var(--red)')}
@@ -1794,6 +1850,8 @@ async function refreshPrices() {
 
     if (!updates.length) {
       // No open positions — still push closed P&L so the 1D chart stays up to date
+      _lastUnrealized = 0;
+      setTodayBar();
       pushDaySnapshot(closedPnl);
       return;
     }
@@ -1817,7 +1875,9 @@ async function refreshPrices() {
     }
 
     // Update P&L bar + 1D chart: closed realized + live unrealized
-    const totalPnl = closedPnl + (data.total_unrealized_pnl ?? 0);
+    _lastUnrealized = data.total_unrealized_pnl ?? 0;
+    setTodayBar();
+    const totalPnl = closedPnl + _lastUnrealized;
     setPnlBar(totalPnl);
     pushDaySnapshot(totalPnl);
   } catch(e) { console.error('[refreshPrices] failed:', e); }
@@ -1828,11 +1888,13 @@ initChart();
 initChartTP();
 connect();
 refreshAll();
+refreshEquity();
 loadLearningInsights();
 setInterval(refreshAll, 30000);
 setInterval(refreshSim, 15000);
 setInterval(refreshPrices, 10000);  // live price updates for open positions every 10s
 setTimeout(refreshPrices, 3000);    // first price refresh 3s after boot
+setInterval(refreshEquity, 60000);  // server-persisted equity curve every 60s
 setInterval(refreshSymbolStats, 60000);
 setInterval(loadLearningInsights, 300000); // refresh learning panel every 5 min
 </script>

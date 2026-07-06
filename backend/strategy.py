@@ -127,18 +127,25 @@ def score_threshold(iv_rank: float, market_open: bool, time_of_day=None,
     # ── Consecutive-loss surcharge ────────────────────────────────────────────
     base += streak_surcharge
 
-    # ── Adaptive adjustment from training DB win rate ────────────────────────
+    # ── Adaptive adjustment from training DB performance ─────────────────────
     # Uses PostgreSQL — persists across restarts, single source of truth.
+    # Expectancy (WR × avg_win − (1−WR) × avg_loss) is the primary signal:
+    # a 40% win rate with big winners is a healthy system, while a 55% win
+    # rate that bleeds on losers is not. Win rate acts as a secondary nudge.
     try:
         from .training_store import get_outcome_stats as _ts_outcome
-        ot = _ts_outcome()
-        n  = ot.get("total_trades", 0)
+        ot  = _ts_outcome()
+        n   = ot.get("total_trades", 0)
+        if n >= 12:
+            exp = ot.get("expectancy", 0.0)
+            if   exp < -10.0: base += 4   # losing badly per trade — raise bar hard
+            elif exp <  -4.0: base += 2   # negative edge — tighten
+            elif exp >  10.0: base -= 2   # strong per-trade edge — open up
+            elif exp >   4.0: base -= 1
         if n >= 15:
             wr = ot.get("win_rate", 0.5)
-            if   wr < 0.35: base += 5
-            elif wr < 0.45: base += 2
-            elif wr > 0.75: base -= 3
-            elif wr > 0.65: base -= 2
+            if   wr < 0.35: base += 2
+            elif wr > 0.70: base -= 1
     except Exception:
         pass
 

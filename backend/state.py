@@ -189,6 +189,7 @@ def _default() -> dict:
         "last_scan_cycle":         0,
         "sim_positions":           [],
         "pnl_history":             [],
+        "equity_history":          [],
     }
 
 # ── State manager ─────────────────────────────────────────────────────────────
@@ -468,12 +469,29 @@ class StateManager:
     def get_pnl_history(self) -> list:
         return list(self._s.get("pnl_history", []))
 
+    def add_equity_snapshot(self, snap: dict):
+        """
+        Append an intraday equity point ({ts, realized, unrealized, total}).
+        Written by the monitor loop every tick during market hours so the
+        dashboard's intraday P&L chart survives page reloads and restarts.
+        Bounded to ~1 month of 5-minute market-hours points.
+        """
+        hist = self._s.setdefault("equity_history", [])
+        hist.append(snap)
+        if len(hist) > 2500:
+            self._s["equity_history"] = hist[-2500:]
+        self.save()
+
+    def get_equity_history(self) -> list:
+        return list(self._s.get("equity_history", []))
+
     def reset_sim(self) -> dict:
         """Clear sim positions and P&L history. Training DB is untouched."""
         cleared_open   = len([p for p in self._s.get("sim_positions", []) if p.get("status") == "open"])
         cleared_closed = len([p for p in self._s.get("sim_positions", []) if p.get("status") == "closed"])
-        self._s["sim_positions"] = []
-        self._s["pnl_history"]   = []
+        self._s["sim_positions"]  = []
+        self._s["pnl_history"]    = []
+        self._s["equity_history"] = []
         self.save()
         return {"cleared_open": cleared_open, "cleared_closed": cleared_closed}
 

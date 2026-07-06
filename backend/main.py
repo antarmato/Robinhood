@@ -18,7 +18,7 @@ from .state import get_state
 from .outcome_tracker import get_outcome_tracker
 from . import pricing
 from . import training_store as ts
-from .timeutil import days_since
+from .timeutil import days_since, parse_iso_et, now_et
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -104,7 +104,7 @@ class ResolveExitRequest(BaseModel):
 @app.get("/", response_class=HTMLResponse)
 async def root():
     index = FRONTEND_DIR / "index.html"
-    return HTMLResponse(index.read_text() if index.exists() else "<h1>Dashboard loading...</h1>")
+    return HTMLResponse(index.read_text(encoding="utf-8") if index.exists() else "<h1>Dashboard loading...</h1>")
 
 @app.get("/api/health")
 async def health():
@@ -387,12 +387,19 @@ async def get_sim():
 
     overall_wr = round(len(wins) / len(closed) * 100, 1) if closed else 0
 
+    today = now_et().strftime("%Y-%m-%d")
+    today_pnl = round(sum(
+        float(p.get("pnl_dollars", 0)) for p in closed
+        if str(p.get("closed_at") or "")[:10] == today
+    ), 2)
+
     return {
         "open_positions":  open_,
         "closed_positions": closed,
         "pnl_history":     history,
         "stats": {
             "total_pnl":       total_pnl,
+            "today_pnl":       today_pnl,
             "total_trades":    len(closed),
             "open_count":      len(open_),
             "win_rate":        overall_wr,
@@ -663,10 +670,11 @@ async def model_insights():
     """Structured learning insights: patterns, symbol stats, calibration context."""
     from . import training_store as ts
     return {
-        "learned_context": ts.get_learned_context(min_samples=3),
-        "patterns":        ts.get_best_patterns(min_samples=2),
-        "symbol_perf":     ts.get_symbol_perf(min_trades=1),
-        "stats":           ts.get_stats(),
+        "learned_context":    ts.get_learned_context(min_samples=3),
+        "patterns":           ts.get_best_patterns(min_samples=2),
+        "symbol_perf":        ts.get_symbol_perf(min_trades=1),
+        "stats":              ts.get_stats(),
+        "filter_calibration": ts.get_filter_calibration(min_samples=5),
     }
 
 
@@ -723,12 +731,18 @@ async def sim_delete_positions(req: DeletePositionsRequest):
     return {"status": "ok", "removed": removed, "sim": removed_sim, "db": removed_db}
 
 
-@app.get("/api/trades/all")
-async def get_all_trades():
-    """
-    Return ALL trades across sessions: current sim_positions + historical scan_log records.
-    The scan_log survives sim resets, so this shows the complete trade history.
-    """
+def _close_epoch(iso: str) -> int:
+    """Epoch seconds for a close timestamp. Handles both naive-ET sim strings
+    and tz-aware UTC strings from Postgres; 0 if unparseable."""
+    try:
+        return int(parse_iso_et(iso).timestamp())
+    except (ValueError, TypeError):
+        return 0
+
+
+def _combined_closed_history() -> tuple[list, list, list]:
+    """(sim_positions, db_trades, combined_history) — closes across sessions,
+    ordered by real chronology (parsed epochs, not string comparison)."""
     s = get_state()
     sim_positions = s.get_sim_positions()
     sim_ids = {p.get("position_id") for p in sim_positions if p.get("position_id")}
@@ -736,8 +750,6 @@ async def get_all_trades():
     # Historical trades from scan_log (excluding any already in sim_positions)
     db_trades = ts.get_all_closed_trades(exclude_position_ids=sim_ids)
 
-    # Build a unified pnl_history for the equity curve
-    # Combine db_trades + sim closed positions, sorted by close date
     all_closed = []
     for t in db_trades:
         all_closed.append({
@@ -760,7 +772,9 @@ async def get_all_trades():
                 "position_id": p.get("position_id", ""),
                 "source":     "sim",
             })
-    all_closed.sort(key=lambda x: x["closed_at"])
+    for t in all_closed:
+        t["ts_epoch"] = _close_epoch(t["closed_at"])
+    all_closed.sort(key=lambda x: x["ts_epoch"])
 
     cumulative = 0.0
     combined_history = []
@@ -768,6 +782,7 @@ async def get_all_trades():
         cumulative += float(t["pnl_dollars"])
         combined_history.append({
             "timestamp":      t["closed_at"],
+            "ts_epoch":       t["ts_epoch"],
             "cumulative_pnl": round(cumulative, 2),
             "trade_pnl":      round(float(t["pnl_dollars"]), 2),
             "trade_pnl_pct":  round(float(t["pnl_pct"]), 2),
@@ -775,12 +790,51 @@ async def get_all_trades():
             "symbol":         t["symbol"],
             "direction":      t["direction"],
         })
+    return sim_positions, db_trades, combined_history
 
+
+@app.get("/api/trades/all")
+async def get_all_trades():
+    """
+    Return ALL trades across sessions: current sim_positions + historical scan_log records.
+    The scan_log survives sim resets, so this shows the complete trade history.
+    """
+    sim_positions, db_trades, combined_history = _combined_closed_history()
     return {
         "open_positions":    [p for p in sim_positions if p.get("status") == "open"],
         "closed_positions":  [p for p in sim_positions if p.get("status") == "closed"] + db_trades,
         "db_trades":         db_trades,
         "combined_history":  combined_history,
+    }
+
+
+@app.get("/api/equity")
+async def get_equity():
+    """
+    Equity-curve data for the Trades tab chart:
+      snapshots — server-persisted intraday points (5-min cadence, market hours),
+                  so the intraday view survives page reloads and restarts
+      trades    — per-close cumulative P&L across all sessions (epoch-ordered)
+    """
+    s = get_state()
+    today = now_et().strftime("%Y-%m-%d")
+    snapshots = []
+    for h in s.get_equity_history():
+        t = _close_epoch(h.get("ts", ""))
+        if not t:
+            continue
+        snapshots.append({
+            "t":          t,
+            "total":      h.get("total", 0.0),
+            "realized":   h.get("realized", 0.0),
+            "unrealized": h.get("unrealized", 0.0),
+            "day":        str(h.get("ts", ""))[:10],
+        })
+    _, _, combined_history = _combined_closed_history()
+    return {
+        "snapshots": snapshots,
+        "today":     today,
+        "trades":    combined_history,
     }
 
 

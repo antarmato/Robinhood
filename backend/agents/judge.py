@@ -124,6 +124,17 @@ class JudgeAgent(BaseAgent):
         )
         adjusted_score = round(weighted_score + feat_adj, 1)
 
+        # ── Overextension guard (deterministic) ───────────────────────────────
+        # Live evidence: buying calls after a +151% 60-day run at RSI 67 (AMD)
+        # entered a parabola top and hit the stop in 13 minutes. Chasing extreme
+        # extension is penalized in the score itself, not just flagged.
+        overext_penalty = 0.0
+        m60   = technical.get("momentum_60d")
+        rsi_j = technical.get("rsi", 50) or 50
+        if direction == "bullish" and m60 is not None and m60 >= 80 and rsi_j >= 65:
+            overext_penalty = round(3.0 + min(2.0, (m60 - 80) / 40.0), 1)
+            adjusted_score  = round(adjusted_score - overext_penalty, 1)
+
         # Regime alignment for threshold
         _r_aligned = None
         _r_strength = 0
@@ -232,6 +243,11 @@ class JudgeAgent(BaseAgent):
             pass  # clean — no flag needed
         if technical.get("vol_ratio", 1.0) < 0.7:
             risk_flags.append("Low volume — weak conviction")
+        if overext_penalty:
+            risk_flags.append(
+                f"Overextended: +{m60:.0f}% in 60d at RSI {rsi_j:.0f} — "
+                f"parabola-chase penalty −{overext_penalty} applied to score"
+            )
         m1d = technical.get("momentum_1d", 0)
         if direction == "bullish" and m1d > 4.0:
             risk_flags.append(f"Stock up {m1d:+.1f}% today — overextended entry, options expensive")
@@ -319,6 +335,8 @@ class JudgeAgent(BaseAgent):
             f"  + feature adjustment {feat_adj:+.1f} ({feat_adj_reason})\n  "
             if feat_adj != 0.0 and feat_adj_reason else "  "
         )
+        if overext_penalty:
+            feat_adj_line += f"− overextension penalty {overext_penalty} (60d momentum {m60:+.0f}%, RSI {rsi_j:.0f})\n  "
         context = f"""[{session} | Cycle {cycle} | {tod_note}]
 
 TRADE: {symbol} {direction.upper()} {option_type.upper()} @ ${price:.2f}

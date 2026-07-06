@@ -115,6 +115,11 @@ def _ensure_schema(conn):
             "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS adx FLOAT",
             "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS consensus_score INTEGER",
             "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS vol_ratio FLOAT",
+            # Counterfactual labels for 'pass' rows: what a standard entry would
+            # have returned over a 5-trading-day horizon (see pricing.virtual_trade_pnl_pct)
+            "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS virtual_outcome VARCHAR(10)",
+            "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS virtual_pnl_pct FLOAT",
+            "ALTER TABLE scan_log ADD COLUMN IF NOT EXISTS virtual_eval_at TIMESTAMPTZ",
         ]:
             try:
                 cur.execute(col_ddl)
@@ -221,6 +226,106 @@ def update_outcome(position_id: str, pnl_pct: float, pnl_dollars: float,
         logger.info(f"TrainingStore: outcome updated for position {position_id[:8]} → {outcome} {pnl_pct:+.1f}%")
     except Exception as e:
         logger.error(f"TrainingStore update_outcome failed: {e}")
+
+
+def get_pending_virtual_rows(min_age_days: int = 5, limit: int = 300) -> list:
+    """
+    Return 'pass' rows old enough to be labeled with a counterfactual outcome:
+    decision='pass', no real or virtual outcome yet, a usable price/direction,
+    and logged at least `min_age_days` calendar days ago (so ~5 trading days
+    of price history exist). Ordered oldest-first so backlog drains steadily.
+    """
+    conn = _get_conn()
+    if not conn:
+        return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, symbol, direction, price, iv_rank, logged_at
+                FROM scan_log
+                WHERE decision = 'pass'
+                  AND outcome IS NULL
+                  AND virtual_outcome IS NULL
+                  AND price IS NOT NULL AND price > 0
+                  AND direction IN ('bullish', 'bearish')
+                  AND logged_at <= NOW() - (%s || ' days')::INTERVAL
+                ORDER BY logged_at ASC
+                LIMIT %s
+            """, (str(int(min_age_days)), limit))
+            return [
+                {"id": r[0], "symbol": r[1], "direction": r[2],
+                 "price": float(r[3]), "iv_rank": float(r[4]) if r[4] is not None else 50.0,
+                 "logged_at": r[5]}
+                for r in cur.fetchall()
+            ]
+    except Exception as e:
+        logger.warning(f"get_pending_virtual_rows failed: {e}")
+        return []
+
+
+def set_virtual_outcomes(labels: list) -> int:
+    """
+    Write counterfactual labels. `labels` is a list of (row_id, pnl_pct) tuples;
+    outcome is derived from the sign. Returns rows updated.
+    """
+    conn = _get_conn()
+    if not conn or not labels:
+        return 0
+    try:
+        with conn.cursor() as cur:
+            cur.executemany("""
+                UPDATE scan_log
+                SET virtual_outcome = %s,
+                    virtual_pnl_pct = %s,
+                    virtual_eval_at = NOW()
+                WHERE id = %s
+            """, [("win" if pnl > 0 else "loss", round(float(pnl), 2), row_id)
+                  for row_id, pnl in labels])
+            n = len(labels)
+        logger.info(f"TrainingStore: labeled {n} pass rows with virtual outcomes")
+        return n
+    except Exception as e:
+        logger.error(f"set_virtual_outcomes failed: {e}")
+        return 0
+
+
+def get_filter_calibration(min_samples: int = 8) -> list:
+    """
+    How would the setups we PASSED on have done? Groups virtual outcomes by
+    score bucket so the threshold can be sanity-checked against evidence:
+    a high virtual win rate just under the threshold means the bar is too
+    tight; a low one confirms the filter is earning its keep.
+    Returns [{bucket, n, win_rate, avg_pnl}] ordered by score bucket desc.
+    """
+    conn = _get_conn()
+    if not conn:
+        return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    CASE WHEN weighted_score >= 50 THEN 'score 50+'
+                         WHEN weighted_score >= 44 THEN 'score 44-50'
+                         WHEN weighted_score >= 38 THEN 'score 38-44'
+                         ELSE 'score <38' END AS bucket,
+                    COUNT(*) AS n,
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE virtual_outcome='win') / COUNT(*), 0) AS wr,
+                    ROUND(AVG(virtual_pnl_pct)::NUMERIC, 1) AS avg_pnl,
+                    MIN(weighted_score) AS score_lo
+                FROM scan_log
+                WHERE decision='pass' AND virtual_outcome IS NOT NULL
+                  AND weighted_score IS NOT NULL
+                GROUP BY 1 HAVING COUNT(*) >= %s
+                ORDER BY score_lo DESC
+            """, (min_samples,))
+            return [
+                {"bucket": r[0], "n": int(r[1]), "win_rate": float(r[2]),
+                 "avg_pnl": float(r[3]) if r[3] is not None else 0.0}
+                for r in cur.fetchall()
+            ]
+    except Exception as e:
+        logger.warning(f"get_filter_calibration failed: {e}")
+        return []
 
 
 def get_recent(limit: int = 200) -> list:
@@ -656,6 +761,13 @@ def get_learned_context(min_samples: int = 5) -> str:
                 lines.append("  Exit reason outcomes: " +
                     " | ".join(f"{r[0]} avg{r[2]:+.0f}% {int(r[3])}%WR ({r[1]}T)" for r in exit_rows))
 
+            # Counterfactual filter calibration — how passed setups would have done
+            calib = get_filter_calibration(min_samples=8)
+            if calib:
+                lines.append("  Passed-setup counterfactuals (5d horizon): " +
+                    " | ".join(f"{c['bucket']}: {c['win_rate']:.0f}%WR avg{c['avg_pnl']:+.0f}% ({c['n']}P)"
+                               for c in calib))
+
             lines.append("CALIBRATION RULE: Reduce confidence by 1-2 for any regime/symbol/pattern matching LOW WIN conditions. Increase by 1 for TOP WIN matches.")
             return "\n".join(lines)
 
@@ -785,7 +897,9 @@ def get_stats() -> dict:
                     AVG(outcome_pnl_pct) FILTER (WHERE outcome='win')  AS avg_win_pct,
                     AVG(outcome_pnl_pct) FILTER (WHERE outcome='loss') AS avg_loss_pct,
                     COUNT(DISTINCT cycle_id)                        AS cycles_logged,
-                    COUNT(DISTINCT symbol)                          AS symbols_tracked
+                    COUNT(DISTINCT symbol)                          AS symbols_tracked,
+                    COUNT(*) FILTER (WHERE virtual_outcome IS NOT NULL) AS virtual_labeled,
+                    COUNT(*) FILTER (WHERE virtual_outcome='win')       AS virtual_wins
                 FROM scan_log
             """)
             row = cur.fetchone()
@@ -843,7 +957,7 @@ def get_outcome_stats() -> dict:
         return {}
 
 
-def _wr_to_adj(win_rate: float, n: int) -> float:
+def _wr_to_adj(win_rate: float, n: float) -> float:
     """Convert a feature win rate into a score delta, scaled by sample confidence."""
     # Confidence: full weight at 30+ trades, half at 10, quarter at 5
     conf = min(1.0, n / 30.0) * 0.6 + min(1.0, n / 10.0) * 0.4
@@ -855,6 +969,25 @@ def _wr_to_adj(win_rate: float, n: int) -> float:
     elif win_rate >= 0.30: base = -1.5
     else:                  base = -3.0
     return round(base * conf, 2)
+
+
+# Virtual (counterfactual) outcomes count at a fraction of a real trade in the
+# learning queries: they share the entry model but skip real trade management,
+# so they are informative-but-noisier evidence.
+VIRTUAL_WEIGHT = 0.35
+
+# Weighted win-rate over real + virtual outcomes for one feature condition.
+# Returns (effective_n, weighted_wr). The two %s at the head are VIRTUAL_WEIGHT.
+_BLENDED_WR_SQL = """
+    SELECT
+        COALESCE(SUM(CASE WHEN outcome IS NOT NULL THEN 1.0 ELSE %s END), 0) AS wn,
+        COALESCE(SUM(CASE WHEN COALESCE(outcome, virtual_outcome) = 'win'
+                          THEN CASE WHEN outcome IS NOT NULL THEN 1.0 ELSE %s END
+                          ELSE 0 END), 0) AS wwins
+    FROM scan_log
+    WHERE ((decision='trade' AND outcome IS NOT NULL) OR virtual_outcome IS NOT NULL)
+      AND direction = %s
+"""
 
 
 def get_feature_score_adjustment(
@@ -872,7 +1005,10 @@ def get_feature_score_adjustment(
 
     This makes the Python scoring self-learning: the same indicators used in each
     trade are tracked against outcomes, and future scores shift accordingly.
-    Only activates when >= min_samples matching trades exist for a feature.
+    Real trade outcomes count fully; counterfactual (virtual) outcomes from
+    labeled 'pass' rows count at VIRTUAL_WEIGHT, which multiplies the evidence
+    base ~50x while keeping actual trades dominant.
+    Only activates when the weighted sample for a feature reaches min_samples.
     """
     conn = _get_conn()
     if not conn:
@@ -880,84 +1016,67 @@ def get_feature_score_adjustment(
 
     components: list[tuple[float, str]] = []  # (weighted_adj, label)
 
+    def _blended(cur, extra_where: str, extra_params: tuple) -> tuple[float, float] | None:
+        cur.execute(
+            _BLENDED_WR_SQL + extra_where,
+            (VIRTUAL_WEIGHT, VIRTUAL_WEIGHT, direction) + extra_params,
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        wn, wwins = float(row[0]), float(row[1])
+        if wn < min_samples:
+            return None
+        return wn, wwins / wn
+
     try:
         with conn.cursor() as cur:
 
             # ── Feature 1: EMA200 structure + direction (40% weight) ──────────
             if above_ema200 is not None:
-                cur.execute("""
-                    SELECT COUNT(*) AS n,
-                           COUNT(*) FILTER (WHERE outcome='win') AS wins
-                    FROM scan_log
-                    WHERE decision='trade' AND outcome IS NOT NULL
-                      AND direction=%s AND above_ema200=%s
-                """, (direction, above_ema200))
-                row = cur.fetchone()
-                if row and row[0] >= min_samples:
-                    n, wins = int(row[0]), int(row[1])
-                    wr = wins / n
+                res = _blended(cur, " AND above_ema200=%s", (above_ema200,))
+                if res:
+                    n, wr = res
                     adj = _wr_to_adj(wr, n)
                     if abs(adj) > 0.1:
                         label = (
                             f"{'above' if above_ema200 else 'below'} EMA200 + {direction}: "
-                            f"{wr:.0%}WR ({n}T)"
+                            f"{wr:.0%}WR (n≈{n:.0f})"
                         )
                         components.append((adj * 0.40, label))
 
             # ── Feature 2: ADX trend zone + direction (25% weight) ────────────
             if adx is not None:
                 adx_zone = 'trending' if adx >= 25 else ('choppy' if adx < 18 else 'neutral')
-                cur.execute("""
-                    SELECT COUNT(*) AS n,
-                           COUNT(*) FILTER (WHERE outcome='win') AS wins
-                    FROM scan_log
-                    WHERE decision='trade' AND outcome IS NOT NULL
-                      AND direction=%s
+                res = _blended(cur, """
                       AND CASE WHEN adx >= 25 THEN 'trending'
                                WHEN adx < 18  THEN 'choppy'
                                ELSE 'neutral' END = %s
-                """, (direction, adx_zone))
-                row = cur.fetchone()
-                if row and row[0] >= min_samples:
-                    n, wins = int(row[0]), int(row[1])
-                    wr = wins / n
+                """, (adx_zone,))
+                if res:
+                    n, wr = res
                     adj = _wr_to_adj(wr, n)
                     if abs(adj) > 0.1:
-                        components.append((adj * 0.25, f"ADX {adx_zone} + {direction}: {wr:.0%}WR ({n}T)"))
+                        components.append((adj * 0.25, f"ADX {adx_zone} + {direction}: {wr:.0%}WR (n≈{n:.0f})"))
 
             # ── Feature 3: Regime + direction (25% weight) ───────────────────
             if regime is not None:
-                cur.execute("""
-                    SELECT COUNT(*) AS n,
-                           COUNT(*) FILTER (WHERE outcome='win') AS wins
-                    FROM scan_log
-                    WHERE decision='trade' AND outcome IS NOT NULL
-                      AND direction=%s AND regime=%s
-                """, (direction, regime))
-                row = cur.fetchone()
-                if row and row[0] >= min_samples:
-                    n, wins = int(row[0]), int(row[1])
-                    wr = wins / n
+                res = _blended(cur, " AND regime=%s", (regime,))
+                if res:
+                    n, wr = res
                     adj = _wr_to_adj(wr, n)
                     if abs(adj) > 0.1:
-                        components.append((adj * 0.25, f"{regime}+{direction}: {wr:.0%}WR ({n}T)"))
+                        components.append((adj * 0.25, f"{regime}+{direction}: {wr:.0%}WR (n≈{n:.0f})"))
 
             # ── Feature 4: Agent consensus + direction (10% weight) ──────────
+            # Consensus only exists on fully analyzed rows; virtual rows still count.
             if consensus_score is not None:
-                cur.execute("""
-                    SELECT COUNT(*) AS n,
-                           COUNT(*) FILTER (WHERE outcome='win') AS wins
-                    FROM scan_log
-                    WHERE decision='trade' AND outcome IS NOT NULL
-                      AND direction=%s AND consensus_score=%s
-                """, (direction, consensus_score))
-                row = cur.fetchone()
-                if row and row[0] >= min_samples:
-                    n, wins = int(row[0]), int(row[1])
-                    wr = wins / n
+                res = _blended(cur, " AND consensus_score=%s", (consensus_score,))
+                if res:
+                    n, wr = res
                     adj = _wr_to_adj(wr, n)
                     if abs(adj) > 0.1:
-                        components.append((adj * 0.10, f"consensus {consensus_score}/3 + {direction}: {wr:.0%}WR ({n}T)"))
+                        components.append((adj * 0.10, f"consensus {consensus_score}/3 + {direction}: {wr:.0%}WR (n≈{n:.0f})"))
 
     except Exception as e:
         logger.debug(f"get_feature_score_adjustment failed: {e}")

@@ -167,6 +167,41 @@ def test_mark_position_dte_clamps_at_zero():
     assert mark["dte_left"] == 0
 
 
+# ── virtual_trade_pnl_pct (counterfactual labeling) ─────────────────────────
+
+def test_virtual_trade_flat_move_loses_spread_and_theta():
+    # No stock move → small loss from 5 days of theta + crossing the spread
+    pnl = pricing.virtual_trade_pnl_pct(100.0, 100.0, "bullish", 50.0)
+    assert -25 < pnl < 0
+
+
+def test_virtual_trade_favorable_move_wins():
+    assert pricing.virtual_trade_pnl_pct(100.0, 106.0, "bullish", 30.0) > 0
+
+
+def test_virtual_trade_adverse_move_loses():
+    assert pricing.virtual_trade_pnl_pct(100.0, 94.0, "bullish", 30.0) < -20
+
+
+def test_virtual_bearish_mirrors_bullish():
+    b = pricing.virtual_trade_pnl_pct(100.0, 106.0, "bullish", 40.0)
+    s = pricing.virtual_trade_pnl_pct(100.0, 94.0, "bearish", 40.0)
+    assert b == pytest.approx(s, abs=0.01)
+
+
+def test_virtual_trade_comparable_to_real_mark():
+    # A virtual label and a real position mark with the same inputs should
+    # agree — virtual outcomes must be directly comparable to actual ones.
+    iv, spot, move = 50.0, 100.0, 1.03
+    prem = pricing.entry_premium(spot, iv)
+    pos = {"entry_stock_price": spot, "entry_option_price": prem,
+           "direction": "bullish", "delta": 0.25, "iv_rank": iv,
+           "entry_dte": 35, "contracts": 1, "spread_frac": pricing.spread_fraction(iv)}
+    real = pricing.mark_position(pos, spot * move, days_held=5)["pnl_pct"]
+    virt = pricing.virtual_trade_pnl_pct(spot, spot * move, "bullish", iv)
+    assert virt == pytest.approx(real, abs=0.5)
+
+
 # ── update_stall_count ──────────────────────────────────────────────────────
 
 def test_stall_increments_when_declining_from_peak():

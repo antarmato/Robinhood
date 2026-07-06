@@ -63,6 +63,10 @@ class Orchestrator:
         )
         self.watchlist         = [s.strip() for s in watchlist_raw.split(",")]
         self.max_loss          = float(os.getenv("MAX_LOSS_PER_TRADE", "100"))
+        # Daily circuit breaker: once today's realized losses reach this many
+        # dollars, stop opening new positions until tomorrow (monitor/exits
+        # keep running). Prevents revenge-trading a bad day into a worse one.
+        self.daily_loss_halt   = float(os.getenv("DAILY_LOSS_HALT_DOLLARS", "60"))
         self.scan_interval     = int(os.getenv("SCAN_INTERVAL_MINUTES", "30")) * 60
         # 5-min monitor: trailing floors were being gapped through at 15 min
         # (COIN peaked +103% but wasn't caught until +48%). One batch quote
@@ -127,9 +131,9 @@ class Orchestrator:
 
         while True:
             try:
-                now_et = self._now_et()
-                tod    = now_et.time()
-                today  = now_et.strftime("%Y-%m-%d")
+                now_dt = self._now_et()
+                tod    = now_dt.time()
+                today  = now_dt.strftime("%Y-%m-%d")
 
                 # ── After-hours cache warm (4:15-4:45pm ET, once per day) ─────
                 if (dtime(16, 15) <= tod <= dtime(16, 45)
@@ -142,10 +146,10 @@ class Orchestrator:
                 # ── Off-hours idle ────────────────────────────────────────────
                 if not self._is_market_hours():
                     if not self._is_trading_day():
-                        wait_msg = f"Weekend — idle until Monday 9:00am ET. ({now_et.strftime('%a %I:%M %p ET')})"
+                        wait_msg = f"Weekend — idle until Monday 9:00am ET. ({now_dt.strftime('%a %I:%M %p ET')})"
                         sleep_s  = 3600
                     elif tod < dtime(9, 0):
-                        secs = ((now_et.replace(hour=9, minute=0, second=0, microsecond=0)) - now_et).total_seconds()
+                        secs = ((now_dt.replace(hour=9, minute=0, second=0, microsecond=0)) - now_dt).total_seconds()
                         wait_msg = f"Pre-market — warm-up at 9:00am ET ({int(secs/60)} min)."
                         sleep_s  = min(secs, 1800)
                     else:
@@ -256,6 +260,8 @@ class Orchestrator:
         await self._emit("system", "info",
             {"message": f"Pre-market prep complete: {sig}/{len(snapshots)} significant gaps."})
 
+        await self._label_virtual_outcomes()
+
     # ── After-hours data capture ───────────────────────────────────────────────
 
     async def _run_afterhours_capture(self):
@@ -273,9 +279,90 @@ class Orchestrator:
         await self._emit("system", "info",
             {"message": "After-hours capture complete."})
 
+        await self._label_virtual_outcomes()
+
+    # ── Counterfactual labeling ────────────────────────────────────────────────
+
+    async def _label_virtual_outcomes(self):
+        """
+        Label old 'pass' rows in scan_log with what a standard entry would have
+        returned over the next 5 trading days. This turns every scan decision
+        into a training example (~50x more data than trades alone), which feeds
+        get_feature_score_adjustment and the Judge's filter-calibration context.
+        Runs daily (pre-market + after-hours); each run drains up to 300 rows.
+        """
+        try:
+            pending = await asyncio.to_thread(ts.get_pending_virtual_rows, 5, 300)
+            if not pending:
+                return
+
+            loop = asyncio.get_event_loop()
+            by_sym: dict[str, list] = {}
+            for r in pending:
+                by_sym.setdefault(r["symbol"], []).append(r)
+
+            labels: list[tuple] = []
+            for sym, rows in by_sym.items():
+                try:
+                    df = await loop.run_in_executor(
+                        None, lambda s=sym: md.get_historicals(s, period="3mo"))
+                    if df.empty:
+                        continue
+                    bar_dates = [d.date() for d in df.index]
+                    closes = df["close"].tolist()
+                    for r in rows:
+                        entry_date = r["logged_at"].date()
+                        # First 5 bars strictly after the scan date; need all 5
+                        after = [c for d, c in zip(bar_dates, closes) if d > entry_date]
+                        if len(after) < 5:
+                            continue   # too recent — stays pending
+                        pnl = pricing.virtual_trade_pnl_pct(
+                            entry_stock=r["price"], exit_stock=float(after[4]),
+                            direction=r["direction"], iv_rank=r["iv_rank"],
+                        )
+                        labels.append((r["id"], pnl))
+                except Exception as e:
+                    logger.debug(f"Virtual labeling {sym} failed: {e}")
+
+            if labels:
+                n = await asyncio.to_thread(ts.set_virtual_outcomes, labels)
+                wins = sum(1 for _, p in labels if p > 0)
+                await self._emit("system", "info", {
+                    "message": (
+                        f"🧠 Counterfactual learning: labeled {n} passed setups "
+                        f"({wins} would have won, {n - wins} would have lost) — "
+                        f"{len(pending) - n} still maturing."
+                    )
+                })
+        except Exception as e:
+            logger.warning(f"Virtual outcome labeling failed: {e}")
+
     # ── Scan cycle ─────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _todays_realized_pnl(closed_positions: list, today_str: str) -> float:
+        """Sum of pnl_dollars for positions closed today (ET date prefix match)."""
+        total = 0.0
+        for p in closed_positions:
+            if str(p.get("closed_at") or "")[:10] == today_str:
+                total += float(p.get("pnl_dollars", 0))
+        return round(total, 2)
+
     async def _run_scan_cycle(self):
+        # ── Daily loss circuit breaker ────────────────────────────────────────
+        today_str = self._now_et().strftime("%Y-%m-%d")
+        realized_today = self._todays_realized_pnl(
+            self.state.get_sim_positions(status="closed"), today_str)
+        if realized_today <= -self.daily_loss_halt:
+            await self._emit("system", "info", {
+                "message": (
+                    f"🛑 Daily loss halt: {realized_today:+.2f} realized today "
+                    f"(limit -${self.daily_loss_halt:.0f}) — no new entries until "
+                    f"tomorrow. Monitor/exits still active."
+                )
+            })
+            return
+
         self.state.increment_cycle()
         cycle   = self.state.cycle_count
         session = {"pre_open": "PRE-OPEN", "market": "LIVE MARKET",
@@ -671,8 +758,8 @@ class Orchestrator:
         opt_type  = "call" if direction == "bullish" else "put"
 
         # Opening 15-minute guard — first candles are volatile/wide spread
-        now_et = self._now_et()
-        tod    = now_et.time()
+        entry_time = self._now_et()
+        tod        = entry_time.time()
         if dtime(9, 30) <= tod < dtime(9, 45):
             await self._emit("system", "info",
                 {"message": f"SIM: Skipping {symbol} — opening 15 min (volatile spreads). Will try next cycle."})
@@ -752,7 +839,7 @@ class Orchestrator:
             "entry_above_ema200": technical.get("above_ema200"),
             "entry_momentum_1d": technical.get("momentum_1d"),
             "entry_rsi":         technical.get("rsi"),
-            "opened_at":         now_et().isoformat(),
+            "opened_at":         entry_time.isoformat(),
             "cycle":             self.state.cycle_count,
             "status":            "open",
             "high_water_pnl_pct": 0.0,
@@ -788,20 +875,32 @@ class Orchestrator:
     # ── Monitor ────────────────────────────────────────────────────────────────
 
     async def _run_monitor(self):
-        await self._monitor_sim_positions()
+        unrealized = await self._monitor_sim_positions()
+        if unrealized is not None:
+            # Persist an intraday equity point so the dashboard's P&L chart
+            # survives reloads/restarts (frontend-only snapshots kept resetting).
+            realized = self.state.cumulative_sim_pnl()
+            self.state.add_equity_snapshot({
+                "ts":         now_et().isoformat(),
+                "realized":   realized,
+                "unrealized": round(unrealized, 2),
+                "total":      round(realized + unrealized, 2),
+            })
         self.state.update_last_monitor()
 
-    async def _monitor_sim_positions(self):
+    async def _monitor_sim_positions(self) -> float | None:
+        """Mark all open positions and run the exit ladder. Returns the total
+        unrealized P&L in dollars, or None outside regular session hours."""
         # Only act on regular-session prices (9:30-16:00). Pre-open quotes are
         # thin and the model marks are unreliable — positions were being exited
         # at 9:00-9:30 AM on premarket prices.
         if self._session_phase() != "market":
             logger.debug("Outside regular session — skipping position monitor")
-            return
+            return None
 
         open_positions = self.state.get_sim_positions(status="open")
         if not open_positions:
-            return
+            return 0.0
 
         loop = asyncio.get_event_loop()
 
@@ -814,6 +913,7 @@ class Orchestrator:
             logger.warning(f"Batch quote fetch failed: {e}")
             batch_quotes = {}
 
+        total_unrealized = 0.0
         for pos in open_positions:
             symbol      = pos["symbol"]
             direction   = pos["direction"]
@@ -834,6 +934,7 @@ class Orchestrator:
                 except Exception:
                     current_stock = 0.0
             if not current_stock:
+                total_unrealized += float(pos.get("last_pnl_dollars", 0))
                 continue
 
             iv_rank_pos  = float(pos.get("iv_rank", 50.0))
@@ -964,7 +1065,10 @@ class Orchestrator:
                     f"P&L ${pnl_dollars:+.2f} ({pnl_pct:+.1f}%) | Total ${cumulative:+.2f}"
                 )
             else:
+                total_unrealized += pnl_dollars
                 self.state.update_sim_position(pos_id, updates)
+
+        return round(total_unrealized, 2)
 
     def _thesis_review_due(self, pos: dict, pnl_pct: float) -> bool:
         """

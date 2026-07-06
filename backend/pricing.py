@@ -20,6 +20,7 @@ import math
 __all__ = [
     "entry_premium", "spread_fraction", "initial_stop_pct", "price_option",
     "mark_position", "update_stall_count", "compute_trail_floor", "exit_reason",
+    "virtual_trade_pnl_pct",
 ]
 
 
@@ -129,6 +130,36 @@ def mark_position(pos: dict, current_stock: float, days_held: int) -> dict:
         "pnl_dollars":  round((liquidation - entry_opt) * contracts * 100, 2),
         "dte_left":     dte_left,
     }
+
+
+def virtual_trade_pnl_pct(
+    entry_stock: float,
+    exit_stock: float,
+    direction: str,
+    iv_rank: float,
+    horizon_days: int = 5,
+    entry_dte: int = 35,
+) -> float:
+    """
+    Counterfactual P&L%: what a standard entry would have returned if held
+    `horizon_days` and liquidated at `exit_stock`. Uses the same premium,
+    pricing, and spread model as real sim trades so virtual outcomes are
+    directly comparable to actual ones. Used to label scan_log 'pass' rows
+    so the learning loop trains on every decision, not just entries.
+    """
+    entry_opt = entry_premium(entry_stock, iv_rank, entry_dte)
+    fair = price_option(
+        entry_stock=entry_stock,
+        current_stock=exit_stock,
+        entry_option=entry_opt,
+        direction=direction,
+        delta=0.25,
+        iv_rank=iv_rank,
+        entry_dte=entry_dte,
+        dte_left=max(0, entry_dte - horizon_days),
+    )
+    liquidation = max(0.01, fair * (1.0 - spread_fraction(iv_rank)))
+    return round((liquidation - entry_opt) / entry_opt * 100, 2)
 
 
 def update_stall_count(stall_count: int, new_high: float, pnl_pct: float, prev_pnl: float) -> int:

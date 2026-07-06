@@ -182,6 +182,22 @@ def test_sharp_move_still_respects_30min_floor():
     assert orch._thesis_review_due(pos, pnl_pct=-40.0) is False
 
 
+# ── _todays_realized_pnl (daily loss circuit breaker) ───────────────────────
+
+def test_todays_realized_pnl_sums_only_today():
+    closed = [
+        {"closed_at": "2026-07-06T10:00:00", "pnl_dollars": -30.0},
+        {"closed_at": "2026-07-06T14:00:00-04:00", "pnl_dollars": -20.0},
+        {"closed_at": "2026-07-05T10:00:00", "pnl_dollars": 50.0},
+        {"closed_at": None, "pnl_dollars": 99.0},
+    ]
+    assert Orchestrator._todays_realized_pnl(closed, "2026-07-06") == -50.0
+
+
+def test_todays_realized_pnl_empty():
+    assert Orchestrator._todays_realized_pnl([], "2026-07-06") == 0.0
+
+
 # ── timeutil ────────────────────────────────────────────────────────────────
 
 def test_parse_naive_timestamp_gets_et():
