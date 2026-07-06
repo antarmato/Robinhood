@@ -63,6 +63,24 @@ async def _broadcast(agent: str, event_type: str, data):
 orchestrator = get_orchestrator()
 orchestrator.set_broadcast(_broadcast)
 
+
+@app.on_event("startup")
+async def _auto_resume():
+    """Restart the orchestrator after a deploy if it was running before.
+    Railway restarts the process on every push; without this the system
+    sat stopped until someone pressed Start on the dashboard."""
+    s = get_state()
+    if not s.consume_resume_flag():
+        return
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        logger.warning("Auto-resume skipped: ANTHROPIC_API_KEY not set")
+        return
+    try:
+        await orchestrator.start()
+        logger.info("Auto-resumed orchestrator after restart (was running before)")
+    except Exception as e:
+        logger.warning(f"Auto-resume failed: {e}")
+
 # ── Auth ───────────────────────────────────────────────────────────────────────
 
 API_KEY = os.getenv("API_KEY", "")  # Optional key for Cowork artifact to authenticate
@@ -626,6 +644,20 @@ async def diagnostics():
         if isinstance(v, dict) and "ok" in v
     )
     return results
+
+
+@app.get("/api/learning/label")
+async def trigger_virtual_labeling(api_key: str = ""):
+    """Manually run counterfactual labeling of old 'pass' rows (also runs
+    automatically at pre-market and after-hours). GET for Cowork-artifact use."""
+    _check_key(api_key)
+    await orchestrator._label_virtual_outcomes()
+    stats = ts.get_stats()
+    return {
+        "status":          "ok",
+        "virtual_labeled": stats.get("virtual_labeled"),
+        "virtual_wins":    stats.get("virtual_wins"),
+    }
 
 
 @app.get("/api/scan-results")

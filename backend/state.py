@@ -206,9 +206,13 @@ class StateManager:
         if raw:
             d = _default()
             d.update(raw)
-            # Task is never alive after a restart — always start stopped
+            # Task is never alive after a restart — always start stopped, but
+            # remember it was running so the app can auto-resume after deploys
+            # (Railway restarts on every push; the system used to sit idle
+            # until someone pressed Start).
             if d.get("system_status") == "running":
                 d["system_status"] = "stopped"
+                d["_resume_pending"] = True
             return d
         return _default()
 
@@ -484,6 +488,13 @@ class StateManager:
 
     def get_equity_history(self) -> list:
         return list(self._s.get("equity_history", []))
+
+    def consume_resume_flag(self) -> bool:
+        """True once if the system was running when the process last stopped."""
+        flag = bool(self._s.pop("_resume_pending", False))
+        if flag:
+            self.save()
+        return flag
 
     def reset_sim(self) -> dict:
         """Clear sim positions and P&L history. Training DB is untouched."""
