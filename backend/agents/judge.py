@@ -390,11 +390,12 @@ The Python score is {weighted_score} (threshold {threshold}).
 Confidence calibration:
   1-3: serious flaws — multiple agents disagree, regime strongly opposed, or historical edge clearly negative
   4:   notable reservations — use sparingly, only when you have a specific concrete reason this setup will fail
-  5-6: reasonable setup, normal uncertainty — this is the DEFAULT for a passing score with no glaring issues
+  5:   reasonable setup, normal uncertainty — this is the DEFAULT for a passing score with no glaring issues
+  6:   positive lean — beyond the score passing, you can name at least one concrete edge (regime tailwind, historical pattern win, strong agent consensus)
   7-8: clear directional setup, good risk/reward, agents aligned
   9-10: multiple strong signals confirming, IV environment ideal (only when regime aligned)
 
-Anchoring rule: if the Python score PASSES and you have no specific, articulable reason this will fail, your baseline is 5-6 — not 4. "Market uncertainty" is not a reason to go to 4.
+Anchoring rule: if the Python score PASSES and you have no specific, articulable reason this will fail, your baseline is 5 — not 4, and not 6. "Market uncertainty" is not a reason to go to 4, and "nothing looks wrong" is not a reason to go to 6: reserve 6+ for setups where you can articulate a specific edge. Live results back this up — default-confidence entries lost money while named-edge entries were profitable.
 
 Rules:
   - Do NOT penalize for missing options data (IV, OI, bid-ask) — handled at execution

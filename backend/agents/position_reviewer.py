@@ -1,7 +1,8 @@
 """
 PositionReviewer — LLM thesis re-evaluation for open positions.
 
-Runs once per monitor cycle (every 15 min) per open position (after day 1).
+Runs on the monitor loop (first review 2h after entry, then cooldown-gated
+by THESIS_REVIEW_HOURS) per open position.
 Gathers fresh technical data + recent news, then asks Claude:
   "Does the original entry thesis still hold?"
 

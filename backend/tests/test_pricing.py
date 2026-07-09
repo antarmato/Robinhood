@@ -213,8 +213,13 @@ def test_stall_resets_near_high():
 
 
 def test_stall_unchanged_below_threshold():
-    # peak under 40% → no stall counting, and not near high → unchanged
-    assert pricing.update_stall_count(1, new_high=30.0, pnl_pct=20.0, prev_pnl=25.0) == 1
+    # peak under 25% → no stall counting, and not near high → unchanged
+    assert pricing.update_stall_count(1, new_high=20.0, pnl_pct=10.0, prev_pnl=15.0) == 1
+
+
+def test_stall_counts_from_mid_peak():
+    # peak 25%+ now stall-counts (was 40%) — fading mid winners tighten too
+    assert pricing.update_stall_count(0, new_high=30.0, pnl_pct=20.0, prev_pnl=25.0) == 1
 
 
 # ── compute_trail_floor ─────────────────────────────────────────────────────
@@ -232,11 +237,20 @@ def floor(new_high, pnl_pct=0.0, initial_stop=-28.0, stall_count=0,
     (160.0, 125.0),   # 150%+ tier: give back 35pts
     (120.0, 90.0),    # 100%+ tier: give back 30pts
     (60.0, 35.0),     # 50%+ tier: give back 25pts
-    (30.0, 0.0),      # 25%+ tier: protect breakeven
-    (10.0, -28.0),    # below 25%: initial stop
+    (45.0, 25.0),     # 25%+ tier: peak-14 capped at +25 (≥50 tier start)
+    (30.0, 16.0),     # 25%+ tier: lock real profit, not just breakeven
+    (20.0, 6.0),      # earned-profit band: peak-14
+    (12.0, -2.0),     # bottom of earned-profit band
+    (10.0, -28.0),    # below 12%: initial stop
 ])
 def test_trail_floor_tiers(new_high, expected):
     assert floor(new_high, pnl_pct=new_high) == expected
+
+
+def test_trail_floor_monotonic_in_peak():
+    # A rising peak must never lower the floor (floor is recomputed per tick).
+    floors = [floor(h, pnl_pct=h) for h in range(12, 200)]
+    assert all(b >= a for a, b in zip(floors, floors[1:]))
 
 
 def test_stall_tightening_raises_floor():

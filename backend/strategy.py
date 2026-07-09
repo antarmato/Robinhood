@@ -17,11 +17,15 @@ THRESHOLD_MARKET    = 38   # base threshold during market hours
 THRESHOLD_AFTERHOURS = 32  # base threshold pre/after market
 THRESHOLD_HARD_MODE  = 43  # threshold when 40 <= iv_rank <= 60
 THRESHOLD_CHEAP_IV   = 35  # threshold when iv_rank < 20 (cheap premium = lower bar)
-THRESHOLD_CONF       = 5   # minimum confidence (1-10) — default
+# Minimum confidence (1-10). Raised 5 → 6 on 2026-07-09 after 17 closed trades:
+# conf-5 entries went 2W/8T for -$192, conf-6 went 2W/5T for -$12, conf-7 went
+# 2W/4T for +$90. The judge's own calibration says 5 = "default for a passing
+# score with no conviction" — trading defaults is what was bleeding the book.
+THRESHOLD_CONF       = 6
 
-# Confidence-5 trades need a score cushion above the threshold to trade.
-# Live-trade evidence: bare-minimum-confidence entries (AMD, PYPL) were the
-# biggest losers while conf 6-7 trades were net profitable.
+# Bare-minimum-confidence trades need a score cushion above the threshold to
+# trade. Live-trade evidence: minimum-confidence entries (AMD, PYPL, SOFI) were
+# the biggest losers while higher-conviction trades were net profitable.
 MARGINAL_CONF_SCORE_CUSHION = 4.0
 
 # High-beta symbols: require stronger conviction to enter at all

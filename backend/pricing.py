@@ -163,8 +163,8 @@ def virtual_trade_pnl_pct(
 
 
 def update_stall_count(stall_count: int, new_high: float, pnl_pct: float, prev_pnl: float) -> int:
-    """Count consecutive declining checks after a profitable peak (≥40%)."""
-    if new_high >= 40.0 and pnl_pct < prev_pnl - 2.0:
+    """Count consecutive declining checks after a profitable peak (≥25%)."""
+    if new_high >= 25.0 and pnl_pct < prev_pnl - 2.0:
         return stall_count + 1   # declining from a profitable peak
     if pnl_pct >= new_high - 3.0:
         return 0                 # still near the high — reset
@@ -184,16 +184,27 @@ def compute_trail_floor(
     Trailing floor for the exit check. No fixed profit target — the floor
     tightens in tiers as the peak gain grows, then several modifiers lift it.
     """
+    # Each tier's floor is capped at the next tier's starting floor so a
+    # rising peak never *lowers* the floor across a tier boundary (the floor
+    # is recomputed from new_high every tick, not persisted).
     if new_high >= 150.0:
-        trail_floor = new_high - 35.0            # give back 35pts max after 150%+
+        trail_floor = new_high - 35.0                # give back 35pts max after 150%+
     elif new_high >= 100.0:
-        trail_floor = new_high - 30.0            # give back 30pts max after 100%+
+        trail_floor = min(new_high - 30.0, 115.0)    # give back 30pts max after 100%+
     elif new_high >= 50.0:
-        trail_floor = max(0.0, new_high - 25.0)  # give back 25pts, floor ≥ 0%
+        trail_floor = min(new_high - 25.0, 70.0)     # give back 25pts (floor ≥ +25)
     elif new_high >= 25.0:
-        trail_floor = 0.0                        # protect breakeven after 25%
+        # Lock real profit, not just breakeven: 5 of 6 live trades that peaked
+        # +20-37% closed at ≤0 under the old breakeven-only floor. Capped at
+        # +25 so a rising peak never lowers the floor crossing the ≥50 tier.
+        trail_floor = min(new_high - 14.0, 25.0)
+    elif new_high >= 12.0:
+        # Earned-profit band: winners in this system that keep running move
+        # through here fast — a 14pt retrace from a 12-25% peak means the
+        # move is over, so keep most of it instead of riding to the stop.
+        trail_floor = new_high - 14.0
     else:
-        trail_floor = initial_stop               # IV-adjusted hard stop while gain < 25%
+        trail_floor = initial_stop               # IV-adjusted hard stop while gain < 12%
 
     # Stall tightening: 3+ declining checks → reduce the allowance by 10pts
     if stall_count >= 3 and trail_floor > initial_stop:
@@ -231,7 +242,7 @@ def exit_reason(
     if pnl_pct <= trail_floor:
         if trail_floor >= 50.0:
             return f"Low-conf take-profit: peak {new_high:+.0f}% → locking {pnl_pct:+.1f}%"
-        if trail_floor >= 2.0 and new_high < 25.0:
+        if trail_floor >= -2.0 and new_high >= 10.0 and new_high < 25.0:
             return f"Mini-peak reversal: peak {new_high:+.1f}% → back to {pnl_pct:+.1f}%"
         if new_high < 25.0:
             return (f"Stop loss {pnl_pct:.1f}% "
