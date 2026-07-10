@@ -23,17 +23,24 @@ THRESHOLD_CHEAP_IV   = 35  # threshold when iv_rank < 20 (cheap premium = lower 
 # score with no conviction" — trading defaults is what was bleeding the book.
 THRESHOLD_CONF       = 6
 
-# Bare-minimum-confidence trades need a score cushion above the threshold to
-# trade. Live-trade evidence: minimum-confidence entries (AMD, PYPL, SOFI) were
-# the biggest losers while higher-conviction trades were net profitable.
-MARGINAL_CONF_SCORE_CUSHION = 4.0
+# Score cushion required for bare-minimum-confidence trades. Zeroed on
+# 2026-07-10: it was calibrated for conf-5 entries when THRESHOLD_CONF was 5.
+# After the floor moved to 6 and the judge prompt was re-anchored (6 requires
+# a named edge), every tradeable candidate is conf-6, so the cushion applied
+# to all of them — stacked on the adaptive expectancy surcharge (same "book
+# is losing" signal counted twice), it produced 0 trades in 118 evaluations.
+# The adaptive threshold in score_threshold() already raises the bar when
+# expectancy is negative; don't re-add this without removing that overlap.
+MARGINAL_CONF_SCORE_CUSHION = 0.0
 
-# High-beta symbols: require stronger conviction to enter at all
-_SYMBOL_CONF_FLOOR: dict[str, int] = {
-    "MSTR": 7, "COIN": 7,   # pure crypto proxies — need strong conviction
-    "IONQ": 6, "SMCI": 6,   # small/mid speculative — moderate bar
-    "RIVN": 6, "HOOD": 6,
-}
+# High-beta symbols: require stronger conviction to enter at all.
+# Emptied on 2026-07-10: the 7s were calibrated when THRESHOLD_CONF was 5 and
+# the judge graded a point easier — under the re-anchored prompt, 7 never
+# occurs (0 of 118 evals), which made COIN/MSTR permanently untradeable
+# (COIN being the best performer in the book, 50% WR +23% avg). The
+# training-DB adjustment in confidence_minimum() below raises floors for
+# symbols with genuinely poor records; use that instead of hardcoding.
+_SYMBOL_CONF_FLOOR: dict[str, int] = {}
 
 # Trade parameters
 DTE_MIN = 21
