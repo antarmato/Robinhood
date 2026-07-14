@@ -1291,6 +1291,7 @@ function renderPositions(positions) {
       `Tech: ${p.tech_score??'—'} | Fund: ${p.fund_score??'—'} | Sent: ${p.sent_score??'—'}`,
       `Bull case: ${p.bull_case||'—'}`, `Bear case: ${p.bear_case||'—'}`,
       `Entry DTE: ${p.entry_dte??35} | Days held: ${days} | IV rank: ${Math.round(iv4pos)}`,
+      p.occ_symbol?`Contract: ${p.occ_symbol} — real quotes`:`Model-priced (no live contract)`,
       hwm>=25?`Trail stop floor: ${floor.toFixed(0)}% (peak ${hwm.toFixed(0)}%)`:`Initial stop: ${initStop}% (IV ${Math.round(iv4pos)})`,
     ].join('\n');
     _tradeStore[p.position_id] = p;
@@ -1597,6 +1598,7 @@ function openModal(jsonStr) {
       <div class="modal-section-title">Trade Details</div>
       <div class="modal-kv"><span class="modal-kv-k">Days held</span><span class="modal-kv-v">${t.days_held??0}d</span></div>
       <div class="modal-kv"><span class="modal-kv-k">DTE at entry</span><span class="modal-kv-v">${t.entry_dte??'—'} days to expiration</span></div>
+      <div class="modal-kv"><span class="modal-kv-k">Contract</span><span class="modal-kv-v">${t.occ_symbol?`${esc(t.occ_symbol)} — $${t.strike} strike, exp ${esc(t.expiry||'—')} <span style="color:var(--green)">(real quotes)</span>`:'model-priced (no live contract)'}</span></div>
       <div class="modal-kv"><span class="modal-kv-k">IV Rank at entry</span><span class="modal-kv-v">${t.iv_rank!=null?Math.round(t.iv_rank)+'%':'—'}</span></div>
       <div class="modal-kv"><span class="modal-kv-k">Peak P&L</span><span class="modal-kv-v" style="color:var(--green)">${hwm>0?'+'+hwm.toFixed(1)+'%':'—'}</span></div>
       ${!isOpen?`<div class="modal-kv"><span class="modal-kv-k">Exit reason</span><span class="modal-kv-v" style="color:var(--muted)">${esc(t.exit_reason||'—')}</span></div>`:''}
