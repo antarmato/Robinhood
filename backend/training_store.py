@@ -17,6 +17,12 @@ logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
+# 2026-07-03: pricing.py replaced the flat-$1-premium model with IV/DTE-scaled
+# premiums and spread friction. Outcome stats that feed live gates (adaptive
+# threshold, per-symbol confidence floors) only count trades entered on/after
+# this date — earlier P&L magnitudes are not reproducible under current pricing.
+PRICING_ERA_START = "2026-07-03"
+
 # Connections are kept per-thread: these functions run from executor threads
 # (asyncio.to_thread) as well as the main thread, and psycopg2 connections are
 # not safe for concurrent use.
@@ -780,6 +786,9 @@ def get_symbol_perf(min_trades: int = 2) -> dict:
     """
     Return per-symbol performance stats in the same shape as OutcomeTracker.get_all_symbol_stats().
     Used to seed the Scanner's symbol_performance with persistent DB data.
+    Only current-pricing-era trades (see PRICING_ERA_START) count — the AMD
+    -94.8% flat-premium outcome would otherwise poison the symbol's record
+    with a loss the current model cannot produce.
     """
     conn = _get_conn()
     if not conn:
@@ -795,9 +804,10 @@ def get_symbol_perf(min_trades: int = 2) -> dict:
                        AVG(outcome_pnl_pct) FILTER (WHERE outcome='loss') AS avg_loss
                 FROM scan_log
                 WHERE decision='trade' AND outcome IS NOT NULL
+                  AND logged_at >= %s
                 GROUP BY symbol
                 HAVING COUNT(*) >= %s
-            """, (min_trades,))
+            """, (PRICING_ERA_START, min_trades))
             result = {}
             for row in cur.fetchall():
                 sym, n, wins, avg_pnl, avg_win, avg_loss = row
@@ -917,6 +927,11 @@ def get_outcome_stats() -> dict:
     """
     Compute Kelly fraction, win rate, and expectancy from the training DB.
     PostgreSQL-backed drop-in replacement for OutcomeTracker.get_stats().
+    Scoped to trades entered on/after PRICING_ERA_START: the flat-$1-premium
+    model before that date produced P&L magnitudes (AMD -94.8%) the current
+    pricing cannot, so blending eras gives the adaptive threshold a distorted
+    expectancy. Until the current era reaches the n>=12 sample minimum the
+    adaptive layer stands down entirely, which is the intended behavior.
     """
     conn = _get_conn()
     if not conn:
@@ -931,7 +946,8 @@ def get_outcome_stats() -> dict:
                     ABS(AVG(outcome_pnl_pct) FILTER (WHERE outcome='loss'))   AS avg_loss
                 FROM scan_log
                 WHERE decision='trade' AND outcome IS NOT NULL
-            """)
+                  AND logged_at >= %s
+            """, (PRICING_ERA_START,))
             row = cur.fetchone()
             if not row or not row[0]:
                 return {"total_trades": 0, "kelly_ready": False}

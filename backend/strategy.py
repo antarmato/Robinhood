@@ -17,11 +17,16 @@ THRESHOLD_MARKET    = 38   # base threshold during market hours
 THRESHOLD_AFTERHOURS = 32  # base threshold pre/after market
 THRESHOLD_HARD_MODE  = 43  # threshold when 40 <= iv_rank <= 60
 THRESHOLD_CHEAP_IV   = 35  # threshold when iv_rank < 20 (cheap premium = lower bar)
-# Minimum confidence (1-10). Raised 5 → 6 on 2026-07-09 after 17 closed trades:
-# conf-5 entries went 2W/8T for -$192, conf-6 went 2W/5T for -$12, conf-7 went
-# 2W/4T for +$90. The judge's own calibration says 5 = "default for a passing
-# score with no conviction" — trading defaults is what was bleeding the book.
-THRESHOLD_CONF       = 6
+# Minimum confidence (1-10). Raised 5 → 6 on 2026-07-09 after 17 closed trades
+# (old-scale conf-5 entries went 2W/8T for -$192). Re-based 6 → 5 on 2026-07-14:
+# the same 07-09 session re-anchored the judge prompt, shifting the whole scale
+# down — under the new prompt the modal grade is 4 (56% of evals), 5 means "some
+# named positives" (19%), and 6 requires a distinct edge (2.8%). Keeping the
+# floor at 6 on the new scale meant ~1 trade/week: 179 evals → 1 trade between
+# 07-10 and 07-14, far too slow to collect outcomes for learning. Old-scale
+# conf-5 (the losing cohort) maps to new-scale 4, which stays below the floor.
+# If the judge prompt is re-anchored again, re-base this at the same time.
+THRESHOLD_CONF       = 5
 
 # Score cushion required for bare-minimum-confidence trades. Zeroed on
 # 2026-07-10: it was calibrated for conf-5 entries when THRESHOLD_CONF was 5.
@@ -68,12 +73,18 @@ def confidence_minimum(symbol: str) -> int:
             # Expected value = WR * avg_win% - (1-WR) * |avg_loss%|
             ev = wr * avg_win - (1 - wr) * abs(avg_los) if avg_win or avg_los else avg_pnl
 
-            if wr < 0.35 or ev < -10.0:
-                # Consistently losing or terrible EV — require strong conviction
-                base = max(base, 7)
-            elif wr < 0.45 or ev < -5.0:
+            # Expectancy-first (2026-07-14): the old `wr < 0.45` trigger raised
+            # COIN's floor despite +17%/trade expectancy — a low-WR/big-winner
+            # profile is healthy, matching score_threshold()'s philosophy. Win
+            # rate only tightens when expectancy is also negative. Offsets are
+            # relative to THRESHOLD_CONF so a future scale re-anchor can't
+            # silently turn them into lockouts (the 2026-07-10 lesson).
+            if ev < -10.0:
+                # Persistent bleeder — demand a rare, distinct edge
+                base = max(base, THRESHOLD_CONF + 2)
+            elif ev < -5.0 or (ev < 0.0 and wr < 0.35):
                 # Below average — tighten slightly
-                base = max(base, 6)
+                base = max(base, THRESHOLD_CONF + 1)
             elif wr > 0.65 and ev > 5.0:
                 # Proven profitable winner — lower bar slightly
                 base = max(THRESHOLD_CONF, base - 1)
