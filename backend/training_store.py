@@ -18,9 +18,14 @@ logger = logging.getLogger(__name__)
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 # 2026-07-03: pricing.py replaced the flat-$1-premium model with IV/DTE-scaled
-# premiums and spread friction. Outcome stats that feed live gates (adaptive
-# threshold, per-symbol confidence floors) only count trades entered on/after
-# this date — earlier P&L magnitudes are not reproducible under current pricing.
+# premiums and spread friction. Every real-outcome query in this module —
+# gates AND the judge's learned/episodic/similar-setup context — only counts
+# trades entered on/after this date: earlier P&L magnitudes (AMD -94.8%) are
+# not reproducible under current pricing, and the judge was citing them as
+# live evidence. The date is inlined as a literal in the scan_log queries
+# (grep '2026-07-03'); keep this constant and those literals in sync.
+# Virtual (counterfactual) outcomes are NOT filtered — they're computed with
+# the current pricing model regardless of when the scan happened.
 PRICING_ERA_START = "2026-07-03"
 
 # Connections are kept per-thread: these functions run from executor threads
@@ -388,7 +393,7 @@ def get_best_patterns(min_samples: int = 3) -> list:
                     COUNT(*) AS n,
                     ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr
                 FROM scan_log
-                WHERE decision='trade' AND outcome IS NOT NULL AND tech_score IS NOT NULL
+                WHERE decision='trade' AND outcome IS NOT NULL AND logged_at >= '2026-07-03' AND tech_score IS NOT NULL
                 GROUP BY 1 HAVING COUNT(*) >= %s
                 ORDER BY wr DESC LIMIT 10
             """, (min_samples,))
@@ -404,7 +409,7 @@ def get_best_patterns(min_samples: int = 3) -> list:
                     COUNT(*) AS n,
                     ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr
                 FROM scan_log
-                WHERE decision='trade' AND outcome IS NOT NULL AND iv_rank IS NOT NULL AND above_ema200 IS NOT NULL
+                WHERE decision='trade' AND outcome IS NOT NULL AND logged_at >= '2026-07-03' AND iv_rank IS NOT NULL AND above_ema200 IS NOT NULL
                 GROUP BY 1 HAVING COUNT(*) >= %s
                 ORDER BY wr DESC LIMIT 10
             """, (min_samples,))
@@ -419,7 +424,7 @@ def get_best_patterns(min_samples: int = 3) -> list:
                     COUNT(*) AS n,
                     ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr
                 FROM scan_log
-                WHERE decision='trade' AND outcome IS NOT NULL AND confidence IS NOT NULL
+                WHERE decision='trade' AND outcome IS NOT NULL AND logged_at >= '2026-07-03' AND confidence IS NOT NULL
                 GROUP BY 1 HAVING COUNT(*) >= %s
                 ORDER BY wr DESC LIMIT 10
             """, (min_samples,))
@@ -436,7 +441,7 @@ def get_best_patterns(min_samples: int = 3) -> list:
                     COUNT(*) AS n,
                     ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr
                 FROM scan_log
-                WHERE decision='trade' AND outcome IS NOT NULL AND adx IS NOT NULL
+                WHERE decision='trade' AND outcome IS NOT NULL AND logged_at >= '2026-07-03' AND adx IS NOT NULL
                 GROUP BY 1 HAVING COUNT(*) >= %s
                 ORDER BY wr DESC LIMIT 8
             """, (min_samples,))
@@ -454,7 +459,7 @@ def get_best_patterns(min_samples: int = 3) -> list:
                     COUNT(*) AS n,
                     ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr
                 FROM scan_log
-                WHERE decision='trade' AND outcome IS NOT NULL
+                WHERE decision='trade' AND outcome IS NOT NULL AND logged_at >= '2026-07-03'
                   AND above_ema20 IS NOT NULL AND above_ema50 IS NOT NULL
                 GROUP BY 1 HAVING COUNT(*) >= %s
                 ORDER BY wr DESC LIMIT 8
@@ -473,7 +478,7 @@ def get_best_patterns(min_samples: int = 3) -> list:
                     COUNT(*) AS n,
                     ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr
                 FROM scan_log
-                WHERE decision='trade' AND outcome IS NOT NULL AND consensus_score IS NOT NULL
+                WHERE decision='trade' AND outcome IS NOT NULL AND logged_at >= '2026-07-03' AND consensus_score IS NOT NULL
                 GROUP BY 1 HAVING COUNT(*) >= %s
                 ORDER BY wr DESC LIMIT 8
             """, (min_samples,))
@@ -491,7 +496,7 @@ def get_best_patterns(min_samples: int = 3) -> list:
                     COUNT(*) AS n,
                     ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr
                 FROM scan_log
-                WHERE decision='trade' AND outcome IS NOT NULL AND vix IS NOT NULL
+                WHERE decision='trade' AND outcome IS NOT NULL AND logged_at >= '2026-07-03' AND vix IS NOT NULL
                 GROUP BY 1 HAVING COUNT(*) >= %s
                 ORDER BY wr DESC LIMIT 8
             """, (min_samples,))
@@ -509,7 +514,7 @@ def get_best_patterns(min_samples: int = 3) -> list:
                     COUNT(*) AS n,
                     ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr
                 FROM scan_log
-                WHERE decision='trade' AND outcome IS NOT NULL AND vol_ratio IS NOT NULL
+                WHERE decision='trade' AND outcome IS NOT NULL AND logged_at >= '2026-07-03' AND vol_ratio IS NOT NULL
                 GROUP BY 1 HAVING COUNT(*) >= %s
                 ORDER BY wr DESC LIMIT 8
             """, (min_samples,))
@@ -545,7 +550,7 @@ def get_learned_context(min_samples: int = 5) -> str:
                 SELECT COUNT(*) AS n, COUNT(*) FILTER (WHERE outcome='win') AS wins,
                        AVG(outcome_pnl_pct) FILTER (WHERE outcome='win') AS avg_win,
                        AVG(outcome_pnl_pct) FILTER (WHERE outcome='loss') AS avg_loss
-                FROM scan_log WHERE decision='trade' AND outcome IS NOT NULL
+                FROM scan_log WHERE decision='trade' AND outcome IS NOT NULL AND logged_at >= '2026-07-03'
             """)
             row = cur.fetchone()
             if not row or not row[0] or row[0] < min_samples:
@@ -564,7 +569,7 @@ def get_learned_context(min_samples: int = 5) -> str:
                        COUNT(*) AS n,
                        ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr
                 FROM scan_log
-                WHERE decision='trade' AND outcome IS NOT NULL AND regime IS NOT NULL
+                WHERE decision='trade' AND outcome IS NOT NULL AND logged_at >= '2026-07-03' AND regime IS NOT NULL
                 GROUP BY regime HAVING COUNT(*) >= 3
                 ORDER BY wr DESC
             """)
@@ -579,7 +584,7 @@ def get_learned_context(min_samples: int = 5) -> str:
                        COUNT(*) AS n,
                        ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr
                 FROM scan_log
-                WHERE decision='trade' AND outcome IS NOT NULL
+                WHERE decision='trade' AND outcome IS NOT NULL AND logged_at >= '2026-07-03'
                 GROUP BY direction HAVING COUNT(*) >= 3
             """)
             dir_rows = cur.fetchall()
@@ -596,7 +601,7 @@ def get_learned_context(min_samples: int = 5) -> str:
                     COUNT(*) AS n,
                     ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr
                 FROM scan_log
-                WHERE decision='trade' AND outcome IS NOT NULL AND weighted_score IS NOT NULL
+                WHERE decision='trade' AND outcome IS NOT NULL AND logged_at >= '2026-07-03' AND weighted_score IS NOT NULL
                 GROUP BY 1 HAVING COUNT(*) >= 3
                 ORDER BY MIN(weighted_score) DESC
             """)
@@ -612,7 +617,7 @@ def get_learned_context(min_samples: int = 5) -> str:
                        ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr,
                        ROUND(AVG(outcome_pnl_pct)::NUMERIC, 1) AS avg_pnl
                 FROM scan_log
-                WHERE decision='trade' AND outcome IS NOT NULL
+                WHERE decision='trade' AND outcome IS NOT NULL AND logged_at >= '2026-07-03'
                 GROUP BY symbol HAVING COUNT(*) >= 2
                 ORDER BY wr DESC
             """)
@@ -630,7 +635,7 @@ def get_learned_context(min_samples: int = 5) -> str:
                     COUNT(*) AS n,
                     ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr
                 FROM scan_log
-                WHERE decision='trade' AND outcome IS NOT NULL AND confidence IS NOT NULL
+                WHERE decision='trade' AND outcome IS NOT NULL AND logged_at >= '2026-07-03' AND confidence IS NOT NULL
                 GROUP BY 1 HAVING COUNT(*) >= 2
             """)
             conf_rows = cur.fetchall()
@@ -646,7 +651,7 @@ def get_learned_context(min_samples: int = 5) -> str:
                        ROUND(MAX(outcome_days_held), 0) AS max_days,
                        COUNT(*) AS n
                 FROM scan_log
-                WHERE decision='trade' AND outcome IS NOT NULL
+                WHERE decision='trade' AND outcome IS NOT NULL AND logged_at >= '2026-07-03'
                   AND outcome_days_held IS NOT NULL AND outcome_days_held > 0
                 GROUP BY outcome
             """)
@@ -662,7 +667,7 @@ def get_learned_context(min_samples: int = 5) -> str:
                        COUNT(*) FILTER (WHERE outcome='win') AS wins
                 FROM (
                     SELECT outcome FROM scan_log
-                    WHERE decision='trade' AND outcome IS NOT NULL
+                    WHERE decision='trade' AND outcome IS NOT NULL AND logged_at >= '2026-07-03'
                     ORDER BY logged_at DESC LIMIT 10
                 ) sub
             """)
@@ -678,7 +683,7 @@ def get_learned_context(min_samples: int = 5) -> str:
                        COUNT(*) AS n,
                        ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr
                 FROM scan_log
-                WHERE decision='trade' AND outcome IS NOT NULL AND regime IS NOT NULL
+                WHERE decision='trade' AND outcome IS NOT NULL AND logged_at >= '2026-07-03' AND regime IS NOT NULL
                 GROUP BY 1 HAVING COUNT(*) >= 2
                 ORDER BY wr DESC LIMIT 8
             """)
@@ -722,7 +727,7 @@ def get_learned_context(min_samples: int = 5) -> str:
                     COUNT(*) AS n,
                     ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr
                 FROM scan_log
-                WHERE decision='trade' AND outcome IS NOT NULL
+                WHERE decision='trade' AND outcome IS NOT NULL AND logged_at >= '2026-07-03'
                 GROUP BY 1 HAVING COUNT(*) >= 3
                 ORDER BY wr DESC
             """)
@@ -758,7 +763,7 @@ def get_learned_context(min_samples: int = 5) -> str:
                     ROUND(AVG(outcome_pnl_pct)::NUMERIC, 1) AS avg_pnl,
                     ROUND(100.0 * COUNT(*) FILTER (WHERE outcome='win') / COUNT(*), 0) AS wr
                 FROM scan_log
-                WHERE decision='trade' AND outcome IS NOT NULL AND outcome_exit_reason IS NOT NULL
+                WHERE decision='trade' AND outcome IS NOT NULL AND logged_at >= '2026-07-03' AND outcome_exit_reason IS NOT NULL
                 GROUP BY 1 HAVING COUNT(*) >= 2
                 ORDER BY avg_pnl DESC
             """)
@@ -774,7 +779,10 @@ def get_learned_context(min_samples: int = 5) -> str:
                     " | ".join(f"{c['bucket']}: {c['win_rate']:.0f}%WR avg{c['avg_pnl']:+.0f}% ({c['n']}P)"
                                for c in calib))
 
-            lines.append("CALIBRATION RULE: Reduce confidence by 1-2 for any regime/symbol/pattern matching LOW WIN conditions. Increase by 1 for TOP WIN matches.")
+            # Keep this consistent with the judge system prompt's "history
+            # adjusts ±1 max" rule — a stronger instruction here overrode it
+            # and pinned every eval at conf-4 (2026-07-14).
+            lines.append("CALIBRATION RULE: History nudges confidence by AT MOST 1 point in either direction (LOW WIN match: -1, TOP WIN match: +1). Patterns under 10 trades are unreliable — weight them minimally. History alone must not push a passing setup below 5.")
             return "\n".join(lines)
 
     except Exception as e:
@@ -803,11 +811,10 @@ def get_symbol_perf(min_trades: int = 2) -> dict:
                        AVG(outcome_pnl_pct) FILTER (WHERE outcome='win')  AS avg_win,
                        AVG(outcome_pnl_pct) FILTER (WHERE outcome='loss') AS avg_loss
                 FROM scan_log
-                WHERE decision='trade' AND outcome IS NOT NULL
-                  AND logged_at >= %s
+                WHERE decision='trade' AND outcome IS NOT NULL AND logged_at >= '2026-07-03'
                 GROUP BY symbol
                 HAVING COUNT(*) >= %s
-            """, (PRICING_ERA_START, min_trades))
+            """, (min_trades,))
             result = {}
             for row in cur.fetchall():
                 sym, n, wins, avg_pnl, avg_win, avg_loss = row
@@ -875,7 +882,7 @@ def get_similar_trade_stats(
                            COUNT(*) FILTER (WHERE outcome='win') AS wins,
                            ROUND(AVG(outcome_pnl_pct)::NUMERIC, 1) AS avg_pnl
                     FROM scan_log
-                    WHERE decision='trade' AND outcome IS NOT NULL AND {where}
+                    WHERE decision='trade' AND outcome IS NOT NULL AND logged_at >= '2026-07-03' AND {where}
                 """, params)
                 row = cur.fetchone()
                 if row and row[0] >= min_samples:
@@ -945,9 +952,8 @@ def get_outcome_stats() -> dict:
                     AVG(outcome_pnl_pct) FILTER (WHERE outcome='win')         AS avg_win,
                     ABS(AVG(outcome_pnl_pct) FILTER (WHERE outcome='loss'))   AS avg_loss
                 FROM scan_log
-                WHERE decision='trade' AND outcome IS NOT NULL
-                  AND logged_at >= %s
-            """, (PRICING_ERA_START,))
+                WHERE decision='trade' AND outcome IS NOT NULL AND logged_at >= '2026-07-03'
+            """)
             row = cur.fetchone()
             if not row or not row[0]:
                 return {"total_trades": 0, "kelly_ready": False}
@@ -1001,7 +1007,7 @@ _BLENDED_WR_SQL = """
                           THEN CASE WHEN outcome IS NOT NULL THEN 1.0 ELSE %s END
                           ELSE 0 END), 0) AS wwins
     FROM scan_log
-    WHERE ((decision='trade' AND outcome IS NOT NULL) OR virtual_outcome IS NOT NULL)
+    WHERE ((decision='trade' AND outcome IS NOT NULL AND logged_at >= '2026-07-03') OR virtual_outcome IS NOT NULL)
       AND direction = %s
 """
 
@@ -1133,7 +1139,7 @@ def get_episodic_context(direction: str, symbol: str = None, limit: int = 5) -> 
                        above_ema200, above_ema50, regime, iv_rank,
                        consensus_score, outcome_exit_reason, logged_at
                 FROM scan_log
-                WHERE decision='trade' AND outcome IS NOT NULL
+                WHERE decision='trade' AND outcome IS NOT NULL AND logged_at >= '2026-07-03'
                   AND direction=%s {sym_filter}
                 ORDER BY logged_at DESC
                 LIMIT %s
@@ -1186,7 +1192,7 @@ def get_similar_iv_stats(iv_rank: float, direction: str, min_samples: int = 3) -
                        COUNT(*) FILTER (WHERE outcome='win') AS wins,
                        ROUND(AVG(outcome_pnl_pct)::NUMERIC, 1) AS avg_pnl
                 FROM scan_log
-                WHERE decision='trade' AND outcome IS NOT NULL
+                WHERE decision='trade' AND outcome IS NOT NULL AND logged_at >= '2026-07-03'
                   AND direction = %s
                   AND iv_rank BETWEEN %s AND %s
             """, (direction, iv_rank - 20, iv_rank + 20))
