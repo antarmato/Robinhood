@@ -19,8 +19,8 @@ import math
 
 __all__ = [
     "entry_premium", "spread_fraction", "initial_stop_pct", "price_option",
-    "mark_position", "update_stall_count", "compute_trail_floor", "exit_reason",
-    "virtual_trade_pnl_pct",
+    "mark_position", "mark_position_quoted", "update_stall_count",
+    "compute_trail_floor", "exit_reason", "virtual_trade_pnl_pct",
 ]
 
 
@@ -129,6 +129,24 @@ def mark_position(pos: dict, current_stock: float, days_held: int) -> dict:
         "pnl_pct":      round((liquidation - entry_opt) / entry_opt * 100, 2),
         "pnl_dollars":  round((liquidation - entry_opt) * contracts * 100, 2),
         "dte_left":     dte_left,
+    }
+
+
+def mark_position_quoted(pos: dict, bid: float, dte_left: int) -> dict:
+    """
+    Mark a real-quoted position (has an `occ_symbol`) at the contract's live
+    bid — what a market sell would realize right now. Same return shape as
+    mark_position. No synthetic spread friction: entry paid the real ask and
+    the mark is the real bid, so the spread cost is already in the numbers.
+    """
+    entry_opt = float(pos.get("entry_option_price", 1.0))
+    contracts = float(pos.get("contracts", 1))
+    liquidation = round(max(0.01, float(bid)), 4)
+    return {
+        "option_price": liquidation,
+        "pnl_pct":      round((liquidation - entry_opt) / entry_opt * 100, 2),
+        "pnl_dollars":  round((liquidation - entry_opt) * contracts * 100, 2),
+        "dte_left":     max(0, int(dte_left)),
     }
 
 

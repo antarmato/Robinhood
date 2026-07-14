@@ -457,6 +457,17 @@ async def get_sim_prices():
     except Exception:
         return {"updates": [], "error": "price fetch failed"}
 
+    # Real option quotes for positions holding an actual contract — same
+    # real-bid marking the monitor loop uses, model fallback per position.
+    from . import option_quotes as _oq
+    occ_syms = sorted({p["occ_symbol"] for p in open_positions if p.get("occ_symbol")})
+    opt_quotes: dict = {}
+    if occ_syms:
+        try:
+            opt_quotes = await _aio.to_thread(_oq.get_latest_quotes, occ_syms)
+        except Exception:
+            pass
+
     updates = []
     total_unrealized = 0.0
     for pos in open_positions:
@@ -468,7 +479,14 @@ async def get_sim_prices():
             days_held = days_since(pos["opened_at"])
         except (KeyError, ValueError):
             days_held = 0
-        mark = pricing.mark_position(pos, current, days_held)
+        occ  = pos.get("occ_symbol")
+        mark = None
+        if occ and occ in opt_quotes:
+            real_dte = _oq.dte_left(occ)
+            if real_dte is not None:
+                mark = pricing.mark_position_quoted(pos, opt_quotes[occ]["bid"], real_dte)
+        if mark is None:
+            mark = pricing.mark_position(pos, current, days_held)
 
         total_unrealized += mark["pnl_dollars"]
         updates.append({
@@ -493,6 +511,31 @@ async def test_price(symbol: str = "PYPL"):
         return {"ok": True, "symbol": symbol.upper(), "price": quote.get("price"), "pct_change": quote.get("pct_change"), "source": "alpaca/iex"}
     except Exception as e:
         return {"ok": False, "symbol": symbol.upper(), "error": str(e)}
+
+
+@app.get("/api/test/option-chain")
+async def test_option_chain(symbol: str = "COIN", type: str = "call", dte: int = 35):
+    """Verify the Alpaca options feed: fetch the chain and show the contract
+    the entry path would pick. Safe read-only diagnostic."""
+    import asyncio as _aio
+    from . import option_quotes as _oq
+    from . import market_data as _md
+    sym = symbol.upper()
+    try:
+        quote = await _aio.to_thread(_md.get_quote, sym)
+        spot  = float(quote.get("price") or 0)
+        if not spot:
+            return {"ok": False, "error": f"no spot price for {sym}"}
+        snaps = await _aio.to_thread(_oq.get_chain_snapshot, sym, type, spot)
+        pick  = _oq.select_contract(snaps, dte) if snaps else None
+        return {
+            "ok": bool(pick),
+            "symbol": sym, "spot": spot,
+            "chain_contracts": len(snaps),
+            "selected": pick,
+        }
+    except Exception as e:
+        return {"ok": False, "symbol": sym, "error": str(e)}
 
 
 @app.get("/api/symbol-stats")

@@ -29,6 +29,7 @@ from .state import get_state
 from .outcome_tracker import get_outcome_tracker
 from .market_regime import classify_regime
 from . import market_data as md
+from . import option_quotes as oq
 from . import pricing
 from . import training_store as ts
 from .timeutil import now_et, parse_iso_et
@@ -813,8 +814,24 @@ class Orchestrator:
         # Premium scales with spot price and IV so leverage is uniform across
         # symbols; fractional contracts size every position to $100 total cost.
         entry_opt   = pricing.entry_premium(price, iv_rank, entry_dte)
-        contracts   = round(100.0 / (entry_opt * 100.0), 4)
         spread_frac = pricing.spread_fraction(iv_rank)
+        delta       = 0.25
+
+        # Prefer a real contract (Alpaca indicative feed): entry pays the real
+        # ask, marks use the real bid, so no synthetic spread friction. Falls
+        # back to the modeled premium whenever the chain lookup comes up empty.
+        real = None
+        try:
+            real = await asyncio.to_thread(
+                oq.find_entry_contract, symbol, opt_type, price, entry_dte)
+        except Exception as e:
+            logger.warning(f"Real-quote entry lookup failed for {symbol}: {e}")
+        if real:
+            entry_opt   = real["ask"]
+            spread_frac = 0.0
+            entry_dte   = real["dte"]
+            delta       = real["delta"]
+        contracts = round(100.0 / (entry_opt * 100.0), 4)
 
         pos = {
             "position_id":       str(uuid.uuid4()),
@@ -827,7 +844,12 @@ class Orchestrator:
             "spread_frac":       spread_frac,
             "total_cost":        100.00,
             "entry_dte":         entry_dte,
-            "delta":             0.25,
+            "delta":             delta,
+            # Real-contract fields (None/model when the chain lookup failed)
+            "occ_symbol":        real["occ_symbol"] if real else None,
+            "strike":            real["strike"] if real else None,
+            "expiry":            real["expiry"] if real else None,
+            "quote_source":      "alpaca-indicative" if real else "model",
             "iv_rank":           iv_rank,
             "weighted_score":    judge.get("weighted_score", 0),
             "confidence":        judge.get("confidence", 0),
@@ -857,15 +879,20 @@ class Orchestrator:
         }
         self.state.add_sim_position(pos)
 
+        contract_desc = (
+            f"{real['occ_symbol']} (real ask ${real['ask']:.2f}, Δ{real['delta']:.2f})"
+            if real else f"modeled premium ${entry_opt:.2f}"
+        )
         await self._emit("system", "sim_opened", {
             "symbol": symbol, "direction": direction, "option_type": opt_type,
             "entry_price": price, "score": judge.get("weighted_score"),
             "confidence": judge.get("confidence"),
             "entry_dte": entry_dte,
+            "occ_symbol": real["occ_symbol"] if real else None,
             "message": (
                 f"SIM OPENED: {symbol} {opt_type.upper()} @ ${price:.2f} | "
                 f"Score {judge.get('weighted_score'):.0f} | Conf {judge.get('confidence')}/10 | "
-                f"DTE {entry_dte} | $100 max loss"
+                f"DTE {entry_dte} | {contract_desc} | $100 max loss"
             ),
         })
         logger.info(
@@ -920,6 +947,18 @@ class Orchestrator:
             logger.warning(f"Batch quote fetch failed: {e}")
             batch_quotes = {}
 
+        # Real option quotes for positions holding an actual contract — one
+        # batch call. A position missing from the result falls back to the
+        # model mark below.
+        occ_syms = sorted({p["occ_symbol"] for p in open_positions if p.get("occ_symbol")})
+        opt_quotes: dict = {}
+        if occ_syms:
+            try:
+                opt_quotes = await loop.run_in_executor(
+                    None, lambda: oq.get_latest_quotes(occ_syms))
+            except Exception as e:
+                logger.warning(f"Option quote fetch failed: {e}")
+
         total_unrealized = 0.0
         for pos in open_positions:
             symbol      = pos["symbol"]
@@ -947,7 +986,15 @@ class Orchestrator:
             iv_rank_pos  = float(pos.get("iv_rank", 50.0))
             initial_stop = pricing.initial_stop_pct(iv_rank_pos)
 
-            mark        = pricing.mark_position(pos, current_stock, days_held)
+            occ  = pos.get("occ_symbol")
+            mark = None
+            if occ and occ in opt_quotes:
+                real_dte = oq.dte_left(occ)
+                if real_dte is not None:
+                    mark = pricing.mark_position_quoted(
+                        pos, opt_quotes[occ]["bid"], real_dte)
+            if mark is None:
+                mark = pricing.mark_position(pos, current_stock, days_held)
             current_opt = mark["option_price"]
             pnl_pct     = mark["pnl_pct"]
             pnl_dollars = mark["pnl_dollars"]
