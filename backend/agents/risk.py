@@ -30,6 +30,13 @@ _SECTOR_GROUPS: dict[str, str] = {
     "PLTR": "govtech",
     "ROKU": "streaming",
     "UBER": "rideshare",
+    "XOM":  "energy",
+    "JPM":  "banks",
+    "DIS":  "media",
+    "BA":   "aerospace",   "CAT": "industrials",
+    "WMT":  "staples",
+    "UNH":  "healthcare",
+    "DAL":  "airlines",
 }
 
 

@@ -57,9 +57,16 @@ class Orchestrator:
         self._task: asyncio.Task | None = None
         self._claude: anthropic.AsyncAnthropic | None = None
 
+        # Widened 2026-07-14: the original 15 names were all correlated
+        # high-beta tech/crypto/fintech — on high-IV days only ~8 survived the
+        # IV>75 skip and candidates ran thin. The last 8 add uncorrelated
+        # liquid-options sectors (energy, banks, media, aerospace, industrials,
+        # staples, healthcare, airlines) so the scanner's top-5 has real
+        # diversity. LLM cost is unchanged — the judge still sees only top-5.
         watchlist_raw = os.getenv(
             "WATCHLIST",
-            "PLTR,HOOD,SOFI,RIVN,IONQ,AMD,SMCI,MSTR,TSLA,NVDA,COIN,UBER,SQ,PYPL,ROKU"
+            "PLTR,HOOD,SOFI,RIVN,IONQ,AMD,SMCI,MSTR,TSLA,NVDA,COIN,UBER,SQ,PYPL,ROKU,"
+            "XOM,JPM,DIS,BA,CAT,WMT,UNH,DAL"
         )
         self.watchlist         = [s.strip() for s in watchlist_raw.split(",")]
         self.max_loss          = float(os.getenv("MAX_LOSS_PER_TRADE", "100"))

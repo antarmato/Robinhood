@@ -17,7 +17,8 @@ logger = logging.getLogger(__name__)
 # Known high-volatility / meme / crypto-adjacent stocks — extra beta penalty
 _HIGH_RISK = {"MSTR", "IONQ", "RIVN", "SMCI", "HOOD", "COIN", "AMC", "GME", "BBBY", "PLTR"}
 # Known mega/large cap with good liquidity — bonus
-_QUALITY_CAP = {"AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "AMD", "SPY", "QQQ"}
+_QUALITY_CAP = {"AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "AMD", "SPY", "QQQ",
+                "JPM", "XOM", "WMT", "UNH"}
 
 # Polygon free tier doesn't return beta — use hard-coded estimates for our watchlist
 # Updated periodically; these are 1Y beta vs SPY (rough market consensus)
@@ -37,6 +38,15 @@ _BETA_MAP: dict[str, float] = {
     "SQ":    1.6,  # fintech mid-cap
     "UBER":  1.3,  # gig economy, moderate beta
     "PYPL":  1.2,  # mature fintech, lower vol
+    # Diversifiers added 2026-07-14 (rough 1Y beta vs SPY)
+    "XOM":   0.8,  # integrated energy, oil-price driven
+    "JPM":   1.1,  # money-center bank
+    "DIS":   1.2,  # media/parks, consumer cyclical
+    "BA":    1.4,  # aerospace, headline-sensitive
+    "CAT":   1.1,  # industrial cycle
+    "WMT":   0.6,  # defensive staple
+    "UNH":   0.7,  # managed care, defensive
+    "DAL":   1.3,  # airline, macro-sensitive
 }
 
 

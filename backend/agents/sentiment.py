@@ -24,6 +24,9 @@ _SECTOR_ETF = {
     "SOFI": "XLF", "HOOD": "XLF", "SQ": "XLF", "PYPL": "XLF",
     # Consumer Discretionary
     "TSLA": "XLY", "RIVN": "XLY", "UBER": "XLY",
+    # Diversifiers added 2026-07-14
+    "XOM": "XLE", "JPM": "XLF", "DIS": "XLC", "BA": "XLI",
+    "CAT": "XLI", "WMT": "XLP", "UNH": "XLV", "DAL": "XLI",
     # Broad market (no sector tilt)
     "SPY": "SPY", "QQQ": "XLK",
 }
