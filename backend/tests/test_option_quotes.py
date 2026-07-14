@@ -85,11 +85,36 @@ def test_select_empty_chain():
     assert oq.select_contract({}, target_dte=35, today=TODAY) is None
 
 
+# ── fill model (mid ± slippage) ──────────────────────────────────────────────
+
+def test_entry_fill_pays_mid_plus_quarter_half_spread():
+    # bid 6.00 / ask 8.00: mid 7.00, half-spread 1.00 → fill 7.25, not 8.00
+    assert oq.entry_fill_price(6.00, 8.00) == 7.25
+
+
+def test_exit_mark_realizes_mid_minus_quarter_half_spread():
+    assert oq.exit_mark_price(6.00, 8.00) == 6.75
+
+
+def test_round_trip_friction_is_half_the_half_spread():
+    # UNH regression: full ask→bid crossing marked -26% instantly on a
+    # 30%-wide quote; mid±slip keeps the round trip at 0.5×half-spread.
+    entry, exit_ = oq.entry_fill_price(6.09, 8.21), oq.exit_mark_price(6.09, 8.21)
+    assert abs((entry - exit_) - 0.5 * (8.21 - 6.09) / 2) < 1e-9
+    assert (entry - exit_) / entry < 0.08
+
+
+def test_fill_model_degrades_gracefully_on_bad_quotes():
+    assert oq.entry_fill_price(0.0, 5.0) == 5.0    # no bid → ask
+    assert oq.exit_mark_price(5.0, 0.0) == 5.0     # crossed/absent ask → bid
+    assert oq.exit_mark_price(0.0, 0.0) == 0.01
+
+
 # ── mark_position_quoted ─────────────────────────────────────────────────────
 
-def test_quoted_mark_pnl_from_real_bid():
+def test_quoted_mark_pnl_from_liquidation():
     pos = {"entry_option_price": 5.40, "contracts": 0.1852}
-    mark = pricing.mark_position_quoted(pos, bid=6.48, dte_left=30)
+    mark = pricing.mark_position_quoted(pos, liquidation=6.48, dte_left=30)
     assert mark["option_price"] == 6.48
     assert mark["pnl_pct"] == 20.0
     assert mark["dte_left"] == 30
@@ -98,5 +123,5 @@ def test_quoted_mark_pnl_from_real_bid():
 
 def test_quoted_mark_floors_at_penny():
     pos = {"entry_option_price": 5.40, "contracts": 0.1852}
-    mark = pricing.mark_position_quoted(pos, bid=0.0, dte_left=3)
+    mark = pricing.mark_position_quoted(pos, liquidation=0.0, dte_left=3)
     assert mark["option_price"] == 0.01

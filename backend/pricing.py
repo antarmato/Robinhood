@@ -132,16 +132,17 @@ def mark_position(pos: dict, current_stock: float, days_held: int) -> dict:
     }
 
 
-def mark_position_quoted(pos: dict, bid: float, dte_left: int) -> dict:
+def mark_position_quoted(pos: dict, liquidation: float, dte_left: int) -> dict:
     """
-    Mark a real-quoted position (has an `occ_symbol`) at the contract's live
-    bid — what a market sell would realize right now. Same return shape as
-    mark_position. No synthetic spread friction: entry paid the real ask and
-    the mark is the real bid, so the spread cost is already in the numbers.
+    Mark a real-quoted position (has an `occ_symbol`) at a liquidation price
+    derived from the contract's live quote (see option_quotes.exit_mark_price —
+    mid minus slippage, what a realistic sell would fill at). Same return
+    shape as mark_position. No synthetic spread friction: entry and exit
+    prices already carry the real spread cost.
     """
     entry_opt = float(pos.get("entry_option_price", 1.0))
     contracts = float(pos.get("contracts", 1))
-    liquidation = round(max(0.01, float(bid)), 4)
+    liquidation = round(max(0.01, float(liquidation)), 4)
     return {
         "option_price": liquidation,
         "pnl_pct":      round((liquidation - entry_opt) / entry_opt * 100, 2),

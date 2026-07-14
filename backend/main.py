@@ -484,7 +484,9 @@ async def get_sim_prices():
         if occ and occ in opt_quotes:
             real_dte = _oq.dte_left(occ)
             if real_dte is not None:
-                mark = pricing.mark_position_quoted(pos, opt_quotes[occ]["bid"], real_dte)
+                q = opt_quotes[occ]
+                mark = pricing.mark_position_quoted(
+                    pos, _oq.exit_mark_price(q["bid"], q["ask"]), real_dte)
         if mark is None:
             mark = pricing.mark_position(pos, current, days_held)
 

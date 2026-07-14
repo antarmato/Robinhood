@@ -25,6 +25,31 @@ _FEED    = os.getenv("ALPACA_OPTIONS_FEED", "indicative")  # opra needs a paid s
 _MAX_REL_SPREAD = 0.35   # reject quotes where (ask-bid)/mid exceeds this
 _TARGET_DELTA   = 0.25
 
+# Fill model: limit orders fill at/near the mid, not by crossing the whole
+# spread. Entries pay mid + this fraction of the half-spread; exits realize
+# mid − the same. First live trade (UNH 2026-07-14) proved full-ask/full-bid
+# crossing wrong: a 30%-wide indicative quote marked the position −26% at
+# entry with the stock unchanged.
+_SLIPPAGE = 0.25
+
+
+def entry_fill_price(bid: float, ask: float) -> float:
+    """Simulated buy fill: mid plus 25% of the half-spread."""
+    if ask <= bid or bid <= 0:
+        return round(max(ask, bid, 0.01), 4)
+    mid  = (bid + ask) / 2.0
+    half = (ask - bid) / 2.0
+    return round(mid + _SLIPPAGE * half, 4)
+
+
+def exit_mark_price(bid: float, ask: float) -> float:
+    """Simulated sell mark: mid minus 25% of the half-spread."""
+    if ask <= bid or bid <= 0:
+        return round(max(bid, 0.01), 4)
+    mid  = (bid + ask) / 2.0
+    half = (ask - bid) / 2.0
+    return round(max(0.01, mid - _SLIPPAGE * half), 4)
+
 
 def _headers() -> dict:
     return {

@@ -827,7 +827,7 @@ class Orchestrator:
         except Exception as e:
             logger.warning(f"Real-quote entry lookup failed for {symbol}: {e}")
         if real:
-            entry_opt   = real["ask"]
+            entry_opt   = oq.entry_fill_price(real["bid"], real["ask"])
             spread_frac = 0.0
             entry_dte   = real["dte"]
             delta       = real["delta"]
@@ -849,6 +849,8 @@ class Orchestrator:
             "occ_symbol":        real["occ_symbol"] if real else None,
             "strike":            real["strike"] if real else None,
             "expiry":            real["expiry"] if real else None,
+            "entry_bid":         real["bid"] if real else None,
+            "entry_ask":         real["ask"] if real else None,
             "quote_source":      "alpaca-indicative" if real else "model",
             "iv_rank":           iv_rank,
             "weighted_score":    judge.get("weighted_score", 0),
@@ -880,7 +882,8 @@ class Orchestrator:
         self.state.add_sim_position(pos)
 
         contract_desc = (
-            f"{real['occ_symbol']} (real ask ${real['ask']:.2f}, Δ{real['delta']:.2f})"
+            f"{real['occ_symbol']} (fill ${entry_opt:.2f} on "
+            f"{real['bid']:.2f}/{real['ask']:.2f}, Δ{real['delta']:.2f})"
             if real else f"modeled premium ${entry_opt:.2f}"
         )
         await self._emit("system", "sim_opened", {
@@ -991,8 +994,9 @@ class Orchestrator:
             if occ and occ in opt_quotes:
                 real_dte = oq.dte_left(occ)
                 if real_dte is not None:
+                    q = opt_quotes[occ]
                     mark = pricing.mark_position_quoted(
-                        pos, opt_quotes[occ]["bid"], real_dte)
+                        pos, oq.exit_mark_price(q["bid"], q["ask"]), real_dte)
             if mark is None:
                 mark = pricing.mark_position(pos, current_stock, days_held)
             current_opt = mark["option_price"]
